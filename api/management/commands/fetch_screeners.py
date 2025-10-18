@@ -66,9 +66,11 @@ def _extract_filters(attributes: dict[str, Any], index: int) -> List[str]:
     if isinstance(raw_filters, dict):
         formatted_filters: List[str] = []
         for filter_index, (filter_name, definition) in enumerate(raw_filters.items()):
-            formatted_filters.append(
-                _format_named_filter(filter_name, definition, index, filter_index)
+            formatted_filter = _format_named_filter(
+                filter_name, definition, index, filter_index
             )
+            if formatted_filter:
+                formatted_filters.append(formatted_filter)
         return formatted_filters
 
     if not isinstance(raw_filters, Iterable) or isinstance(raw_filters, (str, bytes)):
@@ -79,7 +81,9 @@ def _extract_filters(attributes: dict[str, Any], index: int) -> List[str]:
 
     formatted_filters: List[str] = []
     for filter_index, filter_item in enumerate(raw_filters):
-        formatted_filters.append(_format_filter(filter_item, index, filter_index))
+        formatted_filter = _format_filter(filter_item, index, filter_index)
+        if formatted_filter:
+            formatted_filters.append(formatted_filter)
 
     return formatted_filters
 
@@ -88,10 +92,10 @@ def _format_named_filter(
     filter_name: str, definition: Any, screener_index: int, filter_index: int
 ) -> str:
     if definition in (None, ""):
-        raise CommandError(
-            "Unexpected payload structure: empty filter definition at screener index "
-            f"{screener_index}, filter index {filter_index}."
-        )
+        return filter_name
+
+    if isinstance(definition, (list, dict)) and not definition:
+        return filter_name
 
     value_repr = _stringify_filter_value(definition)
     if value_repr:
@@ -102,17 +106,11 @@ def _format_named_filter(
 def _format_filter(filter_item: Any, screener_index: int, filter_index: int) -> str:
     if isinstance(filter_item, dict):
         if not filter_item:
-            raise CommandError(
-                "Unexpected payload structure: empty filter definition at screener index "
-                f"{screener_index}, filter index {filter_index}."
-            )
+            return "{}"
         return _stringify_filter_value(filter_item)
 
     if filter_item in (None, ""):
-        raise CommandError(
-            "Unexpected payload structure: empty filter definition at screener index "
-            f"{screener_index}, filter index {filter_index}."
-        )
+        return ""
 
     return str(filter_item)
 
