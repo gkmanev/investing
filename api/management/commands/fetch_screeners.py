@@ -1,4 +1,3 @@
-import json
 from typing import Any
 
 import requests
@@ -32,6 +31,20 @@ class Command(BaseCommand):
         except ValueError as exc:
             raise CommandError("Received invalid JSON from Seeking Alpha API") from exc
 
-        formatted_payload = json.dumps(payload, indent=2, sort_keys=True)
+        data = payload.get("data", [])
+        if not isinstance(data, list):
+            raise CommandError("Unexpected payload structure: 'data' is not a list.")
+
+        screener_names = []
+        for index, item in enumerate(data):
+            attributes = item.get("attributes") if isinstance(item, dict) else None
+            if not isinstance(attributes, dict) or "name" not in attributes:
+                raise CommandError(
+                    "Unexpected payload structure: missing 'attributes.name' at index "
+                    f"{index}."
+                )
+            screener_names.append(attributes["name"])
+
+        formatted_payload = "\n".join(screener_names)
         self.stdout.write(formatted_payload)
         return formatted_payload
