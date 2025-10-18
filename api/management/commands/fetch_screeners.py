@@ -1,5 +1,5 @@
-from typing import Any, Iterable, List
 import json
+from typing import Any, Iterable, List
 
 import requests
 from django.core.management.base import BaseCommand, CommandError
