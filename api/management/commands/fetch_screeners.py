@@ -1,4 +1,5 @@
-from typing import Any
+import json
+from typing import Any, Iterable, List, Optional
 
 import requests
 from django.core.management.base import BaseCommand, CommandError
@@ -35,16 +36,99 @@ class Command(BaseCommand):
         if not isinstance(data, list):
             raise CommandError("Unexpected payload structure: 'data' is not a list.")
 
-        screener_names = []
+        formatted_entries: List[str] = []
         for index, item in enumerate(data):
-            attributes = item.get("attributes") if isinstance(item, dict) else None
-            if not isinstance(attributes, dict) or "name" not in attributes:
-                raise CommandError(
-                    "Unexpected payload structure: missing 'attributes.name' at index "
-                    f"{index}."
-                )
-            screener_names.append(attributes["name"])
+            attributes = _extract_attributes(item, index)
+            name = attributes["name"]
+            filters = _extract_filters(attributes, index)
+            formatted_entries.append(_format_entry(name, filters))
 
-        formatted_payload = "\n".join(screener_names)
+        formatted_payload = "\n".join(formatted_entries)
         self.stdout.write(formatted_payload)
         return formatted_payload
+
+
+def _extract_attributes(item: Any, index: int) -> dict[str, Any]:
+    attributes = item.get("attributes") if isinstance(item, dict) else None
+    if not isinstance(attributes, dict) or "name" not in attributes:
+        raise CommandError(
+            "Unexpected payload structure: missing 'attributes.name' at index "
+            f"{index}."
+        )
+    return attributes
+
+
+def _extract_filters(attributes: dict[str, Any], index: int) -> List[str]:
+    raw_filters = attributes.get("filters")
+    if raw_filters in (None, {}):
+        return []
+
+    if isinstance(raw_filters, dict):
+        formatted_filters: List[str] = []
+        for filter_name, definition in raw_filters.items():
+            rendered = _format_named_filter(filter_name, definition)
+            if rendered:
+                formatted_filters.append(rendered)
+        return formatted_filters
+
+    if not isinstance(raw_filters, Iterable) or isinstance(raw_filters, (str, bytes)):
+        raise CommandError(
+            "Unexpected payload structure: 'attributes.filters' must be a list or dict at index "
+            f"{index}."
+        )
+
+    formatted_filters: List[str] = []
+    for filter_item in raw_filters:
+        rendered = _format_filter(filter_item)
+        if rendered:
+            formatted_filters.append(rendered)
+
+    return formatted_filters
+
+
+def _format_named_filter(filter_name: str, definition: Any) -> Optional[str]:
+    if definition in (None, ""):
+        return filter_name
+
+    if isinstance(definition, (list, dict)) and not definition:
+        return filter_name
+
+    value_repr = _stringify_filter_value(definition)
+    if value_repr:
+        return f"{filter_name}: {value_repr}"
+    return filter_name
+
+
+def _format_filter(filter_item: Any) -> Optional[str]:
+    if isinstance(filter_item, dict):
+        if not filter_item:
+            return None
+        return _stringify_filter_value(filter_item)
+
+    if filter_item in (None, ""):
+        return None
+
+    return str(filter_item)
+
+
+def _stringify_filter_value(value: Any) -> str:
+    if isinstance(value, dict):
+        if not value:
+            return "{}"
+        parts = []
+        for key in sorted(value):
+            parts.append(f"{key}={_stringify_filter_value(value[key])}")
+        return ", ".join(parts)
+
+    if isinstance(value, list):
+        return json.dumps(value, sort_keys=True)
+
+    return str(value)
+
+
+def _format_entry(name: str, filters: List[str]) -> str:
+    if not filters:
+        return name
+
+    formatted_filters = "\n".join(f"  - {filter_value}" for filter_value in filters)
+    return f"{name}\n{formatted_filters}"
