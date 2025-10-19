@@ -220,19 +220,29 @@ class FetchScreenersCommandTests(APITestCase):
 
         second = ScreenerType.objects.get(name="Growth Picks")
         self.assertEqual(second.description, "High growth companies.")
-        self.assertEqual(second.filters.count(), 1)
-        growth_filter = second.filters.get()
+        filters = list(second.filters.order_by("display_order"))
+        self.assertEqual(len(filters), 2)
+
+        industry_filter = filters[0]
+        self.assertEqual(industry_filter.label, "industry_id=999")
+        self.assertEqual(industry_filter.payload, {"industry_id": 999})
+        self.assertEqual(industry_filter.display_order, 1)
+
+        growth_filter = filters[1]
         self.assertEqual(
             growth_filter.label,
-            "field=revenue_growth, operator=>, value=0.2",
+            "field=revenue_growth, industry_id=999, operator=>, value=0.2",
         )
         self.assertEqual(
             growth_filter.payload,
-            {"field": "revenue_growth", "operator": ">", "value": 0.2},
+            {
+                "field": "revenue_growth",
+                "operator": ">",
+                "value": 0.2,
+                "industry_id": 999,
+            },
         )
-        self.assertNotIn("industry_id", growth_filter.payload)
-        self.assertNotIn("industryId", growth_filter.payload)
-        self.assertNotIn("industryId", growth_filter.label)
+        self.assertIn("industry_id", growth_filter.payload)
 
     @patch("api.management.commands.fetch_screeners.requests.get")
     def test_command_removes_missing_filters(self, mock_get: MagicMock) -> None:
