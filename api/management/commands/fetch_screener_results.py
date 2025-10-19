@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import json
-from typing import Any, Iterable
+from typing import Any, Iterable, List
 
 import requests
 from django.core.management.base import BaseCommand, CommandError
@@ -82,11 +81,17 @@ class Command(BaseCommand):
             )
 
         try:
-            formatted_payload = json.dumps(response.json(), indent=2, sort_keys=True)
+            response_payload = response.json()
         except ValueError as exc:
             raise CommandError("Received invalid JSON from Seeking Alpha API") from exc
 
-        self.stdout.write(formatted_payload)
+        ticker_names = self._extract_ticker_names(response_payload)
+        if not ticker_names:
+            raise CommandError(
+                "Seeking Alpha API response did not include any ticker names."
+            )
+
+        formatted_payload = "\n".join(ticker_names)
         return formatted_payload
 
     def _get_screener(self, screener_name: str) -> ScreenerType:
@@ -121,4 +126,56 @@ class Command(BaseCommand):
                 payload[key] = value
 
         return payload
+
+    def _extract_ticker_names(self, payload: Any) -> List[str]:
+        if not isinstance(payload, dict):
+            raise CommandError(
+                "Seeking Alpha API returned an unexpected payload structure."
+            )
+
+        data = payload.get("data", [])
+        if not isinstance(data, list):
+            raise CommandError(
+                "Seeking Alpha API returned an unexpected payload structure."
+            )
+
+        names: List[str] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+
+            attributes = item.get("attributes", {})
+            if not isinstance(attributes, dict):
+                continue
+
+            direct_name = attributes.get("name")
+            if isinstance(direct_name, str) and direct_name:
+                names.append(direct_name)
+                continue
+
+            direct_names = attributes.get("names")
+            if isinstance(direct_names, list):
+                names.extend(
+                    str(value)
+                    for value in direct_names
+                    if isinstance(value, str) and value
+                )
+                continue
+
+            profile = attributes.get("p", {})
+            if isinstance(profile, dict):
+                profile_name = profile.get("name")
+                if isinstance(profile_name, str) and profile_name:
+                    names.append(profile_name)
+                    continue
+
+                profile_names = profile.get("names")
+                if isinstance(profile_names, list):
+                    names.extend(
+                        str(value)
+                        for value in profile_names
+                        if isinstance(value, str) and value
+                    )
+
+        return names
 

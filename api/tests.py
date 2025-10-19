@@ -1,4 +1,7 @@
+from io import StringIO
+
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -265,3 +268,50 @@ class FetchScreenersCommandTests(APITestCase):
         self.assertEqual(len(filters), 1)
         self.assertEqual(filters[0].label, "Volume Surge")
         self.assertEqual(filters[0].payload, "Volume Surge")
+
+
+class FetchScreenerResultsCommandTests(APITestCase):
+    def setUp(self) -> None:
+        self.screener = ScreenerType.objects.create(
+            name="Value Stocks", description="Stocks filtered by valuation metrics."
+        )
+        ScreenerFilter.objects.create(
+            screener_type=self.screener,
+            label="Market Cap >= 500M",
+            payload={"field": "market_cap", "operator": ">=", "value": 500_000_000},
+            display_order=1,
+        )
+
+    @patch("api.management.commands.fetch_screener_results.requests.post")
+    def test_command_prints_ticker_names(self, mock_post: MagicMock) -> None:
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {
+                "data": [
+                    {"attributes": {"p": {"names": ["Apple Inc."]}}},
+                    {"attributes": {"p": {"name": "Microsoft Corporation"}}},
+                    {"attributes": {"name": "Tesla, Inc."}},
+                ]
+            },
+            text="{}",
+        )
+
+        buffer = StringIO()
+        result = call_command("fetch_screener_results", self.screener.name, stdout=buffer)
+
+        expected_output = "Apple Inc.\nMicrosoft Corporation\nTesla, Inc."
+        self.assertEqual(result, expected_output)
+        self.assertEqual(buffer.getvalue(), expected_output + "\n")
+
+    @patch("api.management.commands.fetch_screener_results.requests.post")
+    def test_command_errors_when_no_names_present(self, mock_post: MagicMock) -> None:
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {"data": [{"attributes": {"p": {}}}]},
+            text="{}",
+        )
+
+        with self.assertRaisesMessage(
+            CommandError, "Seeking Alpha API response did not include any ticker names."
+        ):
+            call_command("fetch_screener_results", self.screener.name)
