@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Iterable, List
 
 import requests
@@ -77,6 +78,9 @@ class Command(BaseCommand):
         }
 
         try:
+            formatted_payload = json.dumps(payload, indent=2, sort_keys=True)
+            self.stderr.write("POST payload:\n" + formatted_payload)
+
             response = requests.post(
                 API_URL,
                 headers=API_HEADERS,
