@@ -323,6 +323,44 @@ class FetchScreenerResultsCommandTests(APITestCase):
         self.assertIn("marketcap_display", payload)
         self.assertEqual(payload["marketcap_display"].get("gte"), 10_000_000_000)
 
+    @patch("api.management.commands.fetch_screener_results.requests.post")
+    def test_command_updates_nested_filter_section(self, mock_post: MagicMock) -> None:
+        nested_screener = ScreenerType.objects.create(
+            name="Energy Focus", description="Composite filter payload."
+        )
+        ScreenerFilter.objects.create(
+            screener_type=nested_screener,
+            label="Energy Sector",
+            payload={
+                "filter": {
+                    "asset_primary_sector": {"eq": "Energy"},
+                    "marketcap_display": {"gte": 750_000_000},
+                }
+            },
+            display_order=1,
+        )
+
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {"data": [{"attributes": {"name": "Sample"}}]},
+            text="{}",
+        )
+
+        call_command(
+            "fetch_screener_results",
+            nested_screener.name,
+            "--market-cap",
+            "5B",
+        )
+
+        _, kwargs = mock_post.call_args
+        payload = kwargs["json"]
+        self.assertIn("filter", payload)
+        self.assertIn("asset_primary_sector", payload["filter"])
+        self.assertEqual(payload["filter"]["asset_primary_sector"].get("eq"), "Energy")
+        self.assertIn("marketcap_display", payload["filter"])
+        self.assertEqual(payload["filter"]["marketcap_display"].get("gte"), 5_000_000_000)
+
     def test_command_rejects_invalid_market_cap_argument(self) -> None:
         with self.assertRaisesMessage(CommandError, "Market cap value must be a number optionally followed by K, M, B, or T."):
             call_command("fetch_screener_results", self.screener.name, "--market-cap", "ten-billion")
