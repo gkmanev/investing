@@ -175,11 +175,17 @@ class FetchScreenersCommandTests(APITestCase):
                         "attributes": {
                             "name": "Growth Picks",
                             "shortDescription": "High growth companies.",
-                            "filters": {
-                                "field": "revenue_growth",
-                                "operator": ">",
-                                "value": 0.2,
-                            },
+                            "filters": [
+                                {
+                                    "industryId": 999,
+                                },
+                                {
+                                    "field": "revenue_growth",
+                                    "operator": ">",
+                                    "value": 0.2,
+                                    "industryId": 999,
+                                },
+                            ],
                         }
                     },
                 ]
@@ -221,6 +227,9 @@ class FetchScreenersCommandTests(APITestCase):
             growth_filter.payload,
             {"field": "revenue_growth", "operator": ">", "value": 0.2},
         )
+        self.assertNotIn("industry_id", growth_filter.payload)
+        self.assertNotIn("industryId", growth_filter.payload)
+        self.assertNotIn("industryId", growth_filter.label)
 
     @patch("api.management.commands.fetch_screeners.requests.get")
     def test_command_removes_missing_filters(self, mock_get: MagicMock) -> None:
