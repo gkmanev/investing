@@ -210,14 +210,16 @@ def _synchronise_filters(
 
 
 def _sanitise_filter_dict(filter_dict: dict[str, Any]) -> dict[str, Any]:
-    """Remove identifier-only entries that provide no user-facing value."""
-
-    keys_to_strip = {"industryid"}
+    """Normalise known filter keys while keeping identifier data available."""
 
     sanitised_items: dict[str, Any] = {}
     for key, value in filter_dict.items():
-        if isinstance(key, str) and key.lower().replace("_", "") in keys_to_strip:
-            continue
+        if isinstance(key, str):
+            normalised_key = key.lower().replace("_", "")
+            if normalised_key == "industryid":
+                sanitised_items["industry_id"] = value
+                continue
+
         sanitised_items[key] = value
 
     return sanitised_items
