@@ -124,16 +124,22 @@ def _extract_filters(attributes: dict[str, Any], index: int) -> List[FilterSpec]
 def _normalise_filter(
     filter_item: Any, screener_index: int, filter_index: int
 ) -> FilterSpec | None:
-    label = _format_filter_label(filter_item, screener_index, filter_index)
-    if not label:
-        return None
-
     if isinstance(filter_item, dict):
-        payload: Any = filter_item
+        sanitised_filter = _sanitise_filter_dict(filter_item)
+        if not sanitised_filter:
+            return None
+        label_source: Any = sanitised_filter
+        payload: Any = sanitised_filter
     elif isinstance(filter_item, Iterable) and not isinstance(filter_item, (str, bytes)):
+        label_source = filter_item
         payload = list(filter_item)
     else:
+        label_source = filter_item
         payload = filter_item
+
+    label = _format_filter_label(label_source, screener_index, filter_index)
+    if not label:
+        return None
 
     return FilterSpec(label=label, payload=payload)
 
@@ -201,4 +207,18 @@ def _synchronise_filters(
     else:
         # No filters left; remove all existing ones for consistency
         screener_type.filters.all().delete()
+
+
+def _sanitise_filter_dict(filter_dict: dict[str, Any]) -> dict[str, Any]:
+    """Remove identifier-only entries that provide no user-facing value."""
+
+    keys_to_strip = {"industryid"}
+
+    sanitised_items: dict[str, Any] = {}
+    for key, value in filter_dict.items():
+        if isinstance(key, str) and key.lower().replace("_", "") in keys_to_strip:
+            continue
+        sanitised_items[key] = value
+
+    return sanitised_items
 
