@@ -142,11 +142,39 @@ class Command(BaseCommand):
     def _apply_market_cap_filter(
         self, payload: dict[str, Any], market_cap_value: int
     ) -> dict[str, Any]:
-        existing_filter = payload.get("marketcap_display")
+        if not isinstance(payload, dict):
+            raise CommandError(
+                "Screener filters payload has an unexpected structure."
+            )
+
+        filter_section = payload.get("filter")
+        containers: list[dict[str, Any]] = []
+
+        if isinstance(filter_section, dict):
+            containers.append(filter_section)
+
+        containers.append(payload)
+
+        for container in containers:
+            if "marketcap_display" in container:
+                self._merge_market_cap_filter(container, market_cap_value)
+                return payload
+
+        if isinstance(filter_section, dict):
+            self._merge_market_cap_filter(filter_section, market_cap_value)
+            return payload
+
+        self._merge_market_cap_filter(payload, market_cap_value)
+        return payload
+
+    def _merge_market_cap_filter(
+        self, container: dict[str, Any], market_cap_value: int
+    ) -> None:
+        existing_filter = container.get("marketcap_display")
 
         if existing_filter is None:
-            payload["marketcap_display"] = {"gte": market_cap_value}
-            return payload
+            container["marketcap_display"] = {"gte": market_cap_value}
+            return
 
         if not isinstance(existing_filter, dict):
             raise CommandError(
@@ -154,14 +182,8 @@ class Command(BaseCommand):
             )
 
         updated_filter = dict(existing_filter)
-        if "gte" in updated_filter and updated_filter["gte"] != market_cap_value:
-            raise CommandError(
-                "Conflicting marketcap_display minimum values encountered."
-            )
-
         updated_filter["gte"] = market_cap_value
-        payload["marketcap_display"] = updated_filter
-        return payload
+        container["marketcap_display"] = updated_filter
 
     def _parse_market_cap(self, market_cap: str) -> int:
         cleaned_value = market_cap.strip().upper().replace(",", "")
