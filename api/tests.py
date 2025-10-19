@@ -304,6 +304,30 @@ class FetchScreenerResultsCommandTests(APITestCase):
         self.assertEqual(buffer.getvalue(), expected_output + "\n")
 
     @patch("api.management.commands.fetch_screener_results.requests.post")
+    def test_command_applies_market_cap_argument(self, mock_post: MagicMock) -> None:
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {"data": [{"attributes": {"name": "Example"}}]},
+            text="{}",
+        )
+
+        buffer = StringIO()
+        call_command("fetch_screener_results", self.screener.name, "--market-cap", "10B", stdout=buffer)
+
+        _, kwargs = mock_post.call_args
+        self.assertIn("json", kwargs)
+        payload = kwargs["json"]
+        self.assertEqual(payload.get("field"), "market_cap")
+        self.assertEqual(payload.get("operator"), ">=")
+        self.assertEqual(payload.get("value"), 500_000_000)
+        self.assertIn("marketcap_display", payload)
+        self.assertEqual(payload["marketcap_display"].get("gte"), 10_000_000_000)
+
+    def test_command_rejects_invalid_market_cap_argument(self) -> None:
+        with self.assertRaisesMessage(CommandError, "Market cap value must be a number optionally followed by K, M, B, or T."):
+            call_command("fetch_screener_results", self.screener.name, "--market-cap", "ten-billion")
+
+    @patch("api.management.commands.fetch_screener_results.requests.post")
     def test_command_errors_when_no_names_present(self, mock_post: MagicMock) -> None:
         mock_post.return_value = MagicMock(
             status_code=200,

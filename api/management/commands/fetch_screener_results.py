@@ -44,15 +44,27 @@ class Command(BaseCommand):
             dest="asset_type",
             help="Asset type parameter for the upstream API (default: stock)",
         )
+        parser.add_argument(
+            "--market-cap",
+            dest="market_cap",
+            help=(
+                "Optional minimum market cap filter. Accepts raw numbers or values with "
+                "suffixes such as K, M, B, or T (e.g. 500M, 1.2B)."
+            ),
+        )
 
     def handle(self, *args: Any, **options: Any) -> str:
         screener_name: str = options["screener_name"]
         page: int = options["page"]
         per_page: int = options["per_page"]
         asset_type: str = options["asset_type"]
+        market_cap_raw: str | None = options.get("market_cap")
 
         screener = self._get_screener(screener_name)
         payload = self._build_payload(screener.filters.all())
+        if market_cap_raw:
+            market_cap_value = self._parse_market_cap(market_cap_raw)
+            payload = self._apply_market_cap_filter(payload, market_cap_value)
         if not payload:
             raise CommandError(
                 f"Screener '{screener_name}' does not have any stored filters."
@@ -126,6 +138,61 @@ class Command(BaseCommand):
                 payload[key] = value
 
         return payload
+
+    def _apply_market_cap_filter(
+        self, payload: dict[str, Any], market_cap_value: int
+    ) -> dict[str, Any]:
+        existing_filter = payload.get("marketcap_display")
+
+        if existing_filter is None:
+            payload["marketcap_display"] = {"gte": market_cap_value}
+            return payload
+
+        if not isinstance(existing_filter, dict):
+            raise CommandError(
+                "Existing marketcap_display filter has an unexpected structure."
+            )
+
+        updated_filter = dict(existing_filter)
+        if "gte" in updated_filter and updated_filter["gte"] != market_cap_value:
+            raise CommandError(
+                "Conflicting marketcap_display minimum values encountered."
+            )
+
+        updated_filter["gte"] = market_cap_value
+        payload["marketcap_display"] = updated_filter
+        return payload
+
+    def _parse_market_cap(self, market_cap: str) -> int:
+        cleaned_value = market_cap.strip().upper().replace(",", "")
+        if not cleaned_value:
+            raise CommandError("Market cap value cannot be empty.")
+
+        suffix_multipliers = {
+            "K": 1_000,
+            "M": 1_000_000,
+            "B": 1_000_000_000,
+            "T": 1_000_000_000_000,
+        }
+
+        multiplier = 1
+        number_part = cleaned_value
+
+        if cleaned_value[-1] in suffix_multipliers:
+            multiplier = suffix_multipliers[cleaned_value[-1]]
+            number_part = cleaned_value[:-1]
+
+        try:
+            numeric_value = float(number_part)
+        except ValueError as exc:
+            raise CommandError(
+                "Market cap value must be a number optionally followed by K, M, B, or T."
+            ) from exc
+
+        if numeric_value < 0:
+            raise CommandError("Market cap value cannot be negative.")
+
+        return int(numeric_value * multiplier)
 
     def _extract_ticker_names(self, payload: Any) -> List[str]:
         if not isinstance(payload, dict):
