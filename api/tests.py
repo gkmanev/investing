@@ -1,6 +1,8 @@
+from django.core.management import call_command
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
+from unittest.mock import MagicMock, patch
 
 from .models import Investment, ScreenerFilter, ScreenerType
 
@@ -142,3 +144,115 @@ class ScreenerFilterAPITestCase(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("label", response.data)
+
+
+class FetchScreenersCommandTests(APITestCase):
+    @patch("api.management.commands.fetch_screeners.requests.get")
+    def test_fetch_and_persist_screeners(self, mock_get: MagicMock) -> None:
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {
+                "data": [
+                    {
+                        "attributes": {
+                            "name": "Value Stocks",
+                            "description": "Stocks filtered by valuation metrics.",
+                            "filters": [
+                                {
+                                    "field": "pe_ratio",
+                                    "operator": "<",
+                                    "value": 15,
+                                },
+                                {
+                                    "field": "market_cap",
+                                    "operator": ">=",
+                                    "value": 500_000_000,
+                                },
+                            ],
+                        }
+                    },
+                    {
+                        "attributes": {
+                            "name": "Growth Picks",
+                            "shortDescription": "High growth companies.",
+                            "filters": {
+                                "field": "revenue_growth",
+                                "operator": ">",
+                                "value": 0.2,
+                            },
+                        }
+                    },
+                ]
+            },
+            text="{}",
+        )
+
+        call_command("fetch_screeners")
+
+        self.assertEqual(ScreenerType.objects.count(), 2)
+        screener = ScreenerType.objects.get(name="Value Stocks")
+        self.assertEqual(screener.description, "Stocks filtered by valuation metrics.")
+
+        filters = list(screener.filters.order_by("display_order"))
+        self.assertEqual(len(filters), 2)
+        self.assertEqual(filters[0].label, "field=pe_ratio, operator=<, value=15")
+        self.assertEqual(
+            filters[0].payload,
+            {"field": "pe_ratio", "operator": "<", "value": 15},
+        )
+        self.assertEqual(filters[0].display_order, 1)
+
+        self.assertEqual(filters[1].label, "field=market_cap, operator=>=, value=500000000")
+        self.assertEqual(
+            filters[1].payload,
+            {"field": "market_cap", "operator": ">=", "value": 500_000_000},
+        )
+        self.assertEqual(filters[1].display_order, 2)
+
+        second = ScreenerType.objects.get(name="Growth Picks")
+        self.assertEqual(second.description, "High growth companies.")
+        self.assertEqual(second.filters.count(), 1)
+        growth_filter = second.filters.get()
+        self.assertEqual(
+            growth_filter.label,
+            "field=revenue_growth, operator=>, value=0.2",
+        )
+        self.assertEqual(
+            growth_filter.payload,
+            {"field": "revenue_growth", "operator": ">", "value": 0.2},
+        )
+
+    @patch("api.management.commands.fetch_screeners.requests.get")
+    def test_command_removes_missing_filters(self, mock_get: MagicMock) -> None:
+        screener = ScreenerType.objects.create(name="Momentum", description="")
+        ScreenerFilter.objects.create(
+            screener_type=screener,
+            label="field=old, operator=>, value=1",
+            payload={"field": "old", "operator": ">", "value": 1},
+            display_order=1,
+        )
+
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {
+                "data": [
+                    {
+                        "attributes": {
+                            "name": "Momentum",
+                            "description": "Updated description.",
+                            "filters": ["Volume Surge"],
+                        }
+                    }
+                ]
+            },
+            text="{}",
+        )
+
+        call_command("fetch_screeners")
+
+        screener.refresh_from_db()
+        self.assertEqual(screener.description, "Updated description.")
+        filters = list(screener.filters.all())
+        self.assertEqual(len(filters), 1)
+        self.assertEqual(filters[0].label, "Volume Surge")
+        self.assertEqual(filters[0].payload, "Volume Surge")
