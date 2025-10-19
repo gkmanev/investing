@@ -1,8 +1,14 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
 from typing import Any, Iterable, List
 import json
 
 import requests
 from django.core.management.base import BaseCommand, CommandError
+from django.db import transaction
+
+from api.models import ScreenerFilter, ScreenerType
 
 API_URL = "https://seeking-alpha.p.rapidapi.com/screeners/list"
 API_HEADERS = {
@@ -37,15 +43,32 @@ class Command(BaseCommand):
             raise CommandError("Unexpected payload structure: 'data' is not a list.")
 
         formatted_entries: List[str] = []
-        for index, item in enumerate(data):
-            attributes = _extract_attributes(item, index)
-            name = attributes["name"]
-            filters = _extract_filters(attributes, index)
-            formatted_entries.append(_format_entry(name, filters))
+        with transaction.atomic():
+            for index, item in enumerate(data):
+                attributes = _extract_attributes(item, index)
+                name = attributes["name"]
+                description = _extract_description(attributes)
+                filter_specs = _extract_filters(attributes, index)
+
+                screener_type, _ = ScreenerType.objects.update_or_create(
+                    name=name,
+                    defaults={"description": description},
+                )
+                _synchronise_filters(screener_type, filter_specs)
+
+                formatted_entries.append(
+                    _format_entry(name, [spec.label for spec in filter_specs])
+                )
 
         formatted_payload = "\n".join(formatted_entries)
         self.stdout.write(formatted_payload)
         return formatted_payload
+
+
+@dataclass
+class FilterSpec:
+    label: str
+    payload: Any
 
 
 def _extract_attributes(item: Any, index: int) -> dict[str, Any]:
@@ -57,7 +80,21 @@ def _extract_attributes(item: Any, index: int) -> dict[str, Any]:
     return attributes
 
 
-def _extract_filters(attributes: dict[str, Any], index: int) -> List[str]:
+def _extract_description(attributes: dict[str, Any]) -> str:
+    description_fields = (
+        attributes.get("description"),
+        attributes.get("shortDescription"),
+        attributes.get("summary"),
+    )
+    for value in description_fields:
+        if isinstance(value, str) and value.strip():
+            return value
+        if value not in (None, "") and not isinstance(value, (list, dict)):
+            return str(value)
+    return ""
+
+
+def _extract_filters(attributes: dict[str, Any], index: int) -> List[FilterSpec]:
     raw_filters = attributes.get("filters")
 
     # Treat None and {} as "no filters"
@@ -75,16 +112,35 @@ def _extract_filters(attributes: dict[str, Any], index: int) -> List[str]:
             f"at index {index}."
         )
 
-    formatted_filters: List[str] = []
+    formatted_filters: List[FilterSpec] = []
     for filter_index, filter_item in enumerate(items):
-        s = _format_filter(filter_item, index, filter_index)
-        if s:  # skip empty strings returned by _format_filter
-            formatted_filters.append(s)
+        spec = _normalise_filter(filter_item, index, filter_index)
+        if spec:  # skip empty specs returned by _normalise_filter
+            formatted_filters.append(spec)
 
     return formatted_filters
 
 
-def _format_filter(filter_item: Any, screener_index: int, filter_index: int) -> str:
+def _normalise_filter(
+    filter_item: Any, screener_index: int, filter_index: int
+) -> FilterSpec | None:
+    label = _format_filter_label(filter_item, screener_index, filter_index)
+    if not label:
+        return None
+
+    if isinstance(filter_item, dict):
+        payload: Any = filter_item
+    elif isinstance(filter_item, Iterable) and not isinstance(filter_item, (str, bytes)):
+        payload = list(filter_item)
+    else:
+        payload = filter_item
+
+    return FilterSpec(label=label, payload=payload)
+
+
+def _format_filter_label(
+    filter_item: Any, screener_index: int, filter_index: int
+) -> str:
     # Dict filter: render key=value pairs; skip if empty
     if isinstance(filter_item, dict):
         if not filter_item:
@@ -111,6 +167,38 @@ def _format_entry(name: str, filters: List[str]) -> str:
     filters = [f for f in filters if f]
     if not filters:
         return name
-    
+
     formatted_filters = "\n".join(f"  - {filter_value}" for filter_value in filters)
     return f"{name}\n{formatted_filters}"
+
+
+def _synchronise_filters(
+    screener_type: ScreenerType, filter_specs: List[FilterSpec]
+) -> None:
+    existing_filters = {
+        f.label: f for f in screener_type.filters.all()
+    }
+
+    seen_labels: list[str] = []
+    for order, spec in enumerate(filter_specs, start=1):
+        seen_labels.append(spec.label)
+        filter_obj = existing_filters.get(spec.label)
+        if filter_obj is None:
+            ScreenerFilter.objects.create(
+                screener_type=screener_type,
+                label=spec.label,
+                payload=spec.payload,
+                display_order=order,
+            )
+            continue
+
+        filter_obj.payload = spec.payload
+        filter_obj.display_order = order
+        filter_obj.save(update_fields=["payload", "display_order", "updated_at"])
+
+    if seen_labels:
+        screener_type.filters.exclude(label__in=seen_labels).delete()
+    else:
+        # No filters left; remove all existing ones for consistency
+        screener_type.filters.all().delete()
+
