@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Iterable, List
 
 import requests
@@ -77,6 +78,9 @@ class Command(BaseCommand):
         }
 
         try:
+            formatted_payload = json.dumps(payload, indent=2, sort_keys=True)
+            self.stderr.write("POST payload:\n" + formatted_payload)
+
             response = requests.post(
                 API_URL,
                 headers=API_HEADERS,
@@ -129,24 +133,93 @@ class Command(BaseCommand):
                     f"{filter_obj.label!r}"
                 )
 
-            for key, value in filter_payload.items():
-                if key in payload and payload[key] != value:
-                    raise CommandError(
-                        "Conflicting values for payload key "
-                        f"'{key}' across filters."
-                    )
-                payload[key] = value
+            payload = self._merge_payload_dicts(payload, filter_payload)
 
         return payload
+
+    def _merge_payload_dicts(
+        self, base: dict[str, Any], incoming: dict[str, Any], path: str = "root"
+    ) -> dict[str, Any]:
+        merged: dict[str, Any] = dict(base)
+
+        for key, value in incoming.items():
+            current_path = f"{path}.{key}"
+            if key not in merged:
+                merged[key] = value
+                continue
+
+            existing_value = merged[key]
+
+            if existing_value is value or existing_value == value:
+                continue
+
+            if isinstance(existing_value, dict) and isinstance(value, dict):
+                merged[key] = self._merge_payload_dicts(
+                    existing_value, value, current_path
+                )
+                continue
+
+            if isinstance(existing_value, list) and isinstance(value, list):
+                combined_list = list(existing_value)
+                for item in value:
+                    if item not in combined_list:
+                        combined_list.append(item)
+                merged[key] = combined_list
+                continue
+
+            raise CommandError(
+                "Conflicting values encountered while building payload at "
+                f"'{current_path}'."
+            )
+
+        return merged
 
     def _apply_market_cap_filter(
         self, payload: dict[str, Any], market_cap_value: int
     ) -> dict[str, Any]:
-        existing_filter = payload.get("marketcap_display")
+        if not isinstance(payload, dict):
+            raise CommandError(
+                "Screener filters payload has an unexpected structure."
+            )
+
+        containers = self._find_market_cap_containers(payload)
+
+        if containers:
+            for container in containers:
+                self._merge_market_cap_filter(container, market_cap_value)
+            return payload
+
+        filter_section = payload.get("filter")
+        if isinstance(filter_section, dict):
+            self._merge_market_cap_filter(filter_section, market_cap_value)
+            return payload
+
+        self._merge_market_cap_filter(payload, market_cap_value)
+        return payload
+
+    def _find_market_cap_containers(self, node: Any) -> list[dict[str, Any]]:
+        containers: list[dict[str, Any]] = []
+
+        if isinstance(node, dict):
+            if "marketcap_display" in node:
+                containers.append(node)
+
+            for value in node.values():
+                containers.extend(self._find_market_cap_containers(value))
+        elif isinstance(node, list):
+            for item in node:
+                containers.extend(self._find_market_cap_containers(item))
+
+        return containers
+
+    def _merge_market_cap_filter(
+        self, container: dict[str, Any], market_cap_value: int
+    ) -> None:
+        existing_filter = container.get("marketcap_display")
 
         if existing_filter is None:
-            payload["marketcap_display"] = {"gte": market_cap_value}
-            return payload
+            container["marketcap_display"] = {"gte": market_cap_value}
+            return
 
         if not isinstance(existing_filter, dict):
             raise CommandError(
@@ -154,14 +227,8 @@ class Command(BaseCommand):
             )
 
         updated_filter = dict(existing_filter)
-        if "gte" in updated_filter and updated_filter["gte"] != market_cap_value:
-            raise CommandError(
-                "Conflicting marketcap_display minimum values encountered."
-            )
-
         updated_filter["gte"] = market_cap_value
-        payload["marketcap_display"] = updated_filter
-        return payload
+        container["marketcap_display"] = updated_filter
 
     def _parse_market_cap(self, market_cap: str) -> int:
         cleaned_value = market_cap.strip().upper().replace(",", "")
