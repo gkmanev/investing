@@ -151,35 +151,25 @@ class Command(BaseCommand):
                 "Screener filters payload has an unexpected structure."
             )
 
-        containers = self._find_market_cap_containers(payload)
-
-        if containers:
-            for container in containers:
-                self._merge_market_cap_filter(container, market_cap_value)
-            return payload
-
         filter_section = payload.get("filter")
+        containers: list[dict[str, Any]] = []
+
+        if isinstance(filter_section, dict):
+            containers.append(filter_section)
+
+        containers.append(payload)
+
+        for container in containers:
+            if "marketcap_display" in container:
+                self._merge_market_cap_filter(container, market_cap_value)
+                return payload
+
         if isinstance(filter_section, dict):
             self._merge_market_cap_filter(filter_section, market_cap_value)
             return payload
 
         self._merge_market_cap_filter(payload, market_cap_value)
         return payload
-
-    def _find_market_cap_containers(self, node: Any) -> list[dict[str, Any]]:
-        containers: list[dict[str, Any]] = []
-
-        if isinstance(node, dict):
-            if "marketcap_display" in node:
-                containers.append(node)
-
-            for value in node.values():
-                containers.extend(self._find_market_cap_containers(value))
-        elif isinstance(node, list):
-            for item in node:
-                containers.extend(self._find_market_cap_containers(item))
-
-        return containers
 
     def _merge_market_cap_filter(
         self, container: dict[str, Any], market_cap_value: int
