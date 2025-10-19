@@ -1,5 +1,3 @@
-import json
-from typing import Any, Iterable, List
 from typing import Any, Iterable, List
 import json
 
@@ -54,38 +52,43 @@ def _extract_attributes(item: Any, index: int) -> dict[str, Any]:
     attributes = item.get("attributes") if isinstance(item, dict) else None
     if not isinstance(attributes, dict) or "name" not in attributes:
         raise CommandError(
-            "Unexpected payload structure: missing 'attributes.name' at index "
-            f"{index}."
+            f"Unexpected payload structure: missing 'attributes.name' at index {index}."
         )
     return attributes
 
 
 def _extract_filters(attributes: dict[str, Any], index: int) -> List[str]:
     raw_filters = attributes.get("filters")
-    if raw_filters is None:
+
+    # Treat None and {} as "no filters"
+    if raw_filters is None or raw_filters == {}:
         return []
+
+    # Normalize to a list of items
     if isinstance(raw_filters, dict):
-        raw_filters = [raw_filters]
-    if not isinstance(raw_filters, Iterable) or isinstance(raw_filters, (str, bytes)):
+        items = [raw_filters]
+    elif isinstance(raw_filters, Iterable) and not isinstance(raw_filters, (str, bytes)):
+        items = list(raw_filters)
+    else:
         raise CommandError(
-            "Unexpected payload structure: 'attributes.filters' must be a list or dict at index "
-            f"{index}."
+            "Unexpected payload structure: 'attributes.filters' must be a list or dict "
+            f"at index {index}."
         )
 
     formatted_filters: List[str] = []
-    for filter_index, filter_item in enumerate(raw_filters):
-        formatted_filters.append(_format_filter(filter_item, index, filter_index))
+    for filter_index, filter_item in enumerate(items):
+        s = _format_filter(filter_item, index, filter_index)
+        if s:  # skip empty strings returned by _format_filter
+            formatted_filters.append(s)
 
     return formatted_filters
 
 
 def _format_filter(filter_item: Any, screener_index: int, filter_index: int) -> str:
+    # Dict filter: render key=value pairs; skip if empty
     if isinstance(filter_item, dict):
         if not filter_item:
-            raise CommandError(
-                "Unexpected payload structure: empty filter definition at screener index "
-                f"{screener_index}, filter index {filter_index}."
-            )
+            return ""  # silently skip empty dict filters
         parts = []
         for key in sorted(filter_item):
             value = filter_item[key]
@@ -96,18 +99,18 @@ def _format_filter(filter_item: Any, screener_index: int, filter_index: int) -> 
             parts.append(f"{key}={value_repr}")
         return ", ".join(parts)
 
+    # Primitive filter: ensure it's not empty/null-ish
     if filter_item in (None, ""):
-        raise CommandError(
-            "Unexpected payload structure: empty filter definition at screener index "
-            f"{screener_index}, filter index {filter_index}."
-        )
+        return ""  # skip empty values instead of raising
 
     return str(filter_item)
 
 
 def _format_entry(name: str, filters: List[str]) -> str:
+    # Drop any empty strings that slipped through
+    filters = [f for f in filters if f]
     if not filters:
         return name
-
+    
     formatted_filters = "\n".join(f"  - {filter_value}" for filter_value in filters)
     return f"{name}\n{formatted_filters}"
