@@ -2,7 +2,7 @@ from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from .models import Investment
+from .models import Investment, ScreenerFilter, ScreenerType
 
 
 class InvestmentAPITestCase(APITestCase):
@@ -70,3 +70,75 @@ class InvestmentAPITestCase(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("name", response.data)
         self.assertIn("ticker", response.data)
+
+
+class ScreenerTypeAPITestCase(APITestCase):
+    def setUp(self) -> None:
+        self.list_url = reverse("screenertype-list")
+
+    def test_can_create_screener_type(self) -> None:
+        payload = {"name": "Top Gainers", "description": "Daily top performing stocks."}
+
+        response = self.client.post(self.list_url, payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(ScreenerType.objects.count(), 1)
+        self.assertEqual(ScreenerType.objects.get().name, "Top Gainers")
+
+    def test_list_includes_filters(self) -> None:
+        screener_type = ScreenerType.objects.create(
+            name="Value Stocks", description="Stocks filtered by valuation metrics."
+        )
+        ScreenerFilter.objects.create(
+            screener_type=screener_type,
+            label="Market Cap >= 500M",
+            payload={"field": "market_cap", "operator": ">=", "value": 500_000_000},
+            display_order=2,
+        )
+        ScreenerFilter.objects.create(
+            screener_type=screener_type,
+            label="P/E < 15",
+            payload={"field": "pe_ratio", "operator": "<", "value": 15},
+            display_order=1,
+        )
+
+        response = self.client.get(self.list_url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        filters = response.data[0]["filters"]
+        self.assertEqual(len(filters), 2)
+        # Filters should be ordered by ``display_order``
+        self.assertEqual(filters[0]["label"], "P/E < 15")
+        self.assertEqual(filters[1]["label"], "Market Cap >= 500M")
+
+
+class ScreenerFilterAPITestCase(APITestCase):
+    def setUp(self) -> None:
+        self.screener_type = ScreenerType.objects.create(name="Momentum", description="")
+        self.list_url = reverse("screenerfilter-list")
+
+    def test_can_create_filter(self) -> None:
+        payload = {
+            "screener_type": self.screener_type.id,
+            "label": "Relative Strength > 70",
+            "payload": {"field": "relative_strength", "operator": ">", "value": 70},
+            "display_order": 5,
+        }
+
+        response = self.client.post(self.list_url, payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(ScreenerFilter.objects.count(), 1)
+        filter_obj = ScreenerFilter.objects.get()
+        self.assertEqual(filter_obj.screener_type, self.screener_type)
+        self.assertEqual(filter_obj.label, "Relative Strength > 70")
+        self.assertEqual(filter_obj.display_order, 5)
+
+    def test_cannot_create_filter_with_blank_label(self) -> None:
+        payload = {"screener_type": self.screener_type.id, "label": "   "}
+
+        response = self.client.post(self.list_url, payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("label", response.data)
