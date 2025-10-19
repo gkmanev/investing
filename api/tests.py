@@ -323,6 +323,129 @@ class FetchScreenerResultsCommandTests(APITestCase):
         self.assertIn("marketcap_display", payload)
         self.assertEqual(payload["marketcap_display"].get("gte"), 10_000_000_000)
 
+    @patch("api.management.commands.fetch_screener_results.requests.post")
+    def test_command_updates_nested_filter_section(self, mock_post: MagicMock) -> None:
+        nested_screener = ScreenerType.objects.create(
+            name="Energy Focus", description="Composite filter payload."
+        )
+        ScreenerFilter.objects.create(
+            screener_type=nested_screener,
+            label="Energy Sector",
+            payload={
+                "filter": {
+                    "asset_primary_sector": {"eq": "Energy"},
+                    "marketcap_display": {"gte": 750_000_000},
+                }
+            },
+            display_order=1,
+        )
+
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {"data": [{"attributes": {"name": "Sample"}}]},
+            text="{}",
+        )
+
+        call_command(
+            "fetch_screener_results",
+            nested_screener.name,
+            "--market-cap",
+            "5B",
+        )
+
+        _, kwargs = mock_post.call_args
+        payload = kwargs["json"]
+        self.assertIn("filter", payload)
+        self.assertIn("asset_primary_sector", payload["filter"])
+        self.assertEqual(payload["filter"]["asset_primary_sector"].get("eq"), "Energy")
+        self.assertIn("marketcap_display", payload["filter"])
+        self.assertEqual(payload["filter"]["marketcap_display"].get("gte"), 5_000_000_000)
+
+    @patch("api.management.commands.fetch_screener_results.requests.post")
+    def test_command_updates_deeply_nested_market_cap_filter(self, mock_post: MagicMock) -> None:
+        nested_screener = ScreenerType.objects.create(
+            name="Energy Composite", description="Deeply nested payload."
+        )
+        ScreenerFilter.objects.create(
+            screener_type=nested_screener,
+            label="Energy nested filters",
+            payload={
+                "filter": {
+                    "groups": [
+                        {
+                            "conditions": [
+                                {"asset_primary_sector": {"eq": "Energy"}},
+                                {"marketcap_display": {"gte": 750_000_000}},
+                            ]
+                        }
+                    ]
+                }
+            },
+            display_order=1,
+        )
+
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {"data": [{"attributes": {"name": "Sample"}}]},
+            text="{}",
+        )
+
+        call_command(
+            "fetch_screener_results",
+            nested_screener.name,
+            "--market-cap",
+            "12B",
+        )
+
+        _, kwargs = mock_post.call_args
+        payload = kwargs["json"]
+
+        filter_section = payload["filter"]
+        conditions = filter_section["groups"][0]["conditions"]
+        energy_condition = next(
+            (item for item in conditions if "asset_primary_sector" in item),
+            None,
+        )
+        market_cap_condition = next(
+            (item for item in conditions if "marketcap_display" in item),
+            None,
+        )
+
+        self.assertIsNotNone(energy_condition)
+        self.assertEqual(
+            energy_condition["asset_primary_sector"].get("eq"),
+            "Energy",
+        )
+        self.assertIsNotNone(market_cap_condition)
+        self.assertEqual(
+            market_cap_condition["marketcap_display"].get("gte"),
+            12_000_000_000,
+        )
+        self.assertNotIn("marketcap_display", payload)
+
+    @patch("api.management.commands.fetch_screener_results.requests.post")
+    def test_command_logs_payload_to_stderr(self, mock_post: MagicMock) -> None:
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {"data": [{"attributes": {"name": "Example"}}]},
+            text="{}",
+        )
+
+        stdout_buffer = StringIO()
+        stderr_buffer = StringIO()
+
+        call_command(
+            "fetch_screener_results",
+            self.screener.name,
+            "--market-cap",
+            "1B",
+            stdout=stdout_buffer,
+            stderr=stderr_buffer,
+        )
+
+        self.assertIn("POST payload:", stderr_buffer.getvalue())
+        self.assertIn("\"marketcap_display\": {", stderr_buffer.getvalue())
+
     def test_command_rejects_invalid_market_cap_argument(self) -> None:
         with self.assertRaisesMessage(CommandError, "Market cap value must be a number optionally followed by K, M, B, or T."):
             call_command("fetch_screener_results", self.screener.name, "--market-cap", "ten-billion")
