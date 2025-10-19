@@ -133,15 +133,46 @@ class Command(BaseCommand):
                     f"{filter_obj.label!r}"
                 )
 
-            for key, value in filter_payload.items():
-                if key in payload and payload[key] != value:
-                    raise CommandError(
-                        "Conflicting values for payload key "
-                        f"'{key}' across filters."
-                    )
-                payload[key] = value
+            payload = self._merge_payload_dicts(payload, filter_payload)
 
         return payload
+
+    def _merge_payload_dicts(
+        self, base: dict[str, Any], incoming: dict[str, Any], path: str = "root"
+    ) -> dict[str, Any]:
+        merged: dict[str, Any] = dict(base)
+
+        for key, value in incoming.items():
+            current_path = f"{path}.{key}"
+            if key not in merged:
+                merged[key] = value
+                continue
+
+            existing_value = merged[key]
+
+            if existing_value is value or existing_value == value:
+                continue
+
+            if isinstance(existing_value, dict) and isinstance(value, dict):
+                merged[key] = self._merge_payload_dicts(
+                    existing_value, value, current_path
+                )
+                continue
+
+            if isinstance(existing_value, list) and isinstance(value, list):
+                combined_list = list(existing_value)
+                for item in value:
+                    if item not in combined_list:
+                        combined_list.append(item)
+                merged[key] = combined_list
+                continue
+
+            raise CommandError(
+                "Conflicting values encountered while building payload at "
+                f"'{current_path}'."
+            )
+
+        return merged
 
     def _apply_market_cap_filter(
         self, payload: dict[str, Any], market_cap_value: int
