@@ -53,6 +53,15 @@ class Command(BaseCommand):
                 "suffixes such as K, M, B, or T (e.g. 500M, 1.2B)."
             ),
         )
+        parser.add_argument(
+            "--only-filter-keys",
+            nargs="+",
+            dest="only_filter_keys",
+            help=(
+                "Limit the outgoing payload to these top-level filter keys. "
+                "Useful when a screener stores additional filters that should be ignored."
+            ),
+        )
 
     def handle(self, *args: Any, **options: Any) -> str:
         screener_name: str = options["screener_name"]
@@ -60,9 +69,12 @@ class Command(BaseCommand):
         per_page: int = options["per_page"]
         asset_type: str = options["asset_type"]
         market_cap_raw: str | None = options.get("market_cap")
+        only_filter_keys: Iterable[str] | None = options.get("only_filter_keys")
 
         screener = self._get_screener(screener_name)
         payload = self._build_payload(screener.filters.all())
+        if only_filter_keys:
+            payload = self._limit_payload_to_keys(payload, only_filter_keys)
         if market_cap_raw:
             market_cap_value = self._parse_market_cap(market_cap_raw)
             payload = self._apply_market_cap_filter(payload, market_cap_value)
@@ -136,6 +148,31 @@ class Command(BaseCommand):
             payload = self._merge_payload_dicts(payload, filter_payload)
 
         return payload
+
+    def _limit_payload_to_keys(
+        self, payload: dict[str, Any], allowed_keys: Iterable[str]
+    ) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise CommandError(
+                "Screener filters payload has an unexpected structure."
+            )
+
+        allowed_key_set = {key for key in allowed_keys if key}
+        if not allowed_key_set:
+            raise CommandError("At least one filter key must be specified.")
+
+        filtered_payload = {
+            key: value for key, value in payload.items() if key in allowed_key_set
+        }
+
+        if not filtered_payload:
+            available = ", ".join(sorted(payload.keys())) or "<none>"
+            raise CommandError(
+                "Requested filter keys were not found in the screener payload. "
+                f"Available keys: {available}."
+            )
+
+        return filtered_payload
 
     def _merge_payload_dicts(
         self, base: dict[str, Any], incoming: dict[str, Any], path: str = "root"
