@@ -54,6 +54,16 @@ class Command(BaseCommand):
             ),
         )
         parser.add_argument(
+            "--min-price",
+            dest="min_price",
+            help="Optional minimum close price filter (e.g. 10, 15.5).",
+        )
+        parser.add_argument(
+            "--max-price",
+            dest="max_price",
+            help="Optional maximum close price filter (e.g. 250, 499.99).",
+        )
+        parser.add_argument(
             "--only-filter-keys",
             nargs="+",
             dest="only_filter_keys",
@@ -69,6 +79,8 @@ class Command(BaseCommand):
         per_page: int = options["per_page"]
         asset_type: str = options["asset_type"]
         market_cap_raw: str | None = options.get("market_cap")
+        min_price_raw: str | None = options.get("min_price")
+        max_price_raw: str | None = options.get("max_price")
         only_filter_keys: Iterable[str] | None = options.get("only_filter_keys")
 
         screener = self._get_screener(screener_name)
@@ -78,6 +90,19 @@ class Command(BaseCommand):
         if market_cap_raw:
             market_cap_value = self._parse_market_cap(market_cap_raw)
             payload = self._apply_market_cap_filter(payload, market_cap_value)
+        price_bounds: dict[str, float] = {}
+        if min_price_raw is not None:
+            price_bounds["gte"] = self._parse_price(min_price_raw, "minimum")
+        if max_price_raw is not None:
+            price_bounds["lte"] = self._parse_price(max_price_raw, "maximum")
+        if price_bounds:
+            if ("gte" in price_bounds and "lte" in price_bounds) and (
+                price_bounds["gte"] > price_bounds["lte"]
+            ):
+                raise CommandError(
+                    "Minimum price cannot be greater than maximum price."
+                )
+            payload = self._apply_price_filter(payload, price_bounds)
         if not payload:
             raise CommandError(
                 f"Screener '{screener_name}' does not have any stored filters."
@@ -287,6 +312,75 @@ class Command(BaseCommand):
             raise CommandError("Market cap value cannot be negative.")
 
         return int(numeric_value * multiplier)
+
+    def _apply_price_filter(
+        self, payload: dict[str, Any], bounds: dict[str, float]
+    ) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise CommandError(
+                "Screener filters payload has an unexpected structure."
+            )
+
+        filter_section = payload.get("filter")
+        containers: list[dict[str, Any]] = []
+
+        if isinstance(filter_section, dict):
+            containers.append(filter_section)
+
+        containers.append(payload)
+
+        for container in containers:
+            if "last" in container and "close" not in container:
+                container["close"] = container.pop("last")
+
+            if "close" in container:
+                self._merge_price_filter(container, bounds)
+                return payload
+
+        if isinstance(filter_section, dict):
+            self._merge_price_filter(filter_section, bounds)
+            return payload
+
+        self._merge_price_filter(payload, bounds)
+        return payload
+
+    def _merge_price_filter(
+        self, container: dict[str, Any], bounds: dict[str, float]
+    ) -> None:
+        existing_filter = container.get("close")
+
+        if existing_filter is None:
+            container["close"] = dict(bounds)
+            return
+
+        if not isinstance(existing_filter, dict):
+            raise CommandError(
+                "Existing close price filter has an unexpected structure."
+            )
+
+        updated_filter = dict(existing_filter)
+        updated_filter.update(bounds)
+        container["close"] = updated_filter
+
+    def _parse_price(self, price: str, descriptor: str) -> float:
+        if price is None:
+            raise CommandError(f"{descriptor.title()} price value cannot be empty.")
+
+        cleaned_value = price.strip()
+        if not cleaned_value:
+            raise CommandError(f"{descriptor.title()} price value cannot be empty.")
+
+        try:
+            numeric_value = float(cleaned_value)
+        except ValueError as exc:
+            raise CommandError(
+                "Price filters must be numeric values."
+            ) from exc
+
+        if numeric_value < 0:
+            raise CommandError("Price filters cannot be negative.")
+
+        return float(numeric_value)
 
     def _extract_ticker_names(self, payload: Any) -> List[str]:
         if not isinstance(payload, dict):
