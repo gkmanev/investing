@@ -279,6 +279,49 @@ class FetchScreenersCommandTests(APITestCase):
         self.assertEqual(filters[0].label, "Volume Surge")
         self.assertEqual(filters[0].payload, "Volume Surge")
 
+    @patch("api.management.commands.fetch_screeners.requests.get")
+    def test_command_trims_quant_rating_values(self, mock_get: MagicMock) -> None:
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {
+                "data": [
+                    {
+                        "attributes": {
+                            "name": "Stocks by Quant",
+                            "description": "Quant focused screener.",
+                            "filters": [
+                                {
+                                    "quant_rating": [
+                                        "strong_buy",
+                                        "buy",
+                                        "hold",
+                                        "sell",
+                                    ],
+                                    "field": "sample",
+                                }
+                            ],
+                        }
+                    }
+                ]
+            },
+            text="{}",
+        )
+
+        call_command("fetch_screeners")
+
+        screener = ScreenerType.objects.get(name="Stocks by Quant")
+        self.assertEqual(screener.description, "Quant focused screener.")
+
+        filter_obj = screener.filters.get()
+        self.assertEqual(
+            filter_obj.payload,
+            {"field": "sample", "quant_rating": ["strong_buy", "buy"]},
+        )
+        self.assertEqual(
+            filter_obj.label,
+            'field=sample, quant_rating=["strong_buy", "buy"]',
+        )
+
 
 class FetchScreenerResultsCommandTests(APITestCase):
     def setUp(self) -> None:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable, List
+from typing import Any, Iterable, List, Tuple
 import json
 
 import requests
@@ -187,18 +187,31 @@ def _synchronise_filters(
 
     seen_labels: list[str] = []
     for order, spec in enumerate(filter_specs, start=1):
-        seen_labels.append(spec.label)
-        filter_obj = existing_filters.get(spec.label)
+        payload, payload_changed = _apply_payload_rules(
+            screener_type, spec.payload
+        )
+
+        label = spec.label
+        if payload_changed:
+            new_label = _format_filter_label(payload, 0, 0)
+            if new_label:
+                label = new_label
+
+        spec.payload = payload
+        spec.label = label
+
+        seen_labels.append(label)
+        filter_obj = existing_filters.get(label)
         if filter_obj is None:
             ScreenerFilter.objects.create(
                 screener_type=screener_type,
-                label=spec.label,
-                payload=spec.payload,
+                label=label,
+                payload=payload,
                 display_order=order,
             )
             continue
 
-        filter_obj.payload = spec.payload
+        filter_obj.payload = payload
         filter_obj.display_order = order
         filter_obj.save(update_fields=["payload", "display_order", "updated_at"])
 
@@ -223,4 +236,82 @@ def _sanitise_filter_dict(filter_dict: dict[str, Any]) -> dict[str, Any]:
         sanitised_items[key] = value
 
     return sanitised_items
+
+
+def _apply_payload_rules(
+    screener_type: ScreenerType, payload: Any
+) -> Tuple[Any, bool]:
+    if payload is None:
+        return payload, False
+
+    if screener_type.name.strip().lower() == "stocks by quant":
+        return _trim_quant_rating_values(payload)
+
+    return payload, False
+
+
+def _trim_quant_rating_values(payload: Any) -> Tuple[Any, bool]:
+    allowed_values = {"strong buy", "buy"}
+
+    if isinstance(payload, dict):
+        changed = False
+        updated_dict: dict[str, Any] = {}
+        for key, value in payload.items():
+            if key == "quant_rating":
+                new_value, value_changed = _filter_quant_rating_entries(value, allowed_values)
+            else:
+                new_value, value_changed = _trim_quant_rating_values(value)
+            updated_dict[key] = new_value
+            if value_changed or new_value != value:
+                changed = True
+        if changed:
+            return updated_dict, True
+        return payload, False
+
+    if isinstance(payload, list):
+        changed = False
+        updated_list: list[Any] = []
+        for item in payload:
+            new_item, item_changed = _trim_quant_rating_values(item)
+            updated_list.append(new_item)
+            if item_changed or new_item != item:
+                changed = True
+        if changed:
+            return updated_list, True
+        return payload, False
+
+    return payload, False
+
+
+def _filter_quant_rating_entries(
+    value: Any, allowed_values: set[str]
+) -> Tuple[Any, bool]:
+    if isinstance(value, list):
+        filtered = [
+            item
+            for item in value
+            if isinstance(item, str)
+            and _normalise_quant_rating_value(item) in allowed_values
+        ]
+        if filtered != value:
+            return filtered, True
+        return value, False
+
+    if isinstance(value, dict):
+        changed = False
+        updated_dict: dict[str, Any] = {}
+        for key, entry in value.items():
+            new_entry, entry_changed = _filter_quant_rating_entries(entry, allowed_values)
+            updated_dict[key] = new_entry
+            if entry_changed or new_entry != entry:
+                changed = True
+        if changed:
+            return updated_dict, True
+        return value, False
+
+    return value, False
+
+
+def _normalise_quant_rating_value(value: str) -> str:
+    return value.strip().lower().replace("_", " ")
 
