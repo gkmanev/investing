@@ -56,12 +56,12 @@ class Command(BaseCommand):
         parser.add_argument(
             "--min-price",
             dest="min_price",
-            help="Optional minimum last price filter (e.g. 10, 15.5).",
+            help="Optional minimum close price filter (e.g. 10, 15.5).",
         )
         parser.add_argument(
             "--max-price",
             dest="max_price",
-            help="Optional maximum last price filter (e.g. 250, 499.99).",
+            help="Optional maximum close price filter (e.g. 250, 499.99).",
         )
         parser.add_argument(
             "--only-filter-keys",
@@ -330,7 +330,10 @@ class Command(BaseCommand):
         containers.append(payload)
 
         for container in containers:
-            if "last" in container:
+            if "last" in container and "close" not in container:
+                container["close"] = container.pop("last")
+
+            if "close" in container:
                 self._merge_price_filter(container, bounds)
                 return payload
 
@@ -344,20 +347,20 @@ class Command(BaseCommand):
     def _merge_price_filter(
         self, container: dict[str, Any], bounds: dict[str, float]
     ) -> None:
-        existing_filter = container.get("last")
+        existing_filter = container.get("close")
 
         if existing_filter is None:
-            container["last"] = dict(bounds)
+            container["close"] = dict(bounds)
             return
 
         if not isinstance(existing_filter, dict):
             raise CommandError(
-                "Existing last price filter has an unexpected structure."
+                "Existing close price filter has an unexpected structure."
             )
 
         updated_filter = dict(existing_filter)
         updated_filter.update(bounds)
-        container["last"] = updated_filter
+        container["close"] = updated_filter
 
     def _parse_price(self, price: str, descriptor: str) -> float:
         if price is None:

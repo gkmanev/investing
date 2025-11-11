@@ -395,9 +395,9 @@ class FetchScreenerResultsCommandTests(APITestCase):
 
         _, kwargs = mock_post.call_args
         payload = kwargs["json"]
-        self.assertIn("last", payload)
-        self.assertEqual(payload["last"].get("gte"), 10.0)
-        self.assertEqual(payload["last"].get("lte"), 25.5)
+        self.assertIn("close", payload)
+        self.assertEqual(payload["close"].get("gte"), 10.0)
+        self.assertEqual(payload["close"].get("lte"), 25.5)
 
     @patch("api.management.commands.fetch_screener_results.requests.post")
     def test_command_updates_nested_filter_section(self, mock_post: MagicMock) -> None:
@@ -411,7 +411,7 @@ class FetchScreenerResultsCommandTests(APITestCase):
                 "filter": {
                     "asset_primary_sector": {"eq": "Energy"},
                     "marketcap_display": {"gte": 750_000_000},
-                    "last": {"lte": 50.0},
+                    "close": {"lte": 50.0},
                 }
             },
             display_order=1,
@@ -439,9 +439,9 @@ class FetchScreenerResultsCommandTests(APITestCase):
         self.assertEqual(payload["filter"]["asset_primary_sector"].get("eq"), "Energy")
         self.assertIn("marketcap_display", payload["filter"])
         self.assertEqual(payload["filter"]["marketcap_display"].get("gte"), 5_000_000_000)
-        self.assertIn("last", payload["filter"])
-        self.assertEqual(payload["filter"]["last"].get("lte"), 50.0)
-        self.assertEqual(payload["filter"]["last"].get("gte"), 12.0)
+        self.assertIn("close", payload["filter"])
+        self.assertEqual(payload["filter"]["close"].get("lte"), 50.0)
+        self.assertEqual(payload["filter"]["close"].get("gte"), 12.0)
 
     def test_command_rejects_invalid_market_cap_argument(self) -> None:
         with self.assertRaisesMessage(CommandError, "Market cap value must be a number optionally followed by K, M, B, or T."):
