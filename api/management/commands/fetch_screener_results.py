@@ -108,45 +108,66 @@ class Command(BaseCommand):
                 f"Screener '{screener_name}' does not have any stored filters."
             )
 
-        query_params = {
-            "page": str(page),
+        try:
+            formatted_payload = json.dumps(payload, indent=2, sort_keys=True)
+            self.stderr.write("POST payload:\n" + formatted_payload)
+        except (TypeError, ValueError):  # pragma: no cover - defensive
+            formatted_payload = json.dumps(payload)
+            self.stderr.write("POST payload:\n" + formatted_payload)
+
+        base_query_params = {
             "per_page": str(per_page),
             "type": asset_type,
         }
 
-        try:
-            formatted_payload = json.dumps(payload, indent=2, sort_keys=True)
-            self.stderr.write("POST payload:\n" + formatted_payload)
+        all_ticker_names: list[str] = []
+        current_page = page
 
-            response = requests.post(
-                API_URL,
-                headers=API_HEADERS,
-                params=query_params,
-                json=payload,
-                timeout=30,
-            )
-        except requests.RequestException as exc:  # pragma: no cover - network failure
-            raise CommandError(f"Failed to call Seeking Alpha API: {exc}") from exc
+        while True:
+            query_params = dict(base_query_params)
+            query_params["page"] = str(current_page)
 
-        if response.status_code != 200:
-            raise CommandError(
-                f"Received unexpected status code {response.status_code}: {response.text}"
-            )
+            try:
+                response = requests.post(
+                    API_URL,
+                    headers=API_HEADERS,
+                    params=query_params,
+                    json=payload,
+                    timeout=30,
+                )
+            except requests.RequestException as exc:  # pragma: no cover - network failure
+                raise CommandError(f"Failed to call Seeking Alpha API: {exc}") from exc
 
-        try:
-            response_payload = response.json()
-        except ValueError as exc:
-            raise CommandError("Received invalid JSON from Seeking Alpha API") from exc
+            if response.status_code != 200:
+                raise CommandError(
+                    "Received unexpected status code "
+                    f"{response.status_code}: {response.text}"
+                )
 
-        ticker_names = self._extract_ticker_names(response_payload)
-        if not ticker_names:
+            try:
+                response_payload = response.json()
+            except ValueError as exc:
+                raise CommandError("Received invalid JSON from Seeking Alpha API") from exc
+
+            ticker_names = self._extract_ticker_names(response_payload)
+            if not ticker_names:
+                break
+
+            all_ticker_names.extend(ticker_names)
+
+            if len(ticker_names) < per_page:
+                break
+
+            current_page += 1
+
+        if not all_ticker_names:
             raise CommandError(
                 "Seeking Alpha API response did not include any ticker names."
             )
 
-        self._sync_investments(ticker_names, asset_type)
+        self._sync_investments(all_ticker_names, asset_type)
 
-        formatted_payload = "\n".join(ticker_names)
+        formatted_payload = "\n".join(all_ticker_names)
         return formatted_payload
 
     def _sync_investments(self, tickers: Iterable[str], asset_type: str) -> None:
