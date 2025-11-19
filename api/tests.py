@@ -17,22 +17,24 @@ class InvestmentAPITestCase(APITestCase):
 
     def create_investment(self, **overrides):
         defaults = {
-            "name": "Index Fund",
             "ticker": "IDX",
             "category": "Fund",
-            "risk_level": "medium",
             "description": "Diversified index fund.",
+            "price": 10.5,
+            "volume": 1000,
+            "market_cap": 5_000_000,
         }
         defaults.update(overrides)
         return Investment.objects.create(**defaults)
 
     def test_can_create_investment(self) -> None:
         payload = {
-            "name": "Growth Fund",
             "ticker": "GRW",
             "category": "Fund",
-            "risk_level": "medium",
             "description": "Long-term growth fund.",
+            "price": 12.34,
+            "volume": 2500,
+            "market_cap": 12_000_000,
         }
 
         response = self.client.post(self.list_url, payload, format="json")
@@ -42,7 +44,7 @@ class InvestmentAPITestCase(APITestCase):
         self.assertEqual(Investment.objects.get().ticker, "GRW")
 
     def test_list_returns_created_items(self) -> None:
-        self.create_investment(name="Bond ETF", ticker="BND", risk_level="low")
+        self.create_investment(ticker="BND", category="ETF")
 
         response = self.client.get(self.list_url)
 
@@ -54,26 +56,23 @@ class InvestmentAPITestCase(APITestCase):
         investment = self.create_investment()
         url = reverse(self.detail_url_name, args=[investment.id])
 
-        response = self.client.patch(url, {"risk_level": "high"}, format="json")
+        response = self.client.patch(url, {"price": "15.42"}, format="json")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         investment.refresh_from_db()
-        self.assertEqual(investment.risk_level, "high")
+        self.assertEqual(str(investment.price), "15.4200")
 
     def test_cannot_create_invalid_investment(self) -> None:
         response = self.client.post(
             self.list_url,
             {
-                "name": "   ",
                 "ticker": "",
                 "category": "Fund",
-                "risk_level": "medium",
             },
             format="json",
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("name", response.data)
         self.assertIn("ticker", response.data)
 
 
