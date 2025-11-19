@@ -648,3 +648,36 @@ class FetchProfileDataCommandTests(APITestCase):
 
         with self.assertRaises(CommandError):
             call_command("fetch_profile_data")
+
+    @patch("api.management.commands.fetch_profile_data.requests.get")
+    def test_profile_request_includes_tickers_query(self, mock_get: MagicMock) -> None:
+        mock_get.side_effect = [
+            MagicMock(
+                status_code=200,
+                json=lambda: [
+                    {"ticker": "AAA"},
+                    {"ticker": "BBB"},
+                    {"ticker": "CCC"},
+                ],
+                text="{}",
+            ),
+            MagicMock(
+                status_code=200,
+                json=lambda: {
+                    "data": {
+                        "AAA": {"symbol": "AAA", "last": "1", "marketCap": "2"}
+                    }
+                },
+                text="{}",
+            ),
+        ]
+
+        call_command("fetch_profile_data")
+
+        self.assertGreaterEqual(len(mock_get.call_args_list), 2)
+        profile_call = mock_get.call_args_list[1]
+        self.assertEqual(
+            profile_call.args[0],
+            "http://127.0.0.1:8000/symbols/get-profile?symbols=AAA%2CBBB%2CCCC",
+        )
+        self.assertIsNone(profile_call.kwargs.get("params"))

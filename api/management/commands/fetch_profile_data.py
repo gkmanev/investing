@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable
+from urllib.parse import quote_plus
 
 import requests
 from django.core.management.base import BaseCommand, CommandError
@@ -26,9 +27,8 @@ class Command(BaseCommand):
                 "Investments endpoint did not return any entries with ticker information."
             )
 
-        profile_payload = self._fetch_json(
-            PROFILE_ENDPOINT, params={"symbols": ",".join(tickers)}
-        )
+        profile_url = self._build_profile_url(tickers)
+        profile_payload = self._fetch_json(profile_url)
         profiles = self._build_profile_map(profile_payload)
         if not profiles:
             raise CommandError("Profile endpoint did not return any usable data.")
@@ -56,6 +56,11 @@ class Command(BaseCommand):
             return response.json()
         except ValueError as exc:
             raise CommandError(f"Response from '{url}' did not contain valid JSON.") from exc
+
+    def _build_profile_url(self, tickers: Iterable[str]) -> str:
+        ticker_string = ",".join(tickers)
+        encoded = quote_plus(ticker_string)
+        return f"{PROFILE_ENDPOINT}?symbols={encoded}"
 
     def _extract_tickers(self, payload: Any, *, limit: int) -> list[str]:
         entries: Iterable[Any]
