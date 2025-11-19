@@ -11,7 +11,8 @@ from api.models import Investment
 
 BASE_URL = "http://127.0.0.1:8000"
 INVESTMENTS_ENDPOINT = f"{BASE_URL}/api/investments/"
-PROFILE_ENDPOINT = f"{BASE_URL}/symbols/get-profile"
+# RapidAPI proxy for Seeking Alpha profile data.
+PROFILE_ENDPOINT = "https://seeking-alpha.p.rapidapi.com/symbols/get-profile"
 
 
 class Command(BaseCommand):

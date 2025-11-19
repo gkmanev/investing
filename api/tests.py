@@ -678,6 +678,6 @@ class FetchProfileDataCommandTests(APITestCase):
         profile_call = mock_get.call_args_list[1]
         self.assertEqual(
             profile_call.args[0],
-            "http://127.0.0.1:8000/symbols/get-profile?symbols=AAA%2CBBB%2CCCC",
+            "https://seeking-alpha.p.rapidapi.com/symbols/get-profile?symbols=AAA%2CBBB%2CCCC",
         )
         self.assertIsNone(profile_call.kwargs.get("params"))
