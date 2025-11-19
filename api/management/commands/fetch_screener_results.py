@@ -561,6 +561,30 @@ class Command(BaseCommand):
                     symbol = attributes.get("symbol") or attributes.get("ticker")
             if not isinstance(symbol, str) or not symbol.strip():
                 continue
+            profile = profiles.get(symbol.upper())
+            if profile is None:
+                continue
+
+            last_price = self._coerce_decimal(profile.get("last"))
+            volume = self._coerce_int(profile.get("volume"))
+            market_cap_value = profile.get("marketCap")
+            if market_cap_value is None:
+                market_cap_value = profile.get("market_cap")
+            market_cap = self._coerce_decimal(market_cap_value)
+
+            Investment.objects.update_or_create(
+                ticker=symbol.upper(),
+                defaults={
+                    "category": category,
+                    "price": last_price,
+                    "volume": volume,
+                    "market_cap": market_cap,
+                    "description": description,
+                },
+            )
+            updated.append(symbol.upper())
+
+        return updated
 
             attributes = item.get("attributes", {})
             if not isinstance(attributes, dict):
