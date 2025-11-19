@@ -478,12 +478,17 @@ class Command(BaseCommand):
                 continue
 
             attributes = item.get("attributes", {})
-            if not isinstance(attributes, dict):
-                continue
+            attribute_symbol = None
+            if isinstance(attributes, dict):
+                attribute_symbol = self._extract_symbol_from_attributes(attributes)
 
-            attribute_symbol = self._extract_symbol_from_attributes(attributes)
             if attribute_symbol:
                 symbols.append(attribute_symbol)
+                continue
+
+            potential_symbol = item.get("id")
+            if isinstance(potential_symbol, str) and potential_symbol:
+                symbols.append(potential_symbol.upper())
 
         return symbols
 
@@ -567,16 +572,16 @@ class Command(BaseCommand):
         if not isinstance(item, dict):
             return None
 
-        raw_symbol = item.get("id")
-        if isinstance(raw_symbol, str) and raw_symbol.strip():
-            return raw_symbol.strip().upper()
-
         attributes = item.get("attributes")
         if isinstance(attributes, dict):
             for key in ("symbol", "ticker"):
                 candidate = attributes.get(key)
                 if isinstance(candidate, str) and candidate.strip():
                     return candidate.strip().upper()
+
+        raw_symbol = item.get("id")
+        if isinstance(raw_symbol, str) and raw_symbol.strip():
+            return raw_symbol.strip().upper()
 
         return None
 

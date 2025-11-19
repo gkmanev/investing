@@ -579,6 +579,27 @@ class FetchScreenerResultsCommandTests(APITestCase):
 
         self.assertEqual(set(profiles.keys()), {"MSFT", "TSLA", "BRK.A"})
 
+    def test_extract_ticker_symbols_prefers_attribute_value(self) -> None:
+        command = Command()
+        payload = {
+            "data": [
+                {"id": "12345", "attributes": {"symbol": "bsx"}},
+                {"id": "HPE"},
+            ]
+        }
+
+        symbols = command._extract_ticker_symbols(payload)
+
+        self.assertEqual(symbols, ["BSX", "HPE"])
+
+    def test_extract_symbol_from_profile_item_prefers_attributes(self) -> None:
+        command = Command()
+        item = {"id": "98765", "attributes": {"ticker": "hpe"}}
+
+        symbol = command._extract_symbol_from_profile_item(item)
+
+        self.assertEqual(symbol, "HPE")
+
     def test_command_rejects_invalid_market_cap_argument(self) -> None:
         with self.assertRaisesMessage(CommandError, "Market cap value must be a number optionally followed by K, M, B, or T."):
             call_command("fetch_screener_results", self.screener.name, "--market-cap", "ten-billion")
