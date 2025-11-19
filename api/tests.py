@@ -335,7 +335,7 @@ class FetchScreenerResultsCommandTests(APITestCase):
         )
 
     @patch("api.management.commands.fetch_screener_results.requests.post")
-    def test_command_prints_ticker_names(self, mock_post: MagicMock) -> None:
+    def test_command_creates_investments_from_tickers(self, mock_post: MagicMock) -> None:
         mock_post.return_value = MagicMock(
             status_code=200,
             json=lambda: {
@@ -354,6 +354,40 @@ class FetchScreenerResultsCommandTests(APITestCase):
         expected_output = "Apple Inc.\nMicrosoft Corporation\nTesla, Inc."
         self.assertEqual(result, expected_output)
         self.assertEqual(buffer.getvalue(), expected_output + "\n")
+
+        tickers = Investment.objects.order_by("ticker").values_list("ticker", flat=True)
+        self.assertEqual(list(tickers), ["Apple Inc.", "Microsoft Corporation", "Tesla, Inc."])
+        self.assertTrue(
+            Investment.objects.filter(ticker="Apple Inc.", category="stock").exists()
+        )
+
+    @patch("api.management.commands.fetch_screener_results.requests.post")
+    def test_command_updates_existing_investments(self, mock_post: MagicMock) -> None:
+        investment = Investment.objects.create(
+            ticker="Apple Inc.",
+            category="legacy",
+            description="",
+        )
+
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {
+                "data": [
+                    {"attributes": {"p": {"names": ["Apple Inc."]}}},
+                ]
+            },
+            text="{}",
+        )
+
+        call_command(
+            "fetch_screener_results",
+            self.screener.name,
+            "--type",
+            "fund",
+        )
+
+        investment.refresh_from_db()
+        self.assertEqual(investment.category, "fund")
 
     @patch("api.management.commands.fetch_screener_results.requests.post")
     def test_command_applies_market_cap_argument(self, mock_post: MagicMock) -> None:

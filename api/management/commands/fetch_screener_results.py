@@ -6,7 +6,7 @@ from typing import Any, Iterable, List
 import requests
 from django.core.management.base import BaseCommand, CommandError
 
-from api.models import ScreenerType
+from api.models import Investment, ScreenerType
 
 API_URL = "https://seeking-alpha.p.rapidapi.com/screeners/get-results"
 API_HEADERS = {
@@ -144,8 +144,21 @@ class Command(BaseCommand):
                 "Seeking Alpha API response did not include any ticker names."
             )
 
+        self._sync_investments(ticker_names, asset_type)
+
         formatted_payload = "\n".join(ticker_names)
         return formatted_payload
+
+    def _sync_investments(self, tickers: Iterable[str], asset_type: str) -> None:
+        for ticker in tickers:
+            ticker_value = ticker.strip()
+            if not ticker_value:
+                continue
+
+            Investment.objects.update_or_create(
+                ticker=ticker_value,
+                defaults={"category": asset_type},
+            )
 
     def _get_screener(self, screener_name: str) -> ScreenerType:
         try:
