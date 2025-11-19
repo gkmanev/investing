@@ -38,22 +38,19 @@ class ScreenerFilter(models.Model):
 class Investment(models.Model):
     """Represents an investment option exposed through the API."""
 
-    RISK_LEVEL_CHOICES = [
-        ("low", "Low"),
-        ("medium", "Medium"),
-        ("high", "High"),
-    ]
-
-    name = models.CharField(max_length=255)
-    ticker = models.CharField(max_length=10, unique=True)
-    category = models.CharField(max_length=100)
-    risk_level = models.CharField(max_length=10, choices=RISK_LEVEL_CHOICES)
+    ticker = models.CharField(max_length=15, unique=True)
+    category = models.CharField(max_length=255)
+    price = models.DecimalField(max_digits=20, decimal_places=6, null=True, blank=True)
+    volume = models.BigIntegerField(null=True, blank=True)
+    market_cap = models.DecimalField(
+        max_digits=30, decimal_places=6, null=True, blank=True
+    )
     description = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        ordering = ["name"]
+        ordering = ["ticker"]
 
     def __str__(self) -> str:  # pragma: no cover - simple data representation
-        return f"{self.name} ({self.ticker})"
+        return self.ticker

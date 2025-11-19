@@ -1,4 +1,5 @@
 from io import StringIO
+from typing import Iterable
 
 from django.core.management import call_command
 from django.core.management.base import CommandError
@@ -7,6 +8,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 from unittest.mock import MagicMock, patch
 
+from .management.commands.fetch_screener_results import Command
 from .models import Investment, ScreenerFilter, ScreenerType
 
 
@@ -17,10 +19,11 @@ class InvestmentAPITestCase(APITestCase):
 
     def create_investment(self, **overrides):
         defaults = {
-            "name": "Index Fund",
             "ticker": "IDX",
             "category": "Fund",
-            "risk_level": "medium",
+            "price": "12.50",
+            "volume": 1000,
+            "market_cap": "5000000.00",
             "description": "Diversified index fund.",
         }
         defaults.update(overrides)
@@ -28,10 +31,11 @@ class InvestmentAPITestCase(APITestCase):
 
     def test_can_create_investment(self) -> None:
         payload = {
-            "name": "Growth Fund",
             "ticker": "GRW",
             "category": "Fund",
-            "risk_level": "medium",
+            "price": "42.19",
+            "volume": 1200,
+            "market_cap": "8000000.00",
             "description": "Long-term growth fund.",
         }
 
@@ -42,7 +46,7 @@ class InvestmentAPITestCase(APITestCase):
         self.assertEqual(Investment.objects.get().ticker, "GRW")
 
     def test_list_returns_created_items(self) -> None:
-        self.create_investment(name="Bond ETF", ticker="BND", risk_level="low")
+        self.create_investment(ticker="BND")
 
         response = self.client.get(self.list_url)
 
@@ -54,26 +58,23 @@ class InvestmentAPITestCase(APITestCase):
         investment = self.create_investment()
         url = reverse(self.detail_url_name, args=[investment.id])
 
-        response = self.client.patch(url, {"risk_level": "high"}, format="json")
+        response = self.client.patch(url, {"price": "20.55"}, format="json")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         investment.refresh_from_db()
-        self.assertEqual(investment.risk_level, "high")
+        self.assertEqual(str(investment.price), "20.550000")
 
     def test_cannot_create_invalid_investment(self) -> None:
         response = self.client.post(
             self.list_url,
             {
-                "name": "   ",
                 "ticker": "",
                 "category": "Fund",
-                "risk_level": "medium",
             },
             format="json",
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("name", response.data)
         self.assertIn("ticker", response.data)
 
 
@@ -335,37 +336,119 @@ class FetchScreenerResultsCommandTests(APITestCase):
             display_order=1,
         )
 
-    @patch("api.management.commands.fetch_screener_results.requests.post")
-    def test_command_prints_ticker_names(self, mock_post: MagicMock) -> None:
-        mock_post.return_value = MagicMock(
+    def _mock_profiles(
+        self, mock_get: MagicMock, symbols: Iterable[str] | str = "AAPL"
+    ) -> None:
+        if isinstance(symbols, str):
+            symbol_list = [symbols]
+        else:
+            symbol_list = list(symbols)
+
+        mock_get.return_value = MagicMock(
             status_code=200,
             json=lambda: {
                 "data": [
-                    {"attributes": {"p": {"names": ["Apple Inc."]}}},
-                    {"attributes": {"p": {"name": "Microsoft Corporation"}}},
-                    {"attributes": {"name": "Tesla, Inc."}},
+                    {
+                        "id": sym,
+                        "attributes": {
+                            "symbol": sym,
+                            "last": 123.45,
+                            "volume": 100000,
+                            "marketCap": 999_000_000,
+                        },
+                    }
+                    for sym in symbol_list
                 ]
             },
             text="{}",
         )
 
+    @patch("api.management.commands.fetch_screener_results.requests.get")
+    @patch("api.management.commands.fetch_screener_results.requests.post")
+    def test_command_prints_symbols(
+        self, mock_post: MagicMock, mock_get: MagicMock
+    ) -> None:
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {
+                "data": [
+                    {"id": "AAPL", "attributes": {"symbol": "AAPL"}},
+                    {"attributes": {"symbol": "TSLA"}},
+                ]
+            },
+            text="{}",
+        )
+        self._mock_profiles(mock_get, symbols=["AAPL", "TSLA"])
+
         buffer = StringIO()
         result = call_command("fetch_screener_results", self.screener.name, stdout=buffer)
 
-        expected_output = "Apple Inc.\nMicrosoft Corporation\nTesla, Inc."
-        self.assertEqual(result, expected_output)
-        self.assertEqual(buffer.getvalue(), expected_output + "\n")
+        self.assertEqual(result, "AAPL\nTSLA")
+        self.assertEqual(buffer.getvalue(), "AAPL\nTSLA\n")
+        self.assertEqual(Investment.objects.count(), 0)
 
+    @patch("api.management.commands.fetch_screener_results.requests.get")
     @patch("api.management.commands.fetch_screener_results.requests.post")
-    def test_command_applies_market_cap_argument(self, mock_post: MagicMock) -> None:
+    def test_command_uses_profile_symbols_when_ids_returned(
+        self, mock_post: MagicMock, mock_get: MagicMock
+    ) -> None:
         mock_post.return_value = MagicMock(
             status_code=200,
-            json=lambda: {"data": [{"attributes": {"name": "Example"}}]},
+            json=lambda: {"data": [{"id": "1000"}, {"id": "2000"}]},
+            text="{}",
+        )
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {
+                "data": [
+                    {
+                        "id": "1000",
+                        "attributes": {
+                            "symbol": "bsx",
+                            "last": 1,
+                            "volume": 2,
+                            "marketCap": 3,
+                        },
+                    },
+                    {
+                        "id": "2000",
+                        "attributes": {
+                            "ticker": "hpe",
+                            "last": 4,
+                            "volume": 5,
+                            "market_cap": 6,
+                        },
+                    },
+                ]
+            },
             text="{}",
         )
 
+        result = call_command("fetch_screener_results", self.screener.name)
+
+        self.assertEqual(result, "BSX\nHPE")
+        self.assertEqual(Investment.objects.count(), 0)
+
+    @patch("api.management.commands.fetch_screener_results.requests.get")
+    @patch("api.management.commands.fetch_screener_results.requests.post")
+    def test_command_applies_market_cap_argument(
+        self, mock_post: MagicMock, mock_get: MagicMock
+    ) -> None:
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {"data": [{"id": "AAPL", "attributes": {"symbol": "AAPL"}}]},
+            text="{}",
+        )
+        self._mock_profiles(mock_get)
+
         buffer = StringIO()
-        call_command("fetch_screener_results", self.screener.name, "--market-cap", "10B", stdout=buffer)
+        call_command(
+            "fetch_screener_results",
+            self.screener.name,
+            "--market-cap",
+            "10B",
+            stdout=buffer,
+        )
 
         _, kwargs = mock_post.call_args
         self.assertIn("json", kwargs)
@@ -376,13 +459,17 @@ class FetchScreenerResultsCommandTests(APITestCase):
         self.assertIn("marketcap_display", payload)
         self.assertEqual(payload["marketcap_display"].get("gte"), 10_000_000_000)
 
+    @patch("api.management.commands.fetch_screener_results.requests.get")
     @patch("api.management.commands.fetch_screener_results.requests.post")
-    def test_command_applies_price_arguments(self, mock_post: MagicMock) -> None:
+    def test_command_applies_price_arguments(
+        self, mock_post: MagicMock, mock_get: MagicMock
+    ) -> None:
         mock_post.return_value = MagicMock(
             status_code=200,
-            json=lambda: {"data": [{"attributes": {"name": "Sample"}}]},
+            json=lambda: {"data": [{"id": "SAMPLE", "attributes": {"symbol": "SAMPLE"}}]},
             text="{}",
         )
+        self._mock_profiles(mock_get, symbols="SAMPLE")
 
         call_command(
             "fetch_screener_results",
@@ -399,8 +486,11 @@ class FetchScreenerResultsCommandTests(APITestCase):
         self.assertEqual(payload["close"].get("gte"), 10.0)
         self.assertEqual(payload["close"].get("lte"), 25.5)
 
+    @patch("api.management.commands.fetch_screener_results.requests.get")
     @patch("api.management.commands.fetch_screener_results.requests.post")
-    def test_command_updates_nested_filter_section(self, mock_post: MagicMock) -> None:
+    def test_command_updates_nested_filter_section(
+        self, mock_post: MagicMock, mock_get: MagicMock
+    ) -> None:
         nested_screener = ScreenerType.objects.create(
             name="Energy Focus", description="Composite filter payload."
         )
@@ -419,9 +509,10 @@ class FetchScreenerResultsCommandTests(APITestCase):
 
         mock_post.return_value = MagicMock(
             status_code=200,
-            json=lambda: {"data": [{"attributes": {"name": "Sample"}}]},
+            json=lambda: {"data": [{"id": "SAMPLE", "attributes": {"symbol": "SAMPLE"}}]},
             text="{}",
         )
+        self._mock_profiles(mock_get, symbols="SAMPLE")
 
         call_command(
             "fetch_screener_results",
@@ -442,6 +533,119 @@ class FetchScreenerResultsCommandTests(APITestCase):
         self.assertIn("close", payload["filter"])
         self.assertEqual(payload["filter"]["close"].get("lte"), 50.0)
         self.assertEqual(payload["filter"]["close"].get("gte"), 12.0)
+
+    @patch("api.management.commands.fetch_screener_results.requests.get")
+    @patch("api.management.commands.fetch_screener_results.requests.post")
+    def test_command_fetches_all_pages(
+        self, mock_post: MagicMock, mock_get: MagicMock
+    ) -> None:
+        mock_post.side_effect = [
+            MagicMock(
+                status_code=200,
+                json=lambda: {
+                    "data": [{"id": "AAPL", "attributes": {"symbol": "AAPL"}}],
+                    "meta": {"page": {"current_page": 1, "total_pages": 2}},
+                },
+                text="{}",
+            ),
+            MagicMock(
+                status_code=200,
+                json=lambda: {
+                    "data": [{"id": "TSLA", "attributes": {"symbol": "TSLA"}}],
+                    "meta": {"page": {"current_page": 2, "total_pages": 2}},
+                },
+                text="{}",
+            ),
+        ]
+        self._mock_profiles(mock_get, symbols=["AAPL", "TSLA"])
+
+        result = call_command(
+            "fetch_screener_results",
+            self.screener.name,
+            "--per-page",
+            "1",
+        )
+
+        self.assertEqual(mock_post.call_count, 2)
+        mock_get.assert_called_once()
+        _, kwargs = mock_get.call_args
+        self.assertEqual(kwargs["params"].get("symbols"), "AAPL,TSLA")
+        self.assertEqual(result, "AAPL\nTSLA")
+
+    @patch("api.management.commands.fetch_screener_results.requests.get")
+    @patch("api.management.commands.fetch_screener_results.requests.post")
+    def test_command_handles_missing_profile_data(
+        self, mock_post: MagicMock, mock_get: MagicMock
+    ) -> None:
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {
+                "data": [
+                    {"id": "AAPL", "attributes": {"symbol": "AAPL"}},
+                    {"id": "TSLA", "attributes": {"symbol": "TSLA"}},
+                ]
+            },
+            text="{}",
+        )
+        self._mock_profiles(mock_get, symbols=["AAPL"])
+
+        result = call_command("fetch_screener_results", self.screener.name)
+
+        self.assertEqual(result, "AAPL\nTSLA")
+        self.assertEqual(Investment.objects.count(), 0)
+
+    def test_parse_profile_payload_extracts_symbols_from_attributes(self) -> None:
+        command = Command()
+        payload = {
+            "data": [
+                {"attributes": {"ticker": " msft ", "last": 1}},
+                {"attributes": {"symbol": "TSLA"}},
+                {"id": "brk.a", "attributes": {"last": 2}},
+                {"attributes": {}},
+                "invalid",
+            ]
+        }
+
+        profiles = command._parse_profile_payload(payload)
+
+        self.assertEqual(set(profiles.keys()), {"MSFT", "TSLA", "BRK.A"})
+        self.assertEqual(profiles["MSFT"]["symbol"], "MSFT")
+        self.assertEqual(profiles["TSLA"]["symbol"], "TSLA")
+        self.assertEqual(profiles["BRK.A"]["symbol"], "BRK.A")
+
+    def test_parse_profile_payload_maps_raw_ids(self) -> None:
+        command = Command()
+        payload = {
+            "data": [
+                {"id": "1000", "attributes": {"symbol": "bsx"}},
+            ]
+        }
+
+        profiles = command._parse_profile_payload(payload)
+
+        self.assertIn("1000", profiles)
+        self.assertEqual(profiles["1000"]["symbol"], "BSX")
+
+    def test_extract_ticker_symbols_prefers_attribute_value(self) -> None:
+        command = Command()
+        payload = {
+            "data": [
+                {"id": "12345", "attributes": {"symbol": "bsx"}},
+                {"id": "HPE"},
+            ]
+        }
+
+        symbols = command._extract_ticker_symbols(payload)
+
+        self.assertEqual(symbols, ["BSX", "HPE"])
+
+    def test_extract_symbol_from_profile_item_prefers_attributes(self) -> None:
+        command = Command()
+        item = {"id": "98765", "attributes": {"ticker": "hpe"}}
+
+        symbol = command._extract_symbol_from_profile_item(item)
+
+        self.assertEqual(symbol, "HPE")
 
     def test_command_rejects_invalid_market_cap_argument(self) -> None:
         with self.assertRaisesMessage(CommandError, "Market cap value must be a number optionally followed by K, M, B, or T."):
@@ -475,6 +679,7 @@ class FetchScreenerResultsCommandTests(APITestCase):
         )
 
         with self.assertRaisesMessage(
-            CommandError, "Seeking Alpha API response did not include any ticker names."
+            CommandError,
+            "Seeking Alpha API response did not include any ticker symbols.",
         ):
             call_command("fetch_screener_results", self.screener.name)
