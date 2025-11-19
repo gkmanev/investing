@@ -109,26 +109,50 @@ class Command(BaseCommand):
         profiles: dict[str, dict[str, Any]] = {}
 
         if isinstance(data_section, dict):
-            iterable = (
+            iterator = (
                 (symbol, profile)
                 for symbol, profile in data_section.items()
                 if isinstance(profile, dict)
             )
-            for symbol, profile in iterable:
-                profiles[symbol.upper()] = profile
-            return profiles
-
-        if isinstance(data_section, list):
+        elif isinstance(data_section, list):
+            iterator = []
             for profile in data_section:
                 if not isinstance(profile, dict):
                     continue
-                symbol = profile.get("symbol") or profile.get("ticker")
+                symbol = (
+                    profile.get("id")
+                    or profile.get("symbol")
+                    or profile.get("ticker")
+                )
                 if not symbol:
                     continue
-                profiles[str(symbol).upper()] = profile
-            return profiles
+                iterator.append((str(symbol), profile))
+        else:
+            raise CommandError("Profile payload had an unexpected structure.")
 
-        raise CommandError("Profile payload had an unexpected structure.")
+        for symbol, profile in iterator:
+            normalized = self._normalize_profile(profile)
+            profiles[str(symbol).upper()] = normalized
+
+        return profiles
+
+    def _normalize_profile(self, profile: dict[str, Any]) -> dict[str, Any]:
+        attributes = profile.get("attributes")
+        if isinstance(attributes, dict):
+            source = attributes
+        else:
+            source = profile
+
+        last_daily = source.get("lastDaily")
+        if isinstance(last_daily, dict) and "last" in last_daily:
+            last_value = last_daily.get("last")
+        else:
+            last_value = source.get("last")
+
+        return {
+            "last": last_value,
+            "marketCap": source.get("marketCap"),
+        }
 
     def _update_investments(
         self, tickers: Iterable[str], profiles: dict[str, dict[str, Any]]

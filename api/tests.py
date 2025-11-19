@@ -619,11 +619,32 @@ class FetchProfileDataCommandTests(APITestCase):
             MagicMock(
                 status_code=200,
                 json=lambda: {
-                    "data": {
-                        "AAA": {"symbol": "AAA", "last": "10.5", "marketCap": "1000"},
-                        "BBB": {"symbol": "BBB", "last": "12.25", "marketCap": "2000"},
-                        "CCC": {"symbol": "CCC", "last": "8.75", "marketCap": "3000"},
-                    }
+                    "data": [
+                        {
+                            "id": "AAA",
+                            "type": "profile",
+                            "attributes": {
+                                "lastDaily": {"last": "10.5"},
+                                "marketCap": "1000",
+                            },
+                        },
+                        {
+                            "id": "BBB",
+                            "type": "profile",
+                            "attributes": {
+                                "lastDaily": {"last": "12.25"},
+                                "marketCap": "2000",
+                            },
+                        },
+                        {
+                            "id": "CCC",
+                            "type": "profile",
+                            "attributes": {
+                                "lastDaily": {"last": "8.75"},
+                                "marketCap": "3000",
+                            },
+                        },
+                    ]
                 },
                 text="{}",
             ),
@@ -666,9 +687,15 @@ class FetchProfileDataCommandTests(APITestCase):
             MagicMock(
                 status_code=200,
                 json=lambda: {
-                    "data": {
-                        "AAA": {"symbol": "AAA", "last": "1", "marketCap": "2"}
-                    }
+                    "data": [
+                        {
+                            "id": "AAA",
+                            "attributes": {
+                                "lastDaily": {"last": "1"},
+                                "marketCap": "2",
+                            },
+                        }
+                    ]
                 },
                 text="{}",
             ),
