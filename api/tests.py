@@ -401,6 +401,46 @@ class FetchScreenerResultsCommandTests(APITestCase):
         )
 
     @patch("api.management.commands.fetch_screener_results.requests.post")
+    def test_command_fetches_multiple_pages(self, mock_post: MagicMock) -> None:
+        def build_response(names: list[str]) -> MagicMock:
+            payload = {
+                "data": [
+                    {"attributes": {"name": company_name}} for company_name in names
+                ]
+            }
+            response = MagicMock(status_code=200, text="{}")
+            response.json.return_value = payload
+            return response
+
+        mock_post.side_effect = [
+            build_response(["Alpha Corp"]),
+            build_response(["Beta LLC"]),
+            build_response([]),
+        ]
+
+        buffer = StringIO()
+        result = call_command(
+            "fetch_screener_results",
+            self.screener.name,
+            "--per-page",
+            "1",
+            stdout=buffer,
+        )
+
+        self.assertEqual(mock_post.call_count, 3)
+        self.assertEqual(
+            [call.kwargs["params"]["page"] for call in mock_post.call_args_list],
+            ["1", "2", "3"],
+        )
+
+        expected_output = "Alpha Corp\nBeta LLC"
+        self.assertEqual(result, expected_output)
+        self.assertEqual(buffer.getvalue(), expected_output + "\n")
+
+        tickers = Investment.objects.order_by("ticker").values_list("ticker", flat=True)
+        self.assertEqual(list(tickers), ["Alpha Corp", "Beta LLC"])
+
+    @patch("api.management.commands.fetch_screener_results.requests.post")
     def test_command_updates_existing_investments(self, mock_post: MagicMock) -> None:
         investment = Investment.objects.create(
             ticker="Apple Inc.",
