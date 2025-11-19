@@ -8,6 +8,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 from unittest.mock import MagicMock, patch
 
+from .management.commands.fetch_screener_results import Command
 from .models import Investment, ScreenerFilter, ScreenerType
 
 
@@ -561,6 +562,22 @@ class FetchScreenerResultsCommandTests(APITestCase):
         self.assertIsNone(investments["TSLA"].price)
         self.assertIsNone(investments["TSLA"].volume)
         self.assertIsNone(investments["TSLA"].market_cap)
+
+    def test_parse_profile_payload_extracts_symbols_from_attributes(self) -> None:
+        command = Command()
+        payload = {
+            "data": [
+                {"attributes": {"ticker": " msft ", "last": 1}},
+                {"attributes": {"symbol": "TSLA"}},
+                {"id": "brk.a", "attributes": {"last": 2}},
+                {"attributes": {}},
+                "invalid",
+            ]
+        }
+
+        profiles = command._parse_profile_payload(payload)
+
+        self.assertEqual(set(profiles.keys()), {"MSFT", "TSLA", "BRK.A"})
 
     def test_command_rejects_invalid_market_cap_argument(self) -> None:
         with self.assertRaisesMessage(CommandError, "Market cap value must be a number optionally followed by K, M, B, or T."):

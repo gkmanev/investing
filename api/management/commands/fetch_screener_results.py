@@ -551,48 +551,34 @@ class Command(BaseCommand):
 
         profiles: dict[str, dict[str, Any]] = {}
         for item in data:
-            if not isinstance(item, dict):
+            symbol = self._extract_symbol_from_profile_item(item)
+            if not symbol:
                 continue
 
-            symbol = item.get("id")
-            if not isinstance(symbol, str) or not symbol.strip():
-                attributes = item.get("attributes", {})
-                if isinstance(attributes, dict):
-                    symbol = attributes.get("symbol") or attributes.get("ticker")
-            if not isinstance(symbol, str) or not symbol.strip():
-                continue
-            profile = profiles.get(symbol.upper())
-            if profile is None:
-                continue
-
-            last_price = self._coerce_decimal(profile.get("last"))
-            volume = self._coerce_int(profile.get("volume"))
-            market_cap_value = profile.get("marketCap")
-            if market_cap_value is None:
-                market_cap_value = profile.get("market_cap")
-            market_cap = self._coerce_decimal(market_cap_value)
-
-            Investment.objects.update_or_create(
-                ticker=symbol.upper(),
-                defaults={
-                    "category": category,
-                    "price": last_price,
-                    "volume": volume,
-                    "market_cap": market_cap,
-                    "description": description,
-                },
-            )
-            updated.append(symbol.upper())
-
-        return updated
-
-            attributes = item.get("attributes", {})
+            attributes = item.get("attributes", {}) if isinstance(item, dict) else {}
             if not isinstance(attributes, dict):
                 attributes = {}
 
-            profiles[symbol.strip().upper()] = attributes
+            profiles[symbol] = attributes
 
         return profiles
+
+    def _extract_symbol_from_profile_item(self, item: Any) -> str | None:
+        if not isinstance(item, dict):
+            return None
+
+        raw_symbol = item.get("id")
+        if isinstance(raw_symbol, str) and raw_symbol.strip():
+            return raw_symbol.strip().upper()
+
+        attributes = item.get("attributes")
+        if isinstance(attributes, dict):
+            for key in ("symbol", "ticker"):
+                candidate = attributes.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    return candidate.strip().upper()
+
+        return None
 
     def _create_or_update_investments(
         self,
