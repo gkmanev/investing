@@ -590,3 +590,94 @@ class FetchScreenerResultsCommandTests(APITestCase):
             CommandError, "Seeking Alpha API response did not include any ticker names."
         ):
             call_command("fetch_screener_results", self.screener.name)
+
+
+class FetchProfileDataCommandTests(APITestCase):
+    def setUp(self) -> None:
+        self.investments = [
+            Investment.objects.create(ticker="AAA", category="stock"),
+            Investment.objects.create(ticker="BBB", category="stock"),
+            Investment.objects.create(ticker="CCC", category="stock"),
+            Investment.objects.create(ticker="DDD", category="stock"),
+        ]
+
+    @patch("api.management.commands.fetch_profile_data.requests.get")
+    def test_command_updates_first_three_investments(self, mock_get: MagicMock) -> None:
+        mock_get.side_effect = [
+            MagicMock(
+                status_code=200,
+                json=lambda: [
+                    {"ticker": "AAA"},
+                    {"ticker": "BBB"},
+                    {"ticker": "CCC"},
+                    {"ticker": "DDD"},
+                ],
+                text="{}",
+            ),
+            MagicMock(
+                status_code=200,
+                json=lambda: {
+                    "data": {
+                        "AAA": {"symbol": "AAA", "last": "10.5", "marketCap": "1000"},
+                        "BBB": {"symbol": "BBB", "last": "12.25", "marketCap": "2000"},
+                        "CCC": {"symbol": "CCC", "last": "8.75", "marketCap": "3000"},
+                    }
+                },
+                text="{}",
+            ),
+        ]
+
+        call_command("fetch_profile_data")
+
+        for ticker, price, market_cap in (
+            ("AAA", "10.5000", "1000.00"),
+            ("BBB", "12.2500", "2000.00"),
+            ("CCC", "8.7500", "3000.00"),
+        ):
+            investment = Investment.objects.get(ticker=ticker)
+            self.assertEqual(str(investment.price), price)
+            self.assertEqual(str(investment.market_cap), market_cap)
+
+        untouched = Investment.objects.get(ticker="DDD")
+        self.assertIsNone(untouched.price)
+        self.assertIsNone(untouched.market_cap)
+
+    @patch("api.management.commands.fetch_profile_data.requests.get")
+    def test_command_errors_on_unsuccessful_response(self, mock_get: MagicMock) -> None:
+        mock_get.return_value = MagicMock(status_code=500, text="error")
+
+        with self.assertRaises(CommandError):
+            call_command("fetch_profile_data")
+
+    @patch("api.management.commands.fetch_profile_data.requests.get")
+    def test_profile_request_includes_tickers_query(self, mock_get: MagicMock) -> None:
+        mock_get.side_effect = [
+            MagicMock(
+                status_code=200,
+                json=lambda: [
+                    {"ticker": "AAA"},
+                    {"ticker": "BBB"},
+                    {"ticker": "CCC"},
+                ],
+                text="{}",
+            ),
+            MagicMock(
+                status_code=200,
+                json=lambda: {
+                    "data": {
+                        "AAA": {"symbol": "AAA", "last": "1", "marketCap": "2"}
+                    }
+                },
+                text="{}",
+            ),
+        ]
+
+        call_command("fetch_profile_data")
+
+        self.assertGreaterEqual(len(mock_get.call_args_list), 2)
+        profile_call = mock_get.call_args_list[1]
+        self.assertEqual(
+            profile_call.args[0],
+            "http://127.0.0.1:8000/symbols/get-profile?symbols=AAA%2CBBB%2CCCC",
+        )
+        self.assertIsNone(profile_call.kwargs.get("params"))
