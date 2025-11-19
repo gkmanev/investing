@@ -472,6 +472,11 @@ class Command(BaseCommand):
             if not isinstance(item, dict):
                 continue
 
+            potential_symbol = item.get("id")
+            if isinstance(potential_symbol, str) and potential_symbol:
+                symbols.append(potential_symbol.upper())
+                continue
+
             attributes = item.get("attributes", {})
             attribute_symbol = None
             if isinstance(attributes, dict):
