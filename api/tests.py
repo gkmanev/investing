@@ -52,6 +52,45 @@ class InvestmentAPITestCase(APITestCase):
         self.assertEqual(len(response.data), 1)
         self.assertEqual(response.data[0]["ticker"], "BND")
 
+    def test_list_can_filter_by_category_and_ticker(self) -> None:
+        self.create_investment(ticker="BND", category="ETF")
+        self.create_investment(ticker="GRW", category="Fund")
+
+        response = self.client.get(
+            self.list_url,
+            {"category": "fund", "ticker": "rw"},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["ticker"], "GRW")
+
+    def test_list_can_filter_by_numeric_ranges(self) -> None:
+        self.create_investment(ticker="LOW", price=5, market_cap=1_000_000, volume=10)
+        self.create_investment(ticker="MID", price=15, market_cap=5_000_000, volume=1_000)
+        self.create_investment(ticker="HIGH", price=25, market_cap=50_000_000, volume=10_000)
+
+        response = self.client.get(
+            self.list_url,
+            {
+                "min_price": "10",
+                "max_price": "20",
+                "min_market_cap": "2000000",
+                "max_market_cap": "6000000",
+                "min_volume": "999",
+            },
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["ticker"], "MID")
+
+    def test_list_rejects_invalid_numeric_filters(self) -> None:
+        response = self.client.get(self.list_url, {"min_price": "abc"})
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("min_price", response.data)
+
     def test_can_update_investment(self) -> None:
         investment = self.create_investment()
         url = reverse(self.detail_url_name, args=[investment.id])
