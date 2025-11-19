@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable, List
 
 import requests
 from django.core.management.base import BaseCommand, CommandError
 
-from api.models import ScreenerType
+from api.models import Investment, ScreenerType
 
 API_URL = "https://seeking-alpha.p.rapidapi.com/screeners/get-results"
+PROFILE_API_URL = "https://seeking-alpha.p.rapidapi.com/symbols/get-profile"
 API_HEADERS = {
     "x-rapidapi-key": "66dcbafb75msha536f3086b06788p1f5e7ajsnac1315877f0f",
     "x-rapidapi-host": "seeking-alpha.p.rapidapi.com",
@@ -109,42 +111,25 @@ class Command(BaseCommand):
             )
 
         query_params = {
-            "page": str(page),
             "per_page": str(per_page),
             "type": asset_type,
         }
 
-        try:
-            formatted_payload = json.dumps(payload, indent=2, sort_keys=True)
-            self.stderr.write("POST payload:\n" + formatted_payload)
+        formatted_payload = json.dumps(payload, indent=2, sort_keys=True)
+        self.stderr.write("POST payload:\n" + formatted_payload)
 
-            response = requests.post(
-                API_URL,
-                headers=API_HEADERS,
-                params=query_params,
-                json=payload,
-                timeout=30,
-            )
-        except requests.RequestException as exc:  # pragma: no cover - network failure
-            raise CommandError(f"Failed to call Seeking Alpha API: {exc}") from exc
+        ticker_symbols = self._collect_symbols_from_screener(
+            payload,
+            query_params,
+            start_page=page,
+            per_page=per_page,
+        )
 
-        if response.status_code != 200:
-            raise CommandError(
-                f"Received unexpected status code {response.status_code}: {response.text}"
-            )
+        updated_symbols = self._create_or_update_investments(
+            screener, ticker_symbols, self._fetch_symbol_profiles(ticker_symbols)
+        )
 
-        try:
-            response_payload = response.json()
-        except ValueError as exc:
-            raise CommandError("Received invalid JSON from Seeking Alpha API") from exc
-
-        ticker_names = self._extract_ticker_names(response_payload)
-        if not ticker_names:
-            raise CommandError(
-                "Seeking Alpha API response did not include any ticker names."
-            )
-
-        formatted_payload = "\n".join(ticker_names)
+        formatted_payload = "\n".join(updated_symbols)
         return formatted_payload
 
     def _get_screener(self, screener_name: str) -> ScreenerType:
@@ -382,7 +367,95 @@ class Command(BaseCommand):
 
         return float(numeric_value)
 
-    def _extract_ticker_names(self, payload: Any) -> List[str]:
+    def _collect_symbols_from_screener(
+        self,
+        payload: dict[str, Any],
+        base_query_params: dict[str, str],
+        start_page: int,
+        per_page: int,
+    ) -> List[str]:
+        seen: set[str] = set()
+        collected: List[str] = []
+        current_page = start_page
+        total_pages: int | None = None
+
+        while True:
+            params = dict(base_query_params)
+            params["page"] = str(current_page)
+
+            response_payload = self._call_screener_api(params, payload)
+            page_symbols = self._extract_ticker_symbols(response_payload)
+            for symbol in page_symbols:
+                normalized = symbol.upper()
+                if normalized not in seen:
+                    seen.add(normalized)
+                    collected.append(normalized)
+
+            total_pages = total_pages or self._extract_total_pages(response_payload)
+            data_section = response_payload.get("data", [])
+            data_count = len(data_section) if isinstance(data_section, list) else 0
+
+            if total_pages is not None and current_page >= total_pages:
+                break
+
+            if data_count < per_page or data_count == 0:
+                break
+
+            current_page += 1
+
+        if not collected:
+            raise CommandError(
+                "Seeking Alpha API response did not include any ticker symbols."
+            )
+
+        return collected
+
+    def _call_screener_api(
+        self, params: dict[str, str], payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        try:
+            response = requests.post(
+                API_URL,
+                headers=API_HEADERS,
+                params=params,
+                json=payload,
+                timeout=30,
+            )
+        except requests.RequestException as exc:  # pragma: no cover - network failure
+            raise CommandError(f"Failed to call Seeking Alpha API: {exc}") from exc
+
+        if response.status_code != 200:
+            raise CommandError(
+                f"Received unexpected status code {response.status_code}: {response.text}"
+            )
+
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise CommandError("Received invalid JSON from Seeking Alpha API") from exc
+
+    def _extract_total_pages(self, payload: Any) -> int | None:
+        if not isinstance(payload, dict):
+            return None
+
+        meta = payload.get("meta")
+        if not isinstance(meta, dict):
+            return None
+
+        page_info = meta.get("page") or meta.get("pagination")
+        if not isinstance(page_info, dict):
+            return None
+
+        potential_keys = ("total_pages", "totalPages", "total")
+        for key in potential_keys:
+            raw_value = page_info.get(key)
+            total_pages = self._coerce_int(raw_value)
+            if total_pages and total_pages > 0:
+                return total_pages
+
+        return None
+
+    def _extract_ticker_symbols(self, payload: Any) -> List[str]:
         if not isinstance(payload, dict):
             raise CommandError(
                 "Seeking Alpha API returned an unexpected payload structure."
@@ -394,43 +467,168 @@ class Command(BaseCommand):
                 "Seeking Alpha API returned an unexpected payload structure."
             )
 
-        names: List[str] = []
+        symbols: List[str] = []
         for item in data:
             if not isinstance(item, dict):
                 continue
 
             attributes = item.get("attributes", {})
+            attribute_symbol = None
+            if isinstance(attributes, dict):
+                attribute_symbol = self._extract_symbol_from_attributes(attributes)
+
+            if attribute_symbol:
+                symbols.append(attribute_symbol)
+                continue
+
+            potential_symbol = item.get("id")
+            if isinstance(potential_symbol, str) and potential_symbol:
+                symbols.append(potential_symbol.upper())
+
+        return symbols
+
+    def _extract_symbol_from_attributes(self, attributes: dict[str, Any]) -> str | None:
+        candidates = (
+            attributes.get("symbol"),
+            attributes.get("ticker"),
+            attributes.get("name"),
+        )
+        for candidate in candidates:
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip().upper()
+
+        profile = attributes.get("p", {})
+        if isinstance(profile, dict):
+            profile_symbol = profile.get("symbol") or profile.get("ticker")
+            if isinstance(profile_symbol, str) and profile_symbol.strip():
+                return profile_symbol.strip().upper()
+
+        return None
+
+    def _fetch_symbol_profiles(self, symbols: Iterable[str]) -> dict[str, dict[str, Any]]:
+        symbol_list = [symbol for symbol in symbols if symbol]
+        if not symbol_list:
+            return {}
+
+        params = {"symbols": ",".join(symbol_list)}
+
+        try:
+            response = requests.get(
+                PROFILE_API_URL,
+                headers=API_HEADERS,
+                params=params,
+                timeout=30,
+            )
+        except requests.RequestException as exc:  # pragma: no cover - network failure
+            raise CommandError(f"Failed to call Seeking Alpha profile API: {exc}") from exc
+
+        if response.status_code != 200:
+            raise CommandError(
+                "Received unexpected status code "
+                f"{response.status_code} from profile API: {response.text}"
+            )
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise CommandError(
+                "Received invalid JSON from Seeking Alpha profile API"
+            ) from exc
+
+        return self._parse_profile_payload(payload)
+
+    def _parse_profile_payload(self, payload: Any) -> dict[str, dict[str, Any]]:
+        if not isinstance(payload, dict):
+            raise CommandError(
+                "Seeking Alpha profile API returned an unexpected payload structure."
+            )
+
+        data = payload.get("data", [])
+        if not isinstance(data, list):
+            raise CommandError(
+                "Seeking Alpha profile API returned an unexpected payload structure."
+            )
+
+        profiles: dict[str, dict[str, Any]] = {}
+        for item in data:
+            symbol = self._extract_symbol_from_profile_item(item)
+            if not symbol:
+                continue
+
+            attributes = item.get("attributes", {}) if isinstance(item, dict) else {}
             if not isinstance(attributes, dict):
+                attributes = {}
+
+            profiles[symbol] = attributes
+
+        return profiles
+
+    def _extract_symbol_from_profile_item(self, item: Any) -> str | None:
+        if not isinstance(item, dict):
+            return None
+
+        attributes = item.get("attributes")
+        if isinstance(attributes, dict):
+            for key in ("symbol", "ticker"):
+                candidate = attributes.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    return candidate.strip().upper()
+
+        raw_symbol = item.get("id")
+        if isinstance(raw_symbol, str) and raw_symbol.strip():
+            return raw_symbol.strip().upper()
+
+        return None
+
+    def _create_or_update_investments(
+        self,
+        screener: ScreenerType,
+        symbols: Iterable[str],
+        profiles: dict[str, dict[str, Any]],
+    ) -> List[str]:
+        updated: List[str] = []
+        description = screener.description or ""
+        category = screener.name
+
+        for symbol in symbols:
+            if not symbol:
                 continue
+            profile = profiles.get(symbol.upper(), {}) or {}
 
-            direct_name = attributes.get("name")
-            if isinstance(direct_name, str) and direct_name:
-                names.append(direct_name)
-                continue
+            last_price = self._coerce_decimal(profile.get("last"))
+            volume = self._coerce_int(profile.get("volume"))
+            market_cap_value = profile.get("marketCap")
+            if market_cap_value is None:
+                market_cap_value = profile.get("market_cap")
+            market_cap = self._coerce_decimal(market_cap_value)
 
-            direct_names = attributes.get("names")
-            if isinstance(direct_names, list):
-                names.extend(
-                    str(value)
-                    for value in direct_names
-                    if isinstance(value, str) and value
-                )
-                continue
+            Investment.objects.update_or_create(
+                ticker=symbol.upper(),
+                defaults={
+                    "category": category,
+                    "price": last_price,
+                    "volume": volume,
+                    "market_cap": market_cap,
+                    "description": description,
+                },
+            )
+            updated.append(symbol.upper())
 
-            profile = attributes.get("p", {})
-            if isinstance(profile, dict):
-                profile_name = profile.get("name")
-                if isinstance(profile_name, str) and profile_name:
-                    names.append(profile_name)
-                    continue
+        return updated
 
-                profile_names = profile.get("names")
-                if isinstance(profile_names, list):
-                    names.extend(
-                        str(value)
-                        for value in profile_names
-                        if isinstance(value, str) and value
-                    )
+    def _coerce_decimal(self, value: Any) -> Decimal | None:
+        if value in (None, ""):
+            return None
+        try:
+            return Decimal(str(value))
+        except (InvalidOperation, TypeError):
+            return None
 
-        return names
+    def _coerce_int(self, value: Any) -> int | None:
+        if value in (None, ""):
+            return None
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return None
 
