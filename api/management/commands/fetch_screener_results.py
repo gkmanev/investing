@@ -6,7 +6,7 @@ from typing import Any, Iterable, List, Tuple
 import requests
 from django.core.management.base import BaseCommand, CommandError
 
-from api.models import ScreenerType
+from api.models import Investment, ScreenerType
 
 API_URL = "https://seeking-alpha.p.rapidapi.com/screeners/get-results"
 PROFILE_API_URL = "https://seeking-alpha.p.rapidapi.com/symbols/get-profile"
@@ -470,6 +470,11 @@ class Command(BaseCommand):
             if not isinstance(item, dict):
                 continue
 
+            potential_symbol = item.get("id")
+            if isinstance(potential_symbol, str) and potential_symbol:
+                symbols.append(potential_symbol.upper())
+                continue
+
             attributes = item.get("attributes", {})
             attribute_symbol = None
             if isinstance(attributes, dict):
@@ -612,6 +617,42 @@ class Command(BaseCommand):
         for symbol in symbols:
             if not symbol:
                 continue
+            profile_entry = profiles.get(symbol.upper(), {}) or {}
+            profile_attributes = profile_entry.get("attributes")
+            if not isinstance(profile_attributes, dict):
+                profile_attributes = {}
+
+            preferred_symbol = profile_entry.get("symbol")
+            if not isinstance(preferred_symbol, str) or not preferred_symbol.strip():
+                preferred_symbol = symbol
+
+            normalized_symbol = preferred_symbol.strip().upper()
+
+            last_price = self._coerce_decimal(profile_attributes.get("last"))
+            volume = self._coerce_int(profile_attributes.get("volume"))
+            market_cap_value = profile_attributes.get("marketCap")
+            if market_cap_value is None:
+                market_cap_value = profile_attributes.get("market_cap")
+            market_cap = self._coerce_decimal(market_cap_value)
+
+            Investment.objects.update_or_create(
+                ticker=normalized_symbol,
+                defaults={
+                    "category": category,
+                    "price": last_price,
+                    "volume": volume,
+                    "market_cap": market_cap,
+                    "description": description,
+                },
+            )
+            updated.append(normalized_symbol)
+
+        return updated
+
+            profile_entry = profiles.get(symbol.upper(), {}) or {}
+            preferred_symbol = profile_entry.get("symbol")
+            if not isinstance(preferred_symbol, str) or not preferred_symbol.strip():
+                preferred_symbol = symbol
 
             entry = profiles.get(symbol.upper(), {}) or {}
             preferred = entry.get("symbol")
