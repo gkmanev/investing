@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable, List, Tuple
 
 import requests
@@ -125,11 +124,10 @@ class Command(BaseCommand):
             per_page=per_page,
         )
 
-        updated_symbols = self._create_or_update_investments(
-            screener, ticker_symbols, self._fetch_symbol_profiles(ticker_symbols)
-        )
+        profiles = self._fetch_symbol_profiles(ticker_symbols)
+        normalized_symbols = self._normalize_symbols(ticker_symbols, profiles)
 
-        formatted_payload = "\n".join(updated_symbols)
+        formatted_payload = "\n".join(normalized_symbols)
         return formatted_payload
 
     def _get_screener(self, screener_name: str) -> ScreenerType:
@@ -610,15 +608,10 @@ class Command(BaseCommand):
 
         return None
 
-    def _create_or_update_investments(
-        self,
-        screener: ScreenerType,
-        symbols: Iterable[str],
-        profiles: dict[str, dict[str, Any]],
+    def _normalize_symbols(
+        self, symbols: Iterable[str], profiles: dict[str, dict[str, Any]]
     ) -> List[str]:
-        updated: List[str] = []
-        description = screener.description or ""
-        category = screener.name
+        normalized: List[str] = []
 
         for symbol in symbols:
             if not symbol:
@@ -655,13 +648,14 @@ class Command(BaseCommand):
 
         return updated
 
-    def _coerce_decimal(self, value: Any) -> Decimal | None:
-        if value in (None, ""):
-            return None
-        try:
-            return Decimal(str(value))
-        except (InvalidOperation, TypeError):
-            return None
+            profile_entry = profiles.get(symbol.upper(), {}) or {}
+            preferred_symbol = profile_entry.get("symbol")
+            if not isinstance(preferred_symbol, str) or not preferred_symbol.strip():
+                preferred_symbol = symbol
+
+            normalized.append(preferred_symbol.strip().upper())
+
+        return normalized
 
     def _coerce_int(self, value: Any) -> int | None:
         if value in (None, ""):

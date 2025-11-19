@@ -365,7 +365,7 @@ class FetchScreenerResultsCommandTests(APITestCase):
 
     @patch("api.management.commands.fetch_screener_results.requests.get")
     @patch("api.management.commands.fetch_screener_results.requests.post")
-    def test_command_updates_investments(
+    def test_command_prints_symbols(
         self, mock_post: MagicMock, mock_get: MagicMock
     ) -> None:
         mock_post.return_value = MagicMock(
@@ -385,14 +385,7 @@ class FetchScreenerResultsCommandTests(APITestCase):
 
         self.assertEqual(result, "AAPL\nTSLA")
         self.assertEqual(buffer.getvalue(), "AAPL\nTSLA\n")
-        investments = Investment.objects.order_by("ticker")
-        self.assertEqual(investments.count(), 2)
-        apple = investments[0]
-        self.assertEqual(apple.category, "Value Stocks")
-        self.assertEqual(apple.description, self.screener.description)
-        self.assertEqual(str(apple.price), "123.450000")
-        self.assertEqual(apple.volume, 100000)
-        self.assertEqual(str(apple.market_cap), "999000000.000000")
+        self.assertEqual(Investment.objects.count(), 0)
 
     @patch("api.management.commands.fetch_screener_results.requests.get")
     @patch("api.management.commands.fetch_screener_results.requests.post")
@@ -431,14 +424,10 @@ class FetchScreenerResultsCommandTests(APITestCase):
             text="{}",
         )
 
-        call_command("fetch_screener_results", self.screener.name)
+        result = call_command("fetch_screener_results", self.screener.name)
 
-        tickers = set(Investment.objects.values_list("ticker", flat=True))
-        self.assertEqual(tickers, {"BSX", "HPE"})
-        bsx = Investment.objects.get(ticker="BSX")
-        self.assertEqual(str(bsx.price), "1.000000")
-        self.assertEqual(bsx.volume, 2)
-        self.assertEqual(str(bsx.market_cap), "3.000000")
+        self.assertEqual(result, "BSX\nHPE")
+        self.assertEqual(Investment.objects.count(), 0)
 
     @patch("api.management.commands.fetch_screener_results.requests.get")
     @patch("api.management.commands.fetch_screener_results.requests.post")
@@ -570,7 +559,7 @@ class FetchScreenerResultsCommandTests(APITestCase):
         ]
         self._mock_profiles(mock_get, symbols=["AAPL", "TSLA"])
 
-        call_command(
+        result = call_command(
             "fetch_screener_results",
             self.screener.name,
             "--per-page",
@@ -581,11 +570,11 @@ class FetchScreenerResultsCommandTests(APITestCase):
         mock_get.assert_called_once()
         _, kwargs = mock_get.call_args
         self.assertEqual(kwargs["params"].get("symbols"), "AAPL,TSLA")
-        self.assertEqual(Investment.objects.count(), 2)
+        self.assertEqual(result, "AAPL\nTSLA")
 
     @patch("api.management.commands.fetch_screener_results.requests.get")
     @patch("api.management.commands.fetch_screener_results.requests.post")
-    def test_command_creates_records_without_profile_data(
+    def test_command_handles_missing_profile_data(
         self, mock_post: MagicMock, mock_get: MagicMock
     ) -> None:
         mock_post.return_value = MagicMock(
@@ -600,15 +589,10 @@ class FetchScreenerResultsCommandTests(APITestCase):
         )
         self._mock_profiles(mock_get, symbols=["AAPL"])
 
-        call_command("fetch_screener_results", self.screener.name)
+        result = call_command("fetch_screener_results", self.screener.name)
 
-        investments = {
-            investment.ticker: investment for investment in Investment.objects.all()
-        }
-        self.assertIn("TSLA", investments)
-        self.assertIsNone(investments["TSLA"].price)
-        self.assertIsNone(investments["TSLA"].volume)
-        self.assertIsNone(investments["TSLA"].market_cap)
+        self.assertEqual(result, "AAPL\nTSLA")
+        self.assertEqual(Investment.objects.count(), 0)
 
     def test_parse_profile_payload_extracts_symbols_from_attributes(self) -> None:
         command = Command()
