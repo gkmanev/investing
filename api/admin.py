@@ -5,9 +5,16 @@ from .models import Investment, ScreenerFilter, ScreenerType
 
 @admin.register(Investment)
 class InvestmentAdmin(admin.ModelAdmin):
-    list_display = ("name", "ticker", "category", "risk_level", "created_at")
-    search_fields = ("name", "ticker", "category")
-    list_filter = ("risk_level", "category")
+    list_display = (
+        "ticker",
+        "category",
+        "price",
+        "volume",
+        "market_cap",
+        "created_at",
+    )
+    search_fields = ("ticker", "category")
+    list_filter = ("category",)
 
 
 @admin.register(ScreenerType)
