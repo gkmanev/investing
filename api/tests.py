@@ -7,6 +7,8 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 from unittest.mock import MagicMock, patch
 
+from api.management.commands.fetch_profile_data import API_HEADERS, PROFILE_ENDPOINT
+
 from .models import Investment, ScreenerFilter, ScreenerType
 
 
@@ -678,6 +680,7 @@ class FetchProfileDataCommandTests(APITestCase):
         profile_call = mock_get.call_args_list[1]
         self.assertEqual(
             profile_call.args[0],
-            "https://seeking-alpha.p.rapidapi.com/symbols/get-profile?symbols=AAA%2CBBB%2CCCC",
+            f"{PROFILE_ENDPOINT}?symbols=AAA%2CBBB%2CCCC",
         )
         self.assertIsNone(profile_call.kwargs.get("params"))
+        self.assertEqual(profile_call.kwargs.get("headers"), API_HEADERS)

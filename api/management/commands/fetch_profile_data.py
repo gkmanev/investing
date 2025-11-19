@@ -13,6 +13,10 @@ BASE_URL = "http://127.0.0.1:8000"
 INVESTMENTS_ENDPOINT = f"{BASE_URL}/api/investments/"
 # RapidAPI proxy for Seeking Alpha profile data.
 PROFILE_ENDPOINT = "https://seeking-alpha.p.rapidapi.com/symbols/get-profile"
+API_HEADERS = {
+    "x-rapidapi-key": "66dcbafb75msha536f3086b06788p1f5e7ajsnac1315877f0f",
+    "x-rapidapi-host": "seeking-alpha.p.rapidapi.com",
+}
 
 
 class Command(BaseCommand):
@@ -29,7 +33,7 @@ class Command(BaseCommand):
             )
 
         profile_url = self._build_profile_url(tickers)
-        profile_payload = self._fetch_json(profile_url)
+        profile_payload = self._fetch_json(profile_url, headers=API_HEADERS)
         profiles = self._build_profile_map(profile_payload)
         if not profiles:
             raise CommandError("Profile endpoint did not return any usable data.")
@@ -42,9 +46,14 @@ class Command(BaseCommand):
 
         return ", ".join(updated_tickers)
 
-    def _fetch_json(self, url: str, params: dict[str, str] | None = None) -> Any:
+    def _fetch_json(
+        self,
+        url: str,
+        params: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> Any:
         try:
-            response = requests.get(url, params=params, timeout=30)
+            response = requests.get(url, params=params, headers=headers, timeout=30)
         except requests.RequestException as exc:  # pragma: no cover - network failure
             raise CommandError(f"Failed to call '{url}': {exc}") from exc
 
