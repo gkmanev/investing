@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from decimal import Decimal, InvalidOperation
-from typing import Any, Iterable, List
+from typing import Any, Iterable, List, Tuple
 
 import requests
 from django.core.management.base import BaseCommand, CommandError
@@ -556,17 +556,42 @@ class Command(BaseCommand):
 
         profiles: dict[str, dict[str, Any]] = {}
         for item in data:
-            symbol = self._extract_symbol_from_profile_item(item)
-            if not symbol:
+            normalized_entry = self._normalize_profile_item(item)
+            if not normalized_entry:
                 continue
 
-            attributes = item.get("attributes", {}) if isinstance(item, dict) else {}
-            if not isinstance(attributes, dict):
-                attributes = {}
-
-            profiles[symbol] = attributes
+            entry, identifiers = normalized_entry
+            for identifier in identifiers:
+                profiles[identifier] = entry
 
         return profiles
+
+    def _normalize_profile_item(
+        self, item: Any
+    ) -> Tuple[dict[str, Any], List[str]] | None:
+        if not isinstance(item, dict):
+            return None
+
+        attributes = item.get("attributes")
+        if not isinstance(attributes, dict):
+            attributes = {}
+
+        identifiers: List[str] = []
+        canonical_symbol = self._extract_symbol_from_profile_item(item)
+        if canonical_symbol:
+            identifiers.append(canonical_symbol)
+
+        raw_identifier = item.get("id")
+        if isinstance(raw_identifier, str) and raw_identifier.strip():
+            normalized_raw = raw_identifier.strip().upper()
+            if normalized_raw not in identifiers:
+                identifiers.append(normalized_raw)
+
+        if not identifiers:
+            return None
+
+        entry = {"symbol": identifiers[0], "attributes": attributes}
+        return entry, identifiers
 
     def _extract_symbol_from_profile_item(self, item: Any) -> str | None:
         if not isinstance(item, dict):
@@ -598,17 +623,26 @@ class Command(BaseCommand):
         for symbol in symbols:
             if not symbol:
                 continue
-            profile = profiles.get(symbol.upper(), {}) or {}
+            profile_entry = profiles.get(symbol.upper(), {}) or {}
+            profile_attributes = profile_entry.get("attributes")
+            if not isinstance(profile_attributes, dict):
+                profile_attributes = {}
 
-            last_price = self._coerce_decimal(profile.get("last"))
-            volume = self._coerce_int(profile.get("volume"))
-            market_cap_value = profile.get("marketCap")
+            preferred_symbol = profile_entry.get("symbol")
+            if not isinstance(preferred_symbol, str) or not preferred_symbol.strip():
+                preferred_symbol = symbol
+
+            normalized_symbol = preferred_symbol.strip().upper()
+
+            last_price = self._coerce_decimal(profile_attributes.get("last"))
+            volume = self._coerce_int(profile_attributes.get("volume"))
+            market_cap_value = profile_attributes.get("marketCap")
             if market_cap_value is None:
-                market_cap_value = profile.get("market_cap")
+                market_cap_value = profile_attributes.get("market_cap")
             market_cap = self._coerce_decimal(market_cap_value)
 
             Investment.objects.update_or_create(
-                ticker=symbol.upper(),
+                ticker=normalized_symbol,
                 defaults={
                     "category": category,
                     "price": last_price,
@@ -617,7 +651,7 @@ class Command(BaseCommand):
                     "description": description,
                 },
             )
-            updated.append(symbol.upper())
+            updated.append(normalized_symbol)
 
         return updated
 

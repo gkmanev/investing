@@ -351,6 +351,7 @@ class FetchScreenerResultsCommandTests(APITestCase):
                     {
                         "id": sym,
                         "attributes": {
+                            "symbol": sym,
                             "last": 123.45,
                             "volume": 100000,
                             "marketCap": 999_000_000,
@@ -392,6 +393,52 @@ class FetchScreenerResultsCommandTests(APITestCase):
         self.assertEqual(str(apple.price), "123.450000")
         self.assertEqual(apple.volume, 100000)
         self.assertEqual(str(apple.market_cap), "999000000.000000")
+
+    @patch("api.management.commands.fetch_screener_results.requests.get")
+    @patch("api.management.commands.fetch_screener_results.requests.post")
+    def test_command_uses_profile_symbols_when_ids_returned(
+        self, mock_post: MagicMock, mock_get: MagicMock
+    ) -> None:
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {"data": [{"id": "1000"}, {"id": "2000"}]},
+            text="{}",
+        )
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {
+                "data": [
+                    {
+                        "id": "1000",
+                        "attributes": {
+                            "symbol": "bsx",
+                            "last": 1,
+                            "volume": 2,
+                            "marketCap": 3,
+                        },
+                    },
+                    {
+                        "id": "2000",
+                        "attributes": {
+                            "ticker": "hpe",
+                            "last": 4,
+                            "volume": 5,
+                            "market_cap": 6,
+                        },
+                    },
+                ]
+            },
+            text="{}",
+        )
+
+        call_command("fetch_screener_results", self.screener.name)
+
+        tickers = set(Investment.objects.values_list("ticker", flat=True))
+        self.assertEqual(tickers, {"BSX", "HPE"})
+        bsx = Investment.objects.get(ticker="BSX")
+        self.assertEqual(str(bsx.price), "1.000000")
+        self.assertEqual(bsx.volume, 2)
+        self.assertEqual(str(bsx.market_cap), "3.000000")
 
     @patch("api.management.commands.fetch_screener_results.requests.get")
     @patch("api.management.commands.fetch_screener_results.requests.post")
@@ -578,6 +625,22 @@ class FetchScreenerResultsCommandTests(APITestCase):
         profiles = command._parse_profile_payload(payload)
 
         self.assertEqual(set(profiles.keys()), {"MSFT", "TSLA", "BRK.A"})
+        self.assertEqual(profiles["MSFT"]["symbol"], "MSFT")
+        self.assertEqual(profiles["TSLA"]["symbol"], "TSLA")
+        self.assertEqual(profiles["BRK.A"]["symbol"], "BRK.A")
+
+    def test_parse_profile_payload_maps_raw_ids(self) -> None:
+        command = Command()
+        payload = {
+            "data": [
+                {"id": "1000", "attributes": {"symbol": "bsx"}},
+            ]
+        }
+
+        profiles = command._parse_profile_payload(payload)
+
+        self.assertIn("1000", profiles)
+        self.assertEqual(profiles["1000"]["symbol"], "BSX")
 
     def test_extract_ticker_symbols_prefers_attribute_value(self) -> None:
         command = Command()
