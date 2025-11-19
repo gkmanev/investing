@@ -12,6 +12,7 @@ class InvestmentSerializer(serializers.ModelSerializer):
             "category",
             "price",
             "volume",
+            "market_cap",
             "description",
             "created_at",
             "updated_at",

@@ -22,6 +22,7 @@ class InvestmentAPITestCase(APITestCase):
             "category": "Fund",
             "price": "12.50",
             "volume": 1000,
+            "market_cap": "5000000.00",
             "description": "Diversified index fund.",
         }
         defaults.update(overrides)
@@ -33,6 +34,7 @@ class InvestmentAPITestCase(APITestCase):
             "category": "Fund",
             "price": "42.19",
             "volume": 1200,
+            "market_cap": "8000000.00",
             "description": "Long-term growth fund.",
         }
 
@@ -345,7 +347,14 @@ class FetchScreenerResultsCommandTests(APITestCase):
             status_code=200,
             json=lambda: {
                 "data": [
-                    {"id": sym, "attributes": {"last": 123.45, "volume": 100000}}
+                    {
+                        "id": sym,
+                        "attributes": {
+                            "last": 123.45,
+                            "volume": 100000,
+                            "marketCap": 999_000_000,
+                        },
+                    }
                     for sym in symbol_list
                 ]
             },
@@ -381,6 +390,7 @@ class FetchScreenerResultsCommandTests(APITestCase):
         self.assertEqual(apple.description, self.screener.description)
         self.assertEqual(str(apple.price), "123.450000")
         self.assertEqual(apple.volume, 100000)
+        self.assertEqual(str(apple.market_cap), "999000000.000000")
 
     @patch("api.management.commands.fetch_screener_results.requests.get")
     @patch("api.management.commands.fetch_screener_results.requests.post")
