@@ -111,49 +111,22 @@ class Command(BaseCommand):
             )
 
         query_params = {
-            "page": str(page),
             "per_page": str(per_page),
             "type": asset_type,
         }
 
-        try:
-            formatted_payload = json.dumps(payload, indent=2, sort_keys=True)
-            self.stderr.write("POST payload:\n" + formatted_payload)
+        formatted_payload = json.dumps(payload, indent=2, sort_keys=True)
+        self.stderr.write("POST payload:\n" + formatted_payload)
 
-            response = requests.post(
-                API_URL,
-                headers=API_HEADERS,
-                params=query_params,
-                json=payload,
-                timeout=30,
-            )
-        except requests.RequestException as exc:  # pragma: no cover - network failure
-            raise CommandError(f"Failed to call Seeking Alpha API: {exc}") from exc
-
-        if response.status_code != 200:
-            raise CommandError(
-                f"Received unexpected status code {response.status_code}: {response.text}"
-            )
-
-        try:
-            response_payload = response.json()
-        except ValueError as exc:
-            raise CommandError("Received invalid JSON from Seeking Alpha API") from exc
-
-        ticker_symbols = self._extract_ticker_symbols(response_payload)
-        if not ticker_symbols:
-            raise CommandError(
-                "Seeking Alpha API response did not include any ticker symbols."
-            )
-
-        profiles = self._fetch_symbol_profiles(ticker_symbols)
-        if not profiles:
-            raise CommandError(
-                "Seeking Alpha profile API did not return data for the requested symbols."
-            )
+        ticker_symbols = self._collect_symbols_from_screener(
+            payload,
+            query_params,
+            start_page=page,
+            per_page=per_page,
+        )
 
         updated_symbols = self._create_or_update_investments(
-            screener, ticker_symbols, profiles
+            screener, ticker_symbols, self._fetch_symbol_profiles(ticker_symbols)
         )
 
         formatted_payload = "\n".join(updated_symbols)
@@ -394,6 +367,94 @@ class Command(BaseCommand):
 
         return float(numeric_value)
 
+    def _collect_symbols_from_screener(
+        self,
+        payload: dict[str, Any],
+        base_query_params: dict[str, str],
+        start_page: int,
+        per_page: int,
+    ) -> List[str]:
+        seen: set[str] = set()
+        collected: List[str] = []
+        current_page = start_page
+        total_pages: int | None = None
+
+        while True:
+            params = dict(base_query_params)
+            params["page"] = str(current_page)
+
+            response_payload = self._call_screener_api(params, payload)
+            page_symbols = self._extract_ticker_symbols(response_payload)
+            for symbol in page_symbols:
+                normalized = symbol.upper()
+                if normalized not in seen:
+                    seen.add(normalized)
+                    collected.append(normalized)
+
+            total_pages = total_pages or self._extract_total_pages(response_payload)
+            data_section = response_payload.get("data", [])
+            data_count = len(data_section) if isinstance(data_section, list) else 0
+
+            if total_pages is not None and current_page >= total_pages:
+                break
+
+            if data_count < per_page or data_count == 0:
+                break
+
+            current_page += 1
+
+        if not collected:
+            raise CommandError(
+                "Seeking Alpha API response did not include any ticker symbols."
+            )
+
+        return collected
+
+    def _call_screener_api(
+        self, params: dict[str, str], payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        try:
+            response = requests.post(
+                API_URL,
+                headers=API_HEADERS,
+                params=params,
+                json=payload,
+                timeout=30,
+            )
+        except requests.RequestException as exc:  # pragma: no cover - network failure
+            raise CommandError(f"Failed to call Seeking Alpha API: {exc}") from exc
+
+        if response.status_code != 200:
+            raise CommandError(
+                f"Received unexpected status code {response.status_code}: {response.text}"
+            )
+
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise CommandError("Received invalid JSON from Seeking Alpha API") from exc
+
+    def _extract_total_pages(self, payload: Any) -> int | None:
+        if not isinstance(payload, dict):
+            return None
+
+        meta = payload.get("meta")
+        if not isinstance(meta, dict):
+            return None
+
+        page_info = meta.get("page") or meta.get("pagination")
+        if not isinstance(page_info, dict):
+            return None
+
+        potential_keys = ("total_pages", "totalPages", "total")
+        for key in potential_keys:
+            raw_value = page_info.get(key)
+            total_pages = self._coerce_int(raw_value)
+            if total_pages and total_pages > 0:
+                return total_pages
+
+        return None
+
     def _extract_ticker_symbols(self, payload: Any) -> List[str]:
         if not isinstance(payload, dict):
             raise CommandError(
@@ -500,6 +561,30 @@ class Command(BaseCommand):
                     symbol = attributes.get("symbol") or attributes.get("ticker")
             if not isinstance(symbol, str) or not symbol.strip():
                 continue
+            profile = profiles.get(symbol.upper())
+            if profile is None:
+                continue
+
+            last_price = self._coerce_decimal(profile.get("last"))
+            volume = self._coerce_int(profile.get("volume"))
+            market_cap_value = profile.get("marketCap")
+            if market_cap_value is None:
+                market_cap_value = profile.get("market_cap")
+            market_cap = self._coerce_decimal(market_cap_value)
+
+            Investment.objects.update_or_create(
+                ticker=symbol.upper(),
+                defaults={
+                    "category": category,
+                    "price": last_price,
+                    "volume": volume,
+                    "market_cap": market_cap,
+                    "description": description,
+                },
+            )
+            updated.append(symbol.upper())
+
+        return updated
 
             attributes = item.get("attributes", {})
             if not isinstance(attributes, dict):
@@ -522,9 +607,7 @@ class Command(BaseCommand):
         for symbol in symbols:
             if not symbol:
                 continue
-            profile = profiles.get(symbol.upper())
-            if profile is None:
-                continue
+            profile = profiles.get(symbol.upper(), {}) or {}
 
             last_price = self._coerce_decimal(profile.get("last"))
             volume = self._coerce_int(profile.get("volume"))

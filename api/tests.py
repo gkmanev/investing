@@ -497,6 +497,71 @@ class FetchScreenerResultsCommandTests(APITestCase):
         self.assertEqual(payload["filter"]["close"].get("lte"), 50.0)
         self.assertEqual(payload["filter"]["close"].get("gte"), 12.0)
 
+    @patch("api.management.commands.fetch_screener_results.requests.get")
+    @patch("api.management.commands.fetch_screener_results.requests.post")
+    def test_command_fetches_all_pages(
+        self, mock_post: MagicMock, mock_get: MagicMock
+    ) -> None:
+        mock_post.side_effect = [
+            MagicMock(
+                status_code=200,
+                json=lambda: {
+                    "data": [{"id": "AAPL", "attributes": {"symbol": "AAPL"}}],
+                    "meta": {"page": {"current_page": 1, "total_pages": 2}},
+                },
+                text="{}",
+            ),
+            MagicMock(
+                status_code=200,
+                json=lambda: {
+                    "data": [{"id": "TSLA", "attributes": {"symbol": "TSLA"}}],
+                    "meta": {"page": {"current_page": 2, "total_pages": 2}},
+                },
+                text="{}",
+            ),
+        ]
+        self._mock_profiles(mock_get, symbols=["AAPL", "TSLA"])
+
+        call_command(
+            "fetch_screener_results",
+            self.screener.name,
+            "--per-page",
+            "1",
+        )
+
+        self.assertEqual(mock_post.call_count, 2)
+        mock_get.assert_called_once()
+        _, kwargs = mock_get.call_args
+        self.assertEqual(kwargs["params"].get("symbols"), "AAPL,TSLA")
+        self.assertEqual(Investment.objects.count(), 2)
+
+    @patch("api.management.commands.fetch_screener_results.requests.get")
+    @patch("api.management.commands.fetch_screener_results.requests.post")
+    def test_command_creates_records_without_profile_data(
+        self, mock_post: MagicMock, mock_get: MagicMock
+    ) -> None:
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {
+                "data": [
+                    {"id": "AAPL", "attributes": {"symbol": "AAPL"}},
+                    {"id": "TSLA", "attributes": {"symbol": "TSLA"}},
+                ]
+            },
+            text="{}",
+        )
+        self._mock_profiles(mock_get, symbols=["AAPL"])
+
+        call_command("fetch_screener_results", self.screener.name)
+
+        investments = {
+            investment.ticker: investment for investment in Investment.objects.all()
+        }
+        self.assertIn("TSLA", investments)
+        self.assertIsNone(investments["TSLA"].price)
+        self.assertIsNone(investments["TSLA"].volume)
+        self.assertIsNone(investments["TSLA"].market_cap)
+
     def test_command_rejects_invalid_market_cap_argument(self) -> None:
         with self.assertRaisesMessage(CommandError, "Market cap value must be a number optionally followed by K, M, B, or T."):
             call_command("fetch_screener_results", self.screener.name, "--market-cap", "ten-billion")
