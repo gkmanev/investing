@@ -37,6 +37,9 @@ class Command(BaseCommand):
         profile_map: dict[str, dict[str, Any]] = {}
         for chunk in self._chunked(tickers, PROFILE_CHUNK_SIZE):
             profile_url = self._build_profile_url(chunk)
+            self.stdout.write(
+                f"Requesting profile data for {', '.join(chunk)} at {profile_url}"
+            )
             profile_payload = self._fetch_json(profile_url, headers=API_HEADERS)
             profiles = self._build_profile_map(profile_payload)
             profile_map.update(profiles)
@@ -48,6 +51,12 @@ class Command(BaseCommand):
         if not updated_tickers:
             raise CommandError(
                 "No matching investments were updated with the returned profile data."
+            )
+
+        missing_tickers = [ticker for ticker in tickers if ticker not in updated_tickers]
+        if missing_tickers:
+            self.stdout.write(
+                "No profile data returned for: " + ", ".join(sorted(set(missing_tickers)))
             )
 
         return ", ".join(updated_tickers)

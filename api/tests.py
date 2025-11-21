@@ -746,3 +746,56 @@ class FetchProfileDataCommandTests(APITestCase):
         )
         self.assertIsNone(first_profile_call.kwargs.get("params"))
         self.assertEqual(first_profile_call.kwargs.get("headers"), API_HEADERS)
+
+    @patch("api.management.commands.fetch_profile_data.requests.get")
+    def test_command_logs_profile_requests(self, mock_get: MagicMock) -> None:
+        mock_get.side_effect = [
+            MagicMock(
+                status_code=200,
+                json=lambda: [
+                    {"ticker": "AAA"},
+                    {"ticker": "BBB"},
+                    {"ticker": "CCC"},
+                ],
+                text="{}",
+            ),
+            MagicMock(
+                status_code=200,
+                json=lambda: {
+                    "data": [
+                        {
+                            "id": "AAA",
+                            "attributes": {
+                                "lastDaily": {"last": "1"},
+                                "marketCap": "2",
+                            },
+                        }
+                    ]
+                },
+                text="{}",
+            ),
+            MagicMock(
+                status_code=200,
+                json=lambda: {
+                    "data": [
+                        {
+                            "id": "CCC",
+                            "attributes": {
+                                "lastDaily": {"last": "3"},
+                                "marketCap": "4",
+                            },
+                        }
+                    ]
+                },
+                text="{}",
+            ),
+        ]
+
+        buffer = StringIO()
+        with patch("api.management.commands.fetch_profile_data.PROFILE_CHUNK_SIZE", 2):
+            call_command("fetch_profile_data", stdout=buffer)
+
+        output = buffer.getvalue()
+        self.assertIn("Requesting profile data for AAA, BBB", output)
+        self.assertIn("Requesting profile data for CCC", output)
+        self.assertIn(PROFILE_ENDPOINT, output)
