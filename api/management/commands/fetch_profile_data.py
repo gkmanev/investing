@@ -56,6 +56,12 @@ class Command(BaseCommand):
                 "No profile data returned for: " + ", ".join(sorted(set(missing_tickers)))
             )
 
+        missing_tickers = [ticker for ticker in tickers if ticker not in updated_tickers]
+        if missing_tickers:
+            self.stdout.write(
+                "No profile data returned for: " + ", ".join(sorted(set(missing_tickers)))
+            )
+
         return ", ".join(updated_tickers)
 
     def _fetch_json(
