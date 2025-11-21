@@ -1,3 +1,4 @@
+from decimal import Decimal
 from io import StringIO
 
 from django.core.management import call_command
@@ -664,6 +665,36 @@ class FetchProfileDataCommandTests(APITestCase):
                 },
                 text="{}",
             ),
+            MagicMock(
+                status_code=200,
+                json=lambda: {
+                    "data": [
+                        {
+                            "id": "CCC",
+                            "attributes": {
+                                "lastDaily": {"last": "3"},
+                                "marketCap": "4",
+                            },
+                        }
+                    ]
+                },
+                text="{}",
+            ),
+            MagicMock(
+                status_code=200,
+                json=lambda: {
+                    "data": [
+                        {
+                            "id": "CCC",
+                            "attributes": {
+                                "lastDaily": {"last": "3"},
+                                "marketCap": "4",
+                            },
+                        }
+                    ]
+                },
+                text="{}",
+            ),
         ]
 
         with patch("api.management.commands.fetch_profile_data.PROFILE_CHUNK_SIZE", 2):
@@ -708,6 +739,43 @@ class FetchProfileDataCommandTests(APITestCase):
                                 "lastDaily": {"last": "1"},
                                 "marketCap": "2",
                             },
+                        },
+                        {
+                            "id": "BBB",
+                            "attributes": {
+                                "lastDaily": {"last": "2"},
+                                "marketCap": "3",
+                            },
+                        },
+                    ]
+                },
+                text="{}",
+            ),
+            MagicMock(
+                status_code=200,
+                json=lambda: {
+                    "data": [
+                        {
+                            "id": "CCC",
+                            "attributes": {
+                                "lastDaily": {"last": "3"},
+                                "marketCap": "4",
+                            },
+                        }
+                    ]
+                },
+                text="{}",
+            ),
+            MagicMock(
+                status_code=200,
+                json=lambda: {
+                    "data": [
+                        {
+                            "id": "CCC",
+                            "attributes": {
+                                "lastDaily": {"last": "3"},
+                                "marketCap": "4",
+                            },
                         }
                     ]
                 },
@@ -749,7 +817,7 @@ class FetchProfileDataCommandTests(APITestCase):
 
     @patch("api.management.commands.fetch_profile_data.requests.get")
     def test_command_logs_profile_requests(self, mock_get: MagicMock) -> None:
-        mock_get.side_effect = [
+        responses = [
             MagicMock(
                 status_code=200,
                 json=lambda: [
@@ -769,7 +837,14 @@ class FetchProfileDataCommandTests(APITestCase):
                                 "lastDaily": {"last": "1"},
                                 "marketCap": "2",
                             },
-                        }
+                        },
+                        {
+                            "id": "BBB",
+                            "attributes": {
+                                "lastDaily": {"last": "2"},
+                                "marketCap": "3",
+                            },
+                        },
                     ]
                 },
                 text="{}",
@@ -790,6 +865,18 @@ class FetchProfileDataCommandTests(APITestCase):
                 text="{}",
             ),
         ]
+        fallback_response = MagicMock(
+            status_code=200,
+            json=lambda: {"data": []},
+            text="{}",
+        )
+
+        def responder(*_: object, **__: object):
+            if responses:
+                return responses.pop(0)
+            return fallback_response
+
+        mock_get.side_effect = responder
 
         buffer = StringIO()
         with patch("api.management.commands.fetch_profile_data.PROFILE_CHUNK_SIZE", 2):
@@ -799,3 +886,72 @@ class FetchProfileDataCommandTests(APITestCase):
         self.assertIn("Requesting profile data for AAA, BBB", output)
         self.assertIn("Requesting profile data for CCC", output)
         self.assertIn(PROFILE_ENDPOINT, output)
+
+    @patch("api.management.commands.fetch_profile_data.requests.get")
+    def test_command_retries_missing_profiles_with_smaller_chunks(
+        self, mock_get: MagicMock
+    ) -> None:
+        Investment.objects.get_or_create(ticker="AAA", defaults={"category": "stock"})
+        Investment.objects.get_or_create(ticker="BBB", defaults={"category": "stock"})
+
+        mock_get.side_effect = [
+            MagicMock(
+                status_code=200,
+                json=lambda: [
+                    {"ticker": "AAA"},
+                    {"ticker": "BBB"},
+                ],
+                text="{}",
+            ),
+            MagicMock(status_code=200, json=lambda: {"data": []}, text="{}"),
+            MagicMock(
+                status_code=200,
+                json=lambda: {
+                    "data": [
+                        {
+                            "id": "AAA",
+                            "attributes": {
+                                "lastDaily": {"last": "1.5"},
+                                "marketCap": "2.5",
+                            },
+                        }
+                    ]
+                },
+                text="{}",
+            ),
+            MagicMock(
+                status_code=200,
+                json=lambda: {
+                    "data": [
+                        {
+                            "id": "BBB",
+                            "attributes": {
+                                "lastDaily": {"last": "3.5"},
+                                "marketCap": "4.5",
+                            },
+                        }
+                    ]
+                },
+                text="{}",
+            ),
+        ]
+
+        buffer = StringIO()
+        with patch("api.management.commands.fetch_profile_data.PROFILE_CHUNK_SIZE", 2):
+            call_command("fetch_profile_data", stdout=buffer)
+
+        prices = Investment.objects.in_bulk(field_name="ticker")
+        self.assertEqual(prices["AAA"].price, Decimal("1.5"))
+        self.assertEqual(prices["BBB"].price, Decimal("3.5"))
+
+        urls = [call.args[0] for call in mock_get.call_args_list[1:]]
+        self.assertEqual(
+            urls[0],
+            f"{PROFILE_ENDPOINT}?symbols=AAA%2CBBB",
+        )
+        self.assertEqual(urls[1], f"{PROFILE_ENDPOINT}?symbols=AAA")
+        self.assertEqual(urls[2], f"{PROFILE_ENDPOINT}?symbols=BBB")
+        output = buffer.getvalue()
+        self.assertIn("Requesting profile data for AAA, BBB", output)
+        self.assertIn("Requesting profile data for AAA", output)
+        self.assertIn("Requesting profile data for BBB", output)

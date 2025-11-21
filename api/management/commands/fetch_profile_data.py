@@ -36,12 +36,7 @@ class Command(BaseCommand):
 
         profile_map: dict[str, dict[str, Any]] = {}
         for chunk in self._chunked(tickers, PROFILE_CHUNK_SIZE):
-            profile_url = self._build_profile_url(chunk)
-            self.stdout.write(
-                f"Requesting profile data for {', '.join(chunk)} at {profile_url}"
-            )
-            profile_payload = self._fetch_json(profile_url, headers=API_HEADERS)
-            profiles = self._build_profile_map(profile_payload)
+            profiles = self._fetch_profiles_for_chunk(chunk)
             profile_map.update(profiles)
 
         if not profile_map:
@@ -86,6 +81,25 @@ class Command(BaseCommand):
         ticker_string = ",".join(tickers)
         encoded = quote_plus(ticker_string)
         return f"{PROFILE_ENDPOINT}?symbols={encoded}"
+
+    def _fetch_profiles_for_chunk(self, chunk: list[str]) -> dict[str, dict[str, Any]]:
+        profile_url = self._build_profile_url(chunk)
+        self.stdout.write(
+            f"Requesting profile data for {', '.join(chunk)} at {profile_url}"
+        )
+        profile_payload = self._fetch_json(profile_url, headers=API_HEADERS)
+        profiles = self._build_profile_map(profile_payload)
+
+        missing = [ticker for ticker in chunk if ticker.upper() not in profiles]
+        if not missing or len(chunk) == 1:
+            return profiles
+
+        fallback_profiles: dict[str, dict[str, Any]] = {}
+        for ticker in missing:
+            fallback_profiles.update(self._fetch_profiles_for_chunk([ticker]))
+
+        profiles.update(fallback_profiles)
+        return profiles
 
     def _extract_tickers(self, payload: Any) -> list[str]:
         entries: Iterable[Any]
