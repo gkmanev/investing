@@ -604,7 +604,7 @@ class FetchProfileDataCommandTests(APITestCase):
         ]
 
     @patch("api.management.commands.fetch_profile_data.requests.get")
-    def test_command_updates_first_three_investments(self, mock_get: MagicMock) -> None:
+    def test_command_updates_all_investments_in_chunks(self, mock_get: MagicMock) -> None:
         mock_get.side_effect = [
             MagicMock(
                 status_code=200,
@@ -636,6 +636,14 @@ class FetchProfileDataCommandTests(APITestCase):
                                 "marketCap": "2000",
                             },
                         },
+                    ]
+                },
+                text="{}",
+            ),
+            MagicMock(
+                status_code=200,
+                json=lambda: {
+                    "data": [
                         {
                             "id": "CCC",
                             "type": "profile",
@@ -644,26 +652,32 @@ class FetchProfileDataCommandTests(APITestCase):
                                 "marketCap": "3000",
                             },
                         },
+                        {
+                            "id": "DDD",
+                            "type": "profile",
+                            "attributes": {
+                                "lastDaily": {"last": "9.00"},
+                                "marketCap": "4000",
+                            },
+                        },
                     ]
                 },
                 text="{}",
             ),
         ]
 
-        call_command("fetch_profile_data")
+        with patch("api.management.commands.fetch_profile_data.PROFILE_CHUNK_SIZE", 2):
+            call_command("fetch_profile_data")
 
         for ticker, price, market_cap in (
             ("AAA", "10.5000", "1000.00"),
             ("BBB", "12.2500", "2000.00"),
             ("CCC", "8.7500", "3000.00"),
+            ("DDD", "9.0000", "4000.00"),
         ):
             investment = Investment.objects.get(ticker=ticker)
             self.assertEqual(str(investment.price), price)
             self.assertEqual(str(investment.market_cap), market_cap)
-
-        untouched = Investment.objects.get(ticker="DDD")
-        self.assertIsNone(untouched.price)
-        self.assertIsNone(untouched.market_cap)
 
     @patch("api.management.commands.fetch_profile_data.requests.get")
     def test_command_errors_on_unsuccessful_response(self, mock_get: MagicMock) -> None:
@@ -699,15 +713,89 @@ class FetchProfileDataCommandTests(APITestCase):
                 },
                 text="{}",
             ),
+            MagicMock(
+                status_code=200,
+                json=lambda: {
+                    "data": [
+                        {
+                            "id": "CCC",
+                            "attributes": {
+                                "lastDaily": {"last": "3"},
+                                "marketCap": "4",
+                            },
+                        }
+                    ]
+                },
+                text="{}",
+            ),
         ]
 
-        call_command("fetch_profile_data")
+        with patch("api.management.commands.fetch_profile_data.PROFILE_CHUNK_SIZE", 2):
+            call_command("fetch_profile_data")
 
-        self.assertGreaterEqual(len(mock_get.call_args_list), 2)
-        profile_call = mock_get.call_args_list[1]
+        self.assertGreaterEqual(len(mock_get.call_args_list), 3)
+        first_profile_call = mock_get.call_args_list[1]
+        second_profile_call = mock_get.call_args_list[2]
         self.assertEqual(
-            profile_call.args[0],
-            f"{PROFILE_ENDPOINT}?symbols=AAA%2CBBB%2CCCC",
+            first_profile_call.args[0],
+            f"{PROFILE_ENDPOINT}?symbols=AAA%2CBBB",
         )
-        self.assertIsNone(profile_call.kwargs.get("params"))
-        self.assertEqual(profile_call.kwargs.get("headers"), API_HEADERS)
+        self.assertEqual(
+            second_profile_call.args[0],
+            f"{PROFILE_ENDPOINT}?symbols=CCC",
+        )
+        self.assertIsNone(first_profile_call.kwargs.get("params"))
+        self.assertEqual(first_profile_call.kwargs.get("headers"), API_HEADERS)
+
+    @patch("api.management.commands.fetch_profile_data.requests.get")
+    def test_command_logs_profile_requests(self, mock_get: MagicMock) -> None:
+        mock_get.side_effect = [
+            MagicMock(
+                status_code=200,
+                json=lambda: [
+                    {"ticker": "AAA"},
+                    {"ticker": "BBB"},
+                    {"ticker": "CCC"},
+                ],
+                text="{}",
+            ),
+            MagicMock(
+                status_code=200,
+                json=lambda: {
+                    "data": [
+                        {
+                            "id": "AAA",
+                            "attributes": {
+                                "lastDaily": {"last": "1"},
+                                "marketCap": "2",
+                            },
+                        }
+                    ]
+                },
+                text="{}",
+            ),
+            MagicMock(
+                status_code=200,
+                json=lambda: {
+                    "data": [
+                        {
+                            "id": "CCC",
+                            "attributes": {
+                                "lastDaily": {"last": "3"},
+                                "marketCap": "4",
+                            },
+                        }
+                    ]
+                },
+                text="{}",
+            ),
+        ]
+
+        buffer = StringIO()
+        with patch("api.management.commands.fetch_profile_data.PROFILE_CHUNK_SIZE", 2):
+            call_command("fetch_profile_data", stdout=buffer)
+
+        output = buffer.getvalue()
+        self.assertIn("Requesting profile data for AAA, BBB", output)
+        self.assertIn("Requesting profile data for CCC", output)
+        self.assertIn(PROFILE_ENDPOINT, output)
