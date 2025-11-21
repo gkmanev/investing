@@ -9,7 +9,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 from api.models import Investment
 
-PROFILE_CHUNK_SIZE = 50
+PROFILE_CHUNK_SIZE = 3
 
 BASE_URL = "http://127.0.0.1:8000"
 INVESTMENTS_ENDPOINT = f"{BASE_URL}/api/investments/"
@@ -95,7 +95,7 @@ class Command(BaseCommand):
             return profiles
 
         fallback_profiles: dict[str, dict[str, Any]] = {}
-        fallback_size = max((len(chunk) + 1) // 2, 1)
+        fallback_size = min(max((len(chunk) + 1) // 2, 1), PROFILE_CHUNK_SIZE)
         for fallback_chunk in self._chunked(missing, fallback_size):
             fallback_profiles.update(self._fetch_profiles_for_chunk(fallback_chunk))
 
