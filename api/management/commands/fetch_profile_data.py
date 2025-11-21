@@ -34,18 +34,26 @@ class Command(BaseCommand):
                 "Investments endpoint did not return any entries with ticker information."
             )
 
-        profile_map: dict[str, dict[str, Any]] = {}
+        updated_tickers: list[str] = []
+        missing_tickers: list[str] = []
         for chunk in self._chunked(tickers, PROFILE_CHUNK_SIZE):
             profiles = self._fetch_profiles_for_chunk(chunk)
-            profile_map.update(profiles)
+            if not profiles:
+                missing_tickers.extend(chunk)
+                continue
 
-        if not profile_map:
-            raise CommandError("Profile endpoint did not return any usable data.")
+            updated_chunk = self._update_investments(chunk, profiles)
+            self._assert_profiles_persisted(updated_chunk)
+            updated_tickers.extend(updated_chunk.keys())
+            missing_tickers.extend([ticker for ticker in chunk if ticker not in updated_chunk])
 
-        updated_tickers = self._update_investments(tickers, profile_map)
         if not updated_tickers:
             raise CommandError(
                 "No matching investments were updated with the returned profile data."
+            )
+        if missing_tickers:
+            self.stdout.write(
+                "No profile data returned for: " + ", ".join(sorted(set(missing_tickers)))
             )
 
         missing_tickers = [ticker for ticker in tickers if ticker not in updated_tickers]
@@ -195,8 +203,8 @@ class Command(BaseCommand):
 
     def _update_investments(
         self, tickers: Iterable[str], profiles: dict[str, dict[str, Any]]
-    ) -> list[str]:
-        updated: list[str] = []
+    ) -> dict[str, tuple[Decimal | None, Decimal | None]]:
+        updated: dict[str, tuple[Decimal | None, Decimal | None]] = {}
 
         for ticker in tickers:
             profile = profiles.get(ticker.upper())
@@ -213,9 +221,31 @@ class Command(BaseCommand):
             investment.price = price
             investment.market_cap = market_cap
             investment.save(update_fields=["price", "market_cap", "updated_at"])
-            updated.append(ticker)
+            updated[ticker] = (price, market_cap)
 
         return updated
+
+    def _assert_profiles_persisted(
+        self, updated: dict[str, tuple[Decimal | None, Decimal | None]]
+    ) -> None:
+        if not updated:
+            return
+
+        failed: list[str] = []
+        for ticker, (price, market_cap) in updated.items():
+            try:
+                investment = Investment.objects.get(ticker=ticker)
+            except Investment.DoesNotExist:
+                failed.append(ticker)
+                continue
+
+            if investment.price != price or investment.market_cap != market_cap:
+                failed.append(ticker)
+
+        if failed:
+            raise CommandError(
+                "Failed to persist profile data for: " + ", ".join(sorted(set(failed)))
+            )
 
     def _parse_decimal(self, value: Any) -> Decimal | None:
         if value is None:
