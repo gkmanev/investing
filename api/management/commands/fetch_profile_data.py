@@ -95,8 +95,9 @@ class Command(BaseCommand):
             return profiles
 
         fallback_profiles: dict[str, dict[str, Any]] = {}
-        for ticker in missing:
-            fallback_profiles.update(self._fetch_profiles_for_chunk([ticker]))
+        fallback_size = max((len(chunk) + 1) // 2, 1)
+        for fallback_chunk in self._chunked(missing, fallback_size):
+            fallback_profiles.update(self._fetch_profiles_for_chunk(fallback_chunk))
 
         profiles.update(fallback_profiles)
         return profiles

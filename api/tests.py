@@ -781,21 +781,6 @@ class FetchProfileDataCommandTests(APITestCase):
                 },
                 text="{}",
             ),
-            MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "data": [
-                        {
-                            "id": "CCC",
-                            "attributes": {
-                                "lastDaily": {"last": "3"},
-                                "marketCap": "4",
-                            },
-                        }
-                    ]
-                },
-                text="{}",
-            ),
         ]
 
         with patch("api.management.commands.fetch_profile_data.PROFILE_CHUNK_SIZE", 2):
@@ -955,3 +940,87 @@ class FetchProfileDataCommandTests(APITestCase):
         self.assertIn("Requesting profile data for AAA, BBB", output)
         self.assertIn("Requesting profile data for AAA", output)
         self.assertIn("Requesting profile data for BBB", output)
+
+    @patch("api.management.commands.fetch_profile_data.requests.get")
+    def test_command_retries_with_subchunks_instead_of_singles(
+        self, mock_get: MagicMock
+    ) -> None:
+        mock_get.side_effect = [
+            MagicMock(
+                status_code=200,
+                json=lambda: [
+                    {"ticker": "AAA"},
+                    {"ticker": "BBB"},
+                    {"ticker": "CCC"},
+                    {"ticker": "DDD"},
+                ],
+                text="{}",
+            ),
+            MagicMock(status_code=200, json=lambda: {"data": []}, text="{}"),
+            MagicMock(
+                status_code=200,
+                json=lambda: {
+                    "data": [
+                        {
+                            "id": "AAA",
+                            "attributes": {
+                                "lastDaily": {"last": "1"},
+                                "marketCap": "2",
+                            },
+                        },
+                        {
+                            "id": "BBB",
+                            "attributes": {
+                                "lastDaily": {"last": "3"},
+                                "marketCap": "4",
+                            },
+                        },
+                    ]
+                },
+                text="{}",
+            ),
+            MagicMock(
+                status_code=200,
+                json=lambda: {
+                    "data": [
+                        {
+                            "id": "CCC",
+                            "attributes": {
+                                "lastDaily": {"last": "5"},
+                                "marketCap": "6",
+                            },
+                        },
+                        {
+                            "id": "DDD",
+                            "attributes": {
+                                "lastDaily": {"last": "7"},
+                                "marketCap": "8",
+                            },
+                        },
+                    ]
+                },
+                text="{}",
+            ),
+        ]
+
+        buffer = StringIO()
+        with patch("api.management.commands.fetch_profile_data.PROFILE_CHUNK_SIZE", 4):
+            call_command("fetch_profile_data", stdout=buffer)
+
+        profiles = Investment.objects.in_bulk(field_name="ticker")
+        self.assertEqual(profiles["AAA"].price, Decimal("1"))
+        self.assertEqual(profiles["BBB"].price, Decimal("3"))
+        self.assertEqual(profiles["CCC"].price, Decimal("5"))
+        self.assertEqual(profiles["DDD"].price, Decimal("7"))
+
+        urls = [call.args[0] for call in mock_get.call_args_list[1:]]
+        self.assertEqual(len(urls), 3)
+        self.assertEqual(
+            urls[0], f"{PROFILE_ENDPOINT}?symbols=AAA%2CBBB%2CCCC%2CDDD"
+        )
+        self.assertEqual(urls[1], f"{PROFILE_ENDPOINT}?symbols=AAA%2CBBB")
+        self.assertEqual(urls[2], f"{PROFILE_ENDPOINT}?symbols=CCC%2CDDD")
+        output = buffer.getvalue()
+        self.assertIn("Requesting profile data for AAA, BBB, CCC, DDD", output)
+        self.assertIn("Requesting profile data for AAA, BBB", output)
+        self.assertIn("Requesting profile data for CCC, DDD", output)
