@@ -9,6 +9,8 @@ from django.core.management.base import BaseCommand, CommandError
 
 from api.models import Investment
 
+PROFILE_CHUNK_SIZE = 3
+
 BASE_URL = "http://127.0.0.1:8000"
 INVESTMENTS_ENDPOINT = f"{BASE_URL}/api/investments/"
 # RapidAPI proxy for Seeking Alpha profile data.
@@ -20,28 +22,38 @@ API_HEADERS = {
 
 
 class Command(BaseCommand):
-    """Fetch profile data for the first few investments and update stored values."""
+    """Fetch profile data for investments and update stored values."""
 
     help = "Fetches local investments and updates their price and market cap using profile data."
 
     def handle(self, *args: Any, **options: Any) -> str:
         investments_payload = self._fetch_json(INVESTMENTS_ENDPOINT)
-        tickers = self._extract_tickers(investments_payload, limit=3)
+        tickers = self._extract_tickers(investments_payload)
         if not tickers:
             raise CommandError(
                 "Investments endpoint did not return any entries with ticker information."
             )
 
-        profile_url = self._build_profile_url(tickers)
-        profile_payload = self._fetch_json(profile_url, headers=API_HEADERS)
-        profiles = self._build_profile_map(profile_payload)
-        if not profiles:
-            raise CommandError("Profile endpoint did not return any usable data.")
+        updated_tickers: list[str] = []
+        missing_tickers: list[str] = []
+        for chunk in self._chunked(tickers, PROFILE_CHUNK_SIZE):
+            profiles = self._fetch_profiles_for_chunk(chunk)
+            if not profiles:
+                missing_tickers.extend(chunk)
+                continue
 
-        updated_tickers = self._update_investments(tickers, profiles)
+            updated_chunk = self._update_investments(chunk, profiles)
+            self._assert_profiles_persisted(updated_chunk)
+            updated_tickers.extend(updated_chunk.keys())
+            missing_tickers.extend([ticker for ticker in chunk if ticker not in updated_chunk])
+
         if not updated_tickers:
             raise CommandError(
                 "No matching investments were updated with the returned profile data."
+            )
+        if missing_tickers:
+            self.stdout.write(
+                "No profile data returned for: " + ", ".join(sorted(set(missing_tickers)))
             )
 
         return ", ".join(updated_tickers)
@@ -72,7 +84,27 @@ class Command(BaseCommand):
         encoded = quote_plus(ticker_string)
         return f"{PROFILE_ENDPOINT}?symbols={encoded}"
 
-    def _extract_tickers(self, payload: Any, *, limit: int) -> list[str]:
+    def _fetch_profiles_for_chunk(self, chunk: list[str]) -> dict[str, dict[str, Any]]:
+        profile_url = self._build_profile_url(chunk)
+        self.stdout.write(
+            f"Requesting profile data for {', '.join(chunk)} at {profile_url}"
+        )
+        profile_payload = self._fetch_json(profile_url, headers=API_HEADERS)
+        profiles = self._build_profile_map(profile_payload)
+
+        missing = [ticker for ticker in chunk if ticker.upper() not in profiles]
+        if not missing or len(chunk) == 1:
+            return profiles
+
+        fallback_profiles: dict[str, dict[str, Any]] = {}
+        fallback_size = min(max((len(chunk) + 1) // 2, 1), PROFILE_CHUNK_SIZE)
+        for fallback_chunk in self._chunked(missing, fallback_size):
+            fallback_profiles.update(self._fetch_profiles_for_chunk(fallback_chunk))
+
+        profiles.update(fallback_profiles)
+        return profiles
+
+    def _extract_tickers(self, payload: Any) -> list[str]:
         entries: Iterable[Any]
         if isinstance(payload, list):
             entries = payload
@@ -96,10 +128,19 @@ class Command(BaseCommand):
             ticker = entry.get("ticker")
             if ticker:
                 tickers.append(str(ticker))
-            if len(tickers) == limit:
-                break
 
         return tickers
+
+    def _chunked(self, values: Iterable[str], size: int) -> Iterable[list[str]]:
+        chunk: list[str] = []
+        for value in values:
+            chunk.append(value)
+            if len(chunk) == size:
+                yield chunk
+                chunk = []
+
+        if chunk:
+            yield chunk
 
     def _build_profile_map(self, payload: Any) -> dict[str, dict[str, Any]]:
         data_section = payload
@@ -156,8 +197,8 @@ class Command(BaseCommand):
 
     def _update_investments(
         self, tickers: Iterable[str], profiles: dict[str, dict[str, Any]]
-    ) -> list[str]:
-        updated: list[str] = []
+    ) -> dict[str, tuple[Decimal | None, Decimal | None]]:
+        updated: dict[str, tuple[Decimal | None, Decimal | None]] = {}
 
         for ticker in tickers:
             profile = profiles.get(ticker.upper())
@@ -174,9 +215,31 @@ class Command(BaseCommand):
             investment.price = price
             investment.market_cap = market_cap
             investment.save(update_fields=["price", "market_cap", "updated_at"])
-            updated.append(ticker)
+            updated[ticker] = (price, market_cap)
 
         return updated
+
+    def _assert_profiles_persisted(
+        self, updated: dict[str, tuple[Decimal | None, Decimal | None]]
+    ) -> None:
+        if not updated:
+            return
+
+        failed: list[str] = []
+        for ticker, (price, market_cap) in updated.items():
+            try:
+                investment = Investment.objects.get(ticker=ticker)
+            except Investment.DoesNotExist:
+                failed.append(ticker)
+                continue
+
+            if investment.price != price or investment.market_cap != market_cap:
+                failed.append(ticker)
+
+        if failed:
+            raise CommandError(
+                "Failed to persist profile data for: " + ", ".join(sorted(set(failed)))
+            )
 
     def _parse_decimal(self, value: Any) -> Decimal | None:
         if value is None:
