@@ -781,6 +781,21 @@ class FetchProfileDataCommandTests(APITestCase):
                 },
                 text="{}",
             ),
+            MagicMock(
+                status_code=200,
+                json=lambda: {
+                    "data": [
+                        {
+                            "id": "CCC",
+                            "attributes": {
+                                "lastDaily": {"last": "3"},
+                                "marketCap": "4",
+                            },
+                        }
+                    ]
+                },
+                text="{}",
+            ),
         ]
 
         with patch("api.management.commands.fetch_profile_data.PROFILE_CHUNK_SIZE", 2):
