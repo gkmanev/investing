@@ -213,14 +213,21 @@ class Command(BaseCommand):
 
             price = self._parse_decimal(profile.get("last"))
             market_cap = self._parse_decimal(profile.get("marketCap"))
-            try:
-                investment = Investment.objects.get(ticker=ticker)
-            except Investment.DoesNotExist:
-                continue
+            investment, created = Investment.objects.get_or_create(
+                ticker=ticker, defaults={"category": "stock"}
+            )
 
             investment.price = price
             investment.market_cap = market_cap
-            investment.save(update_fields=["price", "market_cap", "updated_at"])
+            if created:
+                investment.save()
+            else:
+                investment.save(update_fields=["price", "market_cap", "updated_at"])
+
+            action = "Created" if created else "Updated"
+            self.stdout.write(
+                f"{action} investment {ticker} with price={price} and market cap={market_cap}"
+            )
             updated[ticker] = (price, market_cap)
 
         return updated
