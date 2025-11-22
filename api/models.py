@@ -43,7 +43,7 @@ class Investment(models.Model):
     price = models.DecimalField(max_digits=20, decimal_places=4, null=True, blank=True)
     volume = models.BigIntegerField(null=True, blank=True)
     market_cap = models.DecimalField(max_digits=24, decimal_places=2, null=True, blank=True)
-    options_suitability = models.BooleanField(default=False)
+    options_suitability = models.SmallIntegerField(null=True, blank=True)
     description = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

@@ -7,7 +7,7 @@ from django.core.management.base import CommandError
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from api.management.commands.fetch_profile_data import API_HEADERS, PROFILE_ENDPOINT
 
@@ -655,7 +655,7 @@ class FetchProfileDataCommandTests(APITestCase):
 
         call_command("fetch_profile_data")
         investment = Investment.objects.get(ticker="AAA")
-        self.assertTrue(investment.options_suitability)
+        self.assertEqual(investment.options_suitability, 1)
 
     @patch("api.management.commands.fetch_profile_data.requests.get")
     def test_command_sets_options_suitability_false_with_fewer_than_four_expirations(
@@ -688,7 +688,38 @@ class FetchProfileDataCommandTests(APITestCase):
 
         call_command("fetch_profile_data")
         investment = Investment.objects.get(ticker="AAA")
-        self.assertFalse(investment.options_suitability)
+        self.assertEqual(investment.options_suitability, 0)
+
+    @patch("api.management.commands.fetch_profile_data.requests.get")
+    def test_command_sets_options_suitability_unknown_with_no_expirations(
+        self, mock_get: MagicMock
+    ) -> None:
+        mock_get.side_effect = [
+            MagicMock(
+                status_code=200,
+                json=lambda: [{"ticker": "AAA"}],
+                text="{}",
+            ),
+            MagicMock(
+                status_code=200,
+                json=lambda: {
+                    "data": [
+                        {
+                            "id": "AAA",
+                            "attributes": {
+                                "lastDaily": {"last": "10.5"},
+                                "marketCap": "1000",
+                            },
+                        }
+                    ]
+                },
+                text="{}",
+            ),
+        ]
+
+        call_command("fetch_profile_data")
+        investment = Investment.objects.get(ticker="AAA")
+        self.assertEqual(investment.options_suitability, -1)
 
     @patch("api.management.commands.fetch_profile_data.requests.get")
     def test_command_creates_missing_investments(self, mock_get: MagicMock) -> None:
@@ -858,6 +889,53 @@ class FetchProfileDataCommandTests(APITestCase):
             investment = Investment.objects.get(ticker=ticker)
             self.assertEqual(str(investment.price), price)
             self.assertEqual(str(investment.market_cap), market_cap)
+
+    @patch("api.management.commands.fetch_profile_data.requests.get")
+    def test_command_can_skip_investments_with_price(self, mock_get: MagicMock) -> None:
+        Investment.objects.filter(ticker="AAA").update(price=Decimal("5.00"))
+
+        mock_get.side_effect = [
+            MagicMock(
+                status_code=200,
+                json=lambda: [
+                    {"ticker": "AAA"},
+                    {"ticker": "BBB"},
+                ],
+                text="{}",
+            ),
+            MagicMock(
+                status_code=200,
+                json=lambda: {
+                    "data": [
+                        {
+                            "id": "BBB",
+                            "attributes": {
+                                "lastDaily": {"last": "20.5"},
+                                "marketCap": "2000",
+                            },
+                        }
+                    ]
+                },
+                text="{}",
+            ),
+        ]
+
+        buffer = StringIO()
+        call_command("fetch_profile_data", "--skip-priced", stdout=buffer)
+
+        aaa = Investment.objects.get(ticker="AAA")
+        bbb = Investment.objects.get(ticker="BBB")
+
+        self.assertEqual(aaa.price, Decimal("5.00"))
+        self.assertIsNone(aaa.options_suitability)
+        self.assertEqual(bbb.price, Decimal("20.5"))
+        self.assertEqual(bbb.market_cap, Decimal("2000"))
+        self.assertEqual(bbb.options_suitability, -1)
+        self.assertEqual(self.option_expiration_mock.call_args_list, [call("BBB")])
+
+        output = buffer.getvalue()
+        self.assertIn("Updated investment BBB", output)
+        self.assertNotIn("AAA", output)
 
     @patch("api.management.commands.fetch_profile_data.requests.get")
     def test_command_handles_market_cap_rounding(self, mock_get: MagicMock) -> None:
