@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, Iterable
 from urllib.parse import quote_plus
 
 import requests
 from django.core.management.base import BaseCommand, CommandError
+from django.db import models
 
 from api.models import Investment
 
@@ -211,8 +212,14 @@ class Command(BaseCommand):
             if not profile:
                 continue
 
-            price = self._parse_decimal(profile.get("last"))
-            market_cap = self._parse_decimal(profile.get("marketCap"))
+            price = self._quantize_for_field(
+                self._parse_decimal(profile.get("last")),
+                Investment._meta.get_field("price"),
+            )
+            market_cap = self._quantize_for_field(
+                self._parse_decimal(profile.get("marketCap")),
+                Investment._meta.get_field("market_cap"),
+            )
             investment, created = Investment.objects.get_or_create(
                 ticker=ticker, defaults={"category": "stock"}
             )
@@ -261,3 +268,12 @@ class Command(BaseCommand):
             return Decimal(str(value))
         except (InvalidOperation, TypeError) as exc:
             raise CommandError(f"Unable to parse '{value}' as a decimal number.") from exc
+
+    def _quantize_for_field(self, value: Decimal | None, field: models.Field) -> Decimal | None:
+        if value is None:
+            return None
+        if not isinstance(field, models.DecimalField):
+            return value
+
+        quantize_exp = Decimal("1").scaleb(-field.decimal_places)
+        return value.quantize(quantize_exp, rounding=ROUND_HALF_UP)

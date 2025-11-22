@@ -774,6 +774,44 @@ class FetchProfileDataCommandTests(APITestCase):
             self.assertEqual(str(investment.market_cap), market_cap)
 
     @patch("api.management.commands.fetch_profile_data.requests.get")
+    def test_command_handles_market_cap_rounding(self, mock_get: MagicMock) -> None:
+        Investment.objects.create(ticker="ABEV", category="stock")
+
+        mock_get.side_effect = [
+            MagicMock(
+                status_code=200,
+                json=lambda: [
+                    {"ticker": "ABEV"},
+                ],
+                text="{}",
+            ),
+            MagicMock(
+                status_code=200,
+                json=lambda: {
+                    "data": [
+                        {
+                            "id": "ABEV",
+                            "type": "profile",
+                            "attributes": {
+                                "lastDaily": {"last": "2.48"},
+                                "marketCap": "39219526208.313",
+                            },
+                        }
+                    ]
+                },
+                text="{}",
+            ),
+        ]
+
+        buffer = StringIO()
+        call_command("fetch_profile_data", stdout=buffer)
+
+        investment = Investment.objects.get(ticker="ABEV")
+        self.assertEqual(str(investment.price), "2.4800")
+        self.assertEqual(str(investment.market_cap), "39219526208.31")
+        self.assertIn("Updated investment ABEV", buffer.getvalue())
+
+    @patch("api.management.commands.fetch_profile_data.requests.get")
     def test_command_errors_on_unsuccessful_response(self, mock_get: MagicMock) -> None:
         mock_get.return_value = MagicMock(status_code=500, text="error")
 
