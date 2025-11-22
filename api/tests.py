@@ -1,3 +1,4 @@
+from datetime import date
 from decimal import Decimal
 from io import StringIO
 
@@ -603,6 +604,91 @@ class FetchProfileDataCommandTests(APITestCase):
             Investment.objects.create(ticker="CCC", category="stock"),
             Investment.objects.create(ticker="DDD", category="stock"),
         ]
+        option_expiration_patcher = patch(
+            "api.management.commands.fetch_profile_data.Command._fetch_option_expirations",
+            return_value=[],
+        )
+        self.option_expiration_mock = option_expiration_patcher.start()
+        self.addCleanup(option_expiration_patcher.stop)
+
+    def _build_next_month_dates(self, days: list[int]) -> list[str]:
+        today = date.today()
+        if today.month == 12:
+            month = 1
+            year = today.year + 1
+        else:
+            month = today.month + 1
+            year = today.year
+
+        return [f"{month:02d}/{day:02d}/{year}" for day in days]
+
+    @patch("api.management.commands.fetch_profile_data.requests.get")
+    def test_command_sets_options_suitability_true_with_four_expirations(
+        self, mock_get: MagicMock
+    ) -> None:
+        self.option_expiration_mock.return_value = self._build_next_month_dates(
+            [5, 12, 19, 26]
+        )
+
+        mock_get.side_effect = [
+            MagicMock(
+                status_code=200,
+                json=lambda: [{"ticker": "AAA"}],
+                text="{}",
+            ),
+            MagicMock(
+                status_code=200,
+                json=lambda: {
+                    "data": [
+                        {
+                            "id": "AAA",
+                            "attributes": {
+                                "lastDaily": {"last": "10.5"},
+                                "marketCap": "1000",
+                            },
+                        }
+                    ]
+                },
+                text="{}",
+            ),
+        ]
+
+        call_command("fetch_profile_data")
+        investment = Investment.objects.get(ticker="AAA")
+        self.assertTrue(investment.options_suitability)
+
+    @patch("api.management.commands.fetch_profile_data.requests.get")
+    def test_command_sets_options_suitability_false_with_fewer_than_four_expirations(
+        self, mock_get: MagicMock
+    ) -> None:
+        self.option_expiration_mock.return_value = self._build_next_month_dates([5, 12, 19])
+
+        mock_get.side_effect = [
+            MagicMock(
+                status_code=200,
+                json=lambda: [{"ticker": "AAA"}],
+                text="{}",
+            ),
+            MagicMock(
+                status_code=200,
+                json=lambda: {
+                    "data": [
+                        {
+                            "id": "AAA",
+                            "attributes": {
+                                "lastDaily": {"last": "10.5"},
+                                "marketCap": "1000",
+                            },
+                        }
+                    ]
+                },
+                text="{}",
+            ),
+        ]
+
+        call_command("fetch_profile_data")
+        investment = Investment.objects.get(ticker="AAA")
+        self.assertFalse(investment.options_suitability)
 
     @patch("api.management.commands.fetch_profile_data.requests.get")
     def test_command_creates_missing_investments(self, mock_get: MagicMock) -> None:
