@@ -938,6 +938,66 @@ class FetchProfileDataCommandTests(APITestCase):
         self.assertNotIn("AAA", output)
 
     @patch("api.management.commands.fetch_profile_data.requests.get")
+    def test_command_continues_when_option_expirations_fail(
+        self, mock_get: MagicMock
+    ) -> None:
+        self.option_expiration_mock.side_effect = [
+            CommandError("Timeout while calling option expirations"),
+            [],
+        ]
+
+        mock_get.side_effect = [
+            MagicMock(
+                status_code=200,
+                json=lambda: [
+                    {"ticker": "AAA"},
+                    {"ticker": "BBB"},
+                ],
+                text="{}",
+            ),
+            MagicMock(
+                status_code=200,
+                json=lambda: {
+                    "data": [
+                        {
+                            "id": "AAA",
+                            "attributes": {
+                                "lastDaily": {"last": "15.68"},
+                                "marketCap": "1996066063.00",
+                            },
+                        },
+                        {
+                            "id": "BBB",
+                            "attributes": {
+                                "lastDaily": {"last": "8.74"},
+                                "marketCap": "1733964478.00",
+                            },
+                        },
+                    ]
+                },
+                text="{}",
+            ),
+        ]
+
+        buffer = StringIO()
+        call_command("fetch_profile_data", stdout=buffer, stderr=buffer)
+
+        aaa = Investment.objects.get(ticker="AAA")
+        bbb = Investment.objects.get(ticker="BBB")
+
+        self.assertEqual(aaa.price, Decimal("15.68"))
+        self.assertEqual(aaa.market_cap, Decimal("1996066063.00"))
+        self.assertEqual(aaa.options_suitability, -1)
+        self.assertEqual(bbb.price, Decimal("8.74"))
+        self.assertEqual(bbb.market_cap, Decimal("1733964478.00"))
+        self.assertEqual(bbb.options_suitability, -1)
+
+        output = buffer.getvalue()
+        self.assertIn("Continuing without options data.", output)
+        self.assertIn("Updated investment AAA with price=", output)
+        self.assertIn("Updated investment BBB with price=", output)
+
+    @patch("api.management.commands.fetch_profile_data.requests.get")
     def test_command_handles_market_cap_rounding(self, mock_get: MagicMock) -> None:
         Investment.objects.create(ticker="ABEV", category="stock")
 

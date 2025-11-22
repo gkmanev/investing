@@ -244,7 +244,15 @@ class Command(BaseCommand):
                 self._parse_decimal(profile.get("marketCap")),
                 Investment._meta.get_field("market_cap"),
             )
-            expirations = self._fetch_option_expirations(ticker)
+            try:
+                expirations = self._fetch_option_expirations(ticker)
+            except CommandError as exc:
+                self.stderr.write(
+                    f"Failed to fetch option expirations for {ticker}: {exc}. "
+                    "Continuing without options data."
+                )
+                expirations = []
+
             options_suitability = self._calculate_options_suitability(expirations)
             investment, created = Investment.objects.get_or_create(
                 ticker=ticker, defaults={"category": "stock"}
