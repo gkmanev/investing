@@ -31,6 +31,13 @@ class Command(BaseCommand):
 
     help = "Fetches local investments and updates their price and market cap using profile data."
 
+    def add_arguments(self, parser) -> None:  # pragma: no cover - argparse wiring
+        parser.add_argument(
+            "--skip-priced",
+            action="store_true",
+            help="Skip investments that already have a stored price.",
+        )
+
     def handle(self, *args: Any, **options: Any) -> str:
         investments_payload = self._fetch_json(INVESTMENTS_ENDPOINT)
         tickers = self._extract_tickers(investments_payload)
@@ -38,6 +45,19 @@ class Command(BaseCommand):
             raise CommandError(
                 "Investments endpoint did not return any entries with ticker information."
             )
+
+        if options.get("skip_priced"):
+            priced_tickers = {
+                ticker.upper()
+                for ticker in Investment.objects.filter(
+                    ticker__in=tickers, price__isnull=False
+                ).values_list("ticker", flat=True)
+            }
+            tickers = [ticker for ticker in tickers if ticker.upper() not in priced_tickers]
+            if not tickers:
+                raise CommandError(
+                    "No tickers remain to update after skipping priced investments."
+                )
 
         updated_tickers: list[str] = []
         missing_tickers: list[str] = []
@@ -208,8 +228,8 @@ class Command(BaseCommand):
 
     def _update_investments(
         self, tickers: Iterable[str], profiles: dict[str, dict[str, Any]]
-    ) -> dict[str, tuple[Decimal | None, Decimal | None, bool]]:
-        updated: dict[str, tuple[Decimal | None, Decimal | None, bool]] = {}
+    ) -> dict[str, tuple[Decimal | None, Decimal | None, int]]:
+        updated: dict[str, tuple[Decimal | None, Decimal | None, int]] = {}
 
         for ticker in tickers:
             profile = profiles.get(ticker.upper())
@@ -254,7 +274,7 @@ class Command(BaseCommand):
         return updated
 
     def _assert_profiles_persisted(
-        self, updated: dict[str, tuple[Decimal | None, Decimal | None, bool]]
+        self, updated: dict[str, tuple[Decimal | None, Decimal | None, int]]
     ) -> None:
         if not updated:
             return
@@ -310,9 +330,9 @@ class Command(BaseCommand):
 
         return []
 
-    def _calculate_options_suitability(self, dates: list[str]) -> bool:
+    def _calculate_options_suitability(self, dates: list[str]) -> int:
         if not dates:
-            return False
+            return -1
 
         today = date.today()
         if today.month == 12:
@@ -332,7 +352,7 @@ class Command(BaseCommand):
             if expiration.year == target_year and expiration.month == target_month:
                 expirations_next_month += 1
 
-        return expirations_next_month >= 4
+        return 1 if expirations_next_month >= 4 else 0
 
     def _parse_decimal(self, value: Any) -> Decimal | None:
         if value is None:
