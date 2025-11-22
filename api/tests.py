@@ -605,8 +605,69 @@ class FetchProfileDataCommandTests(APITestCase):
         ]
 
     @patch("api.management.commands.fetch_profile_data.requests.get")
-    def test_command_updates_all_investments_in_chunks(self, mock_get: MagicMock) -> None:
+    def test_command_creates_missing_investments(self, mock_get: MagicMock) -> None:
         mock_get.side_effect = [
+            MagicMock(
+                status_code=200,
+                json=lambda: [
+                    {"ticker": "NEW1"},
+                    {"ticker": "NEW2"},
+                    {"ticker": "NEW3"},
+                ],
+                text="{}",
+            ),
+            MagicMock(
+                status_code=200,
+                json=lambda: {
+                    "data": [
+                        {
+                            "id": "NEW1",
+                            "attributes": {
+                                "lastDaily": {"last": "1.1"},
+                                "marketCap": "10.1",
+                            },
+                        },
+                        {
+                            "id": "NEW2",
+                            "attributes": {
+                                "lastDaily": {"last": "2.2"},
+                                "marketCap": "20.2",
+                            },
+                        },
+                        {
+                            "id": "NEW3",
+                            "attributes": {
+                                "lastDaily": {"last": "3.3"},
+                                "marketCap": "30.3",
+                            },
+                        },
+                    ]
+                },
+                text="{}",
+            ),
+        ]
+
+        buffer = StringIO()
+        call_command("fetch_profile_data", stdout=buffer)
+
+        for ticker, price, market_cap in (
+            ("NEW1", Decimal("1.1"), Decimal("10.1")),
+            ("NEW2", Decimal("2.2"), Decimal("20.2")),
+            ("NEW3", Decimal("3.3"), Decimal("30.3")),
+        ):
+            investment = Investment.objects.get(ticker=ticker)
+            self.assertEqual(investment.category, "stock")
+            self.assertEqual(investment.price, price)
+            self.assertEqual(investment.market_cap, market_cap)
+
+        output = buffer.getvalue()
+        self.assertIn("Created investment NEW1", output)
+        self.assertIn("Created investment NEW2", output)
+        self.assertIn("Created investment NEW3", output)
+
+    @patch("api.management.commands.fetch_profile_data.requests.get")
+    def test_command_updates_all_investments_in_chunks(self, mock_get: MagicMock) -> None:
+        responses = [
             MagicMock(
                 status_code=200,
                 json=lambda: [
@@ -697,6 +758,8 @@ class FetchProfileDataCommandTests(APITestCase):
             ),
         ]
 
+        mock_get.side_effect = responses
+
         with patch("api.management.commands.fetch_profile_data.PROFILE_CHUNK_SIZE", 2):
             call_command("fetch_profile_data")
 
@@ -711,6 +774,44 @@ class FetchProfileDataCommandTests(APITestCase):
             self.assertEqual(str(investment.market_cap), market_cap)
 
     @patch("api.management.commands.fetch_profile_data.requests.get")
+    def test_command_handles_market_cap_rounding(self, mock_get: MagicMock) -> None:
+        Investment.objects.create(ticker="ABEV", category="stock")
+
+        mock_get.side_effect = [
+            MagicMock(
+                status_code=200,
+                json=lambda: [
+                    {"ticker": "ABEV"},
+                ],
+                text="{}",
+            ),
+            MagicMock(
+                status_code=200,
+                json=lambda: {
+                    "data": [
+                        {
+                            "id": "ABEV",
+                            "type": "profile",
+                            "attributes": {
+                                "lastDaily": {"last": "2.48"},
+                                "marketCap": "39219526208.313",
+                            },
+                        }
+                    ]
+                },
+                text="{}",
+            ),
+        ]
+
+        buffer = StringIO()
+        call_command("fetch_profile_data", stdout=buffer)
+
+        investment = Investment.objects.get(ticker="ABEV")
+        self.assertEqual(str(investment.price), "2.4800")
+        self.assertEqual(str(investment.market_cap), "39219526208.31")
+        self.assertIn("Updated investment ABEV", buffer.getvalue())
+
+    @patch("api.management.commands.fetch_profile_data.requests.get")
     def test_command_errors_on_unsuccessful_response(self, mock_get: MagicMock) -> None:
         mock_get.return_value = MagicMock(status_code=500, text="error")
 
@@ -719,7 +820,7 @@ class FetchProfileDataCommandTests(APITestCase):
 
     @patch("api.management.commands.fetch_profile_data.requests.get")
     def test_profile_request_includes_tickers_query(self, mock_get: MagicMock) -> None:
-        mock_get.side_effect = [
+        responses = [
             MagicMock(
                 status_code=200,
                 json=lambda: [
