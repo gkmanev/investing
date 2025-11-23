@@ -1,22 +1,15 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, Iterable
-from urllib.parse import quote_plus
 
 import requests
 from django.core.management.base import BaseCommand, CommandError
-from django.db import models
 
 from api.models import Investment
 
-PROFILE_CHUNK_SIZE = 3
-
 BASE_URL = "http://127.0.0.1:8000"
 INVESTMENTS_ENDPOINT = f"{BASE_URL}/api/investments/"
-# RapidAPI proxy for Seeking Alpha profile data.
-PROFILE_ENDPOINT = "https://seeking-alpha.p.rapidapi.com/symbols/get-profile"
 OPTION_EXPIRATIONS_ENDPOINT = (
     "https://seeking-alpha.p.rapidapi.com/symbols/get-option-expirations"
 )
@@ -27,9 +20,9 @@ API_HEADERS = {
 
 
 class Command(BaseCommand):
-    """Fetch profile data for investments and update stored values."""
+    """Fetch option suitability data for investments."""
 
-    help = "Fetches local investments and updates their price and market cap using profile data."
+    help = "Fetches local investments and updates their options suitability."
 
     def add_arguments(self, parser) -> None:  # pragma: no cover - argparse wiring
         parser.add_argument(
@@ -60,31 +53,36 @@ class Command(BaseCommand):
                 )
 
         updated_tickers: list[str] = []
-        missing_tickers: list[str] = []
-        for chunk in self._chunked(tickers, PROFILE_CHUNK_SIZE):
-            profiles = self._fetch_profiles_for_chunk(chunk)
-            if not profiles:
-                missing_tickers.extend(chunk)
+        for ticker in tickers:
+            try:
+                expirations = self._fetch_option_expirations(ticker)
+            except CommandError as exc:
+                self.stderr.write(
+                    f"Failed to fetch option expirations for {ticker}: {exc}. "
+                    "Continuing without options data."
+                )
                 continue
 
-            updated_chunk = self._update_investments(chunk, profiles)
-            self._assert_profiles_persisted(updated_chunk)
-            updated_tickers.extend(updated_chunk.keys())
-            missing_tickers.extend([ticker for ticker in chunk if ticker not in updated_chunk])
+            options_suitability = self._calculate_options_suitability(expirations)
+            investment, created = Investment.objects.get_or_create(
+                ticker=ticker, defaults={"category": "stock"}
+            )
+
+            investment.options_suitability = options_suitability
+            if created:
+                investment.save()
+            else:
+                investment.save(update_fields=["options_suitability", "updated_at"])
+
+            action = "Created" if created else "Updated"
+            self.stdout.write(
+                f"{action} investment {ticker} with options suitability={options_suitability}"
+            )
+            updated_tickers.append(ticker)
 
         if not updated_tickers:
             raise CommandError(
-                "No matching investments were updated with the returned profile data."
-            )
-        if missing_tickers:
-            self.stdout.write(
-                "No profile data returned for: " + ", ".join(sorted(set(missing_tickers)))
-            )
-
-        missing_tickers = [ticker for ticker in tickers if ticker not in updated_tickers]
-        if missing_tickers:
-            self.stdout.write(
-                "No profile data returned for: " + ", ".join(sorted(set(missing_tickers)))
+                "No investments were updated with options suitability data."
             )
 
         return ", ".join(updated_tickers)
@@ -109,31 +107,6 @@ class Command(BaseCommand):
             return response.json()
         except ValueError as exc:
             raise CommandError(f"Response from '{url}' did not contain valid JSON.") from exc
-
-    def _build_profile_url(self, tickers: Iterable[str]) -> str:
-        ticker_string = ",".join(tickers)
-        encoded = quote_plus(ticker_string)
-        return f"{PROFILE_ENDPOINT}?symbols={encoded}"
-
-    def _fetch_profiles_for_chunk(self, chunk: list[str]) -> dict[str, dict[str, Any]]:
-        profile_url = self._build_profile_url(chunk)
-        self.stdout.write(
-            f"Requesting profile data for {', '.join(chunk)} at {profile_url}"
-        )
-        profile_payload = self._fetch_json(profile_url, headers=API_HEADERS)
-        profiles = self._build_profile_map(profile_payload)
-
-        missing = [ticker for ticker in chunk if ticker.upper() not in profiles]
-        if not missing or len(chunk) == 1:
-            return profiles
-
-        fallback_profiles: dict[str, dict[str, Any]] = {}
-        fallback_size = min(max((len(chunk) + 1) // 2, 1), PROFILE_CHUNK_SIZE)
-        for fallback_chunk in self._chunked(missing, fallback_size):
-            fallback_profiles.update(self._fetch_profiles_for_chunk(fallback_chunk))
-
-        profiles.update(fallback_profiles)
-        return profiles
 
     def _extract_tickers(self, payload: Any) -> list[str]:
         entries: Iterable[Any]
@@ -161,151 +134,6 @@ class Command(BaseCommand):
                 tickers.append(str(ticker))
 
         return tickers
-
-    def _chunked(self, values: Iterable[str], size: int) -> Iterable[list[str]]:
-        chunk: list[str] = []
-        for value in values:
-            chunk.append(value)
-            if len(chunk) == size:
-                yield chunk
-                chunk = []
-
-        if chunk:
-            yield chunk
-
-    def _build_profile_map(self, payload: Any) -> dict[str, dict[str, Any]]:
-        data_section = payload
-        if isinstance(payload, dict) and "data" in payload:
-            data_section = payload["data"]
-
-        profiles: dict[str, dict[str, Any]] = {}
-
-        if isinstance(data_section, dict):
-            iterator = (
-                (symbol, profile)
-                for symbol, profile in data_section.items()
-                if isinstance(profile, dict)
-            )
-        elif isinstance(data_section, list):
-            iterator = []
-            for profile in data_section:
-                if not isinstance(profile, dict):
-                    continue
-                symbol = (
-                    profile.get("id")
-                    or profile.get("symbol")
-                    or profile.get("ticker")
-                )
-                if not symbol:
-                    continue
-                iterator.append((str(symbol), profile))
-        else:
-            raise CommandError("Profile payload had an unexpected structure.")
-
-        for symbol, profile in iterator:
-            normalized = self._normalize_profile(profile)
-            profiles[str(symbol).upper()] = normalized
-
-        return profiles
-
-    def _normalize_profile(self, profile: dict[str, Any]) -> dict[str, Any]:
-        attributes = profile.get("attributes")
-        if isinstance(attributes, dict):
-            source = attributes
-        else:
-            source = profile
-
-        last_daily = source.get("lastDaily")
-        if isinstance(last_daily, dict) and "last" in last_daily:
-            last_value = last_daily.get("last")
-        else:
-            last_value = source.get("last")
-
-        return {
-            "last": last_value,
-            "marketCap": source.get("marketCap"),
-        }
-
-    def _update_investments(
-        self, tickers: Iterable[str], profiles: dict[str, dict[str, Any]]
-    ) -> dict[str, tuple[Decimal | None, Decimal | None, int]]:
-        updated: dict[str, tuple[Decimal | None, Decimal | None, int]] = {}
-
-        for ticker in tickers:
-            profile = profiles.get(ticker.upper())
-            if not profile:
-                continue
-
-            price = self._quantize_for_field(
-                self._parse_decimal(profile.get("last")),
-                Investment._meta.get_field("price"),
-            )
-            market_cap = self._quantize_for_field(
-                self._parse_decimal(profile.get("marketCap")),
-                Investment._meta.get_field("market_cap"),
-            )
-            try:
-                expirations = self._fetch_option_expirations(ticker)
-            except CommandError as exc:
-                self.stderr.write(
-                    f"Failed to fetch option expirations for {ticker}: {exc}. "
-                    "Continuing without options data."
-                )
-                expirations = []
-
-            options_suitability = self._calculate_options_suitability(expirations)
-            investment, created = Investment.objects.get_or_create(
-                ticker=ticker, defaults={"category": "stock"}
-            )
-
-            investment.price = price
-            investment.market_cap = market_cap
-            investment.options_suitability = options_suitability
-            if created:
-                investment.save()
-            else:
-                investment.save(
-                    update_fields=[
-                        "price",
-                        "market_cap",
-                        "options_suitability",
-                        "updated_at",
-                    ]
-                )
-
-            action = "Created" if created else "Updated"
-            self.stdout.write(
-                f"{action} investment {ticker} with price={price} and market cap={market_cap}"
-            )
-            updated[ticker] = (price, market_cap, options_suitability)
-
-        return updated
-
-    def _assert_profiles_persisted(
-        self, updated: dict[str, tuple[Decimal | None, Decimal | None, int]]
-    ) -> None:
-        if not updated:
-            return
-
-        failed: list[str] = []
-        for ticker, (price, market_cap, options_suitability) in updated.items():
-            try:
-                investment = Investment.objects.get(ticker=ticker)
-            except Investment.DoesNotExist:
-                failed.append(ticker)
-                continue
-
-            if (
-                investment.price != price
-                or investment.market_cap != market_cap
-                or investment.options_suitability != options_suitability
-            ):
-                failed.append(ticker)
-
-        if failed:
-            raise CommandError(
-                "Failed to persist profile data for: " + ", ".join(sorted(set(failed)))
-            )
 
     def _fetch_option_expirations(self, ticker: str) -> list[str]:
         payload = self._fetch_json(
@@ -361,20 +189,3 @@ class Command(BaseCommand):
                 expirations_next_month += 1
 
         return 1 if expirations_next_month >= 4 else 0
-
-    def _parse_decimal(self, value: Any) -> Decimal | None:
-        if value is None:
-            return None
-        try:
-            return Decimal(str(value))
-        except (InvalidOperation, TypeError) as exc:
-            raise CommandError(f"Unable to parse '{value}' as a decimal number.") from exc
-
-    def _quantize_for_field(self, value: Decimal | None, field: models.Field) -> Decimal | None:
-        if value is None:
-            return None
-        if not isinstance(field, models.DecimalField):
-            return value
-
-        quantize_exp = Decimal("1").scaleb(-field.decimal_places)
-        return value.quantize(quantize_exp, rounding=ROUND_HALF_UP)
