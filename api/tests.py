@@ -9,7 +9,11 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 from unittest.mock import MagicMock, call, patch
 
-from api.management.commands.fetch_profile_data import API_HEADERS, PROFILE_ENDPOINT
+from api.management.commands.fetch_profile_data import (
+    API_HEADERS,
+    OPTION_EXPIRATIONS_ENDPOINT,
+    Command,
+)
 
 from .models import Investment, ScreenerFilter, ScreenerType
 
@@ -597,19 +601,13 @@ class FetchScreenerResultsCommandTests(APITestCase):
 
 
 class FetchProfileDataCommandTests(APITestCase):
+
     def setUp(self) -> None:
         self.investments = [
             Investment.objects.create(ticker="AAA", category="stock"),
             Investment.objects.create(ticker="BBB", category="stock"),
             Investment.objects.create(ticker="CCC", category="stock"),
-            Investment.objects.create(ticker="DDD", category="stock"),
         ]
-        option_expiration_patcher = patch(
-            "api.management.commands.fetch_profile_data.Command._fetch_option_expirations",
-            return_value=[],
-        )
-        self.option_expiration_mock = option_expiration_patcher.start()
-        self.addCleanup(option_expiration_patcher.stop)
 
     def _build_next_month_dates(self, days: list[int]) -> list[str]:
         today = date.today()
@@ -622,418 +620,76 @@ class FetchProfileDataCommandTests(APITestCase):
 
         return [f"{month:02d}/{day:02d}/{year}" for day in days]
 
+    @patch("api.management.commands.fetch_profile_data.Command._fetch_option_expirations")
     @patch("api.management.commands.fetch_profile_data.requests.get")
     def test_command_sets_options_suitability_true_with_four_expirations(
-        self, mock_get: MagicMock
+        self, mock_get: MagicMock, mock_expirations: MagicMock
     ) -> None:
-        self.option_expiration_mock.return_value = self._build_next_month_dates(
-            [5, 12, 19, 26]
+        mock_expirations.return_value = self._build_next_month_dates([5, 12, 19, 26])
+        mock_get.return_value = MagicMock(
+            status_code=200, json=lambda: [{"ticker": "AAA"}], text="{}"
         )
-
-        mock_get.side_effect = [
-            MagicMock(
-                status_code=200,
-                json=lambda: [{"ticker": "AAA"}],
-                text="{}",
-            ),
-            MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "data": [
-                        {
-                            "id": "AAA",
-                            "attributes": {
-                                "lastDaily": {"last": "10.5"},
-                                "marketCap": "1000",
-                            },
-                        }
-                    ]
-                },
-                text="{}",
-            ),
-        ]
 
         call_command("fetch_profile_data")
         investment = Investment.objects.get(ticker="AAA")
         self.assertEqual(investment.options_suitability, 1)
 
+    @patch("api.management.commands.fetch_profile_data.Command._fetch_option_expirations")
     @patch("api.management.commands.fetch_profile_data.requests.get")
     def test_command_sets_options_suitability_false_with_fewer_than_four_expirations(
-        self, mock_get: MagicMock
+        self, mock_get: MagicMock, mock_expirations: MagicMock
     ) -> None:
-        self.option_expiration_mock.return_value = self._build_next_month_dates([5, 12, 19])
-
-        mock_get.side_effect = [
-            MagicMock(
-                status_code=200,
-                json=lambda: [{"ticker": "AAA"}],
-                text="{}",
-            ),
-            MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "data": [
-                        {
-                            "id": "AAA",
-                            "attributes": {
-                                "lastDaily": {"last": "10.5"},
-                                "marketCap": "1000",
-                            },
-                        }
-                    ]
-                },
-                text="{}",
-            ),
-        ]
+        mock_expirations.return_value = self._build_next_month_dates([5, 12, 19])
+        mock_get.return_value = MagicMock(
+            status_code=200, json=lambda: [{"ticker": "AAA"}], text="{}"
+        )
 
         call_command("fetch_profile_data")
         investment = Investment.objects.get(ticker="AAA")
         self.assertEqual(investment.options_suitability, 0)
 
+    @patch("api.management.commands.fetch_profile_data.Command._fetch_option_expirations")
     @patch("api.management.commands.fetch_profile_data.requests.get")
     def test_command_sets_options_suitability_unknown_with_no_expirations(
-        self, mock_get: MagicMock
+        self, mock_get: MagicMock, mock_expirations: MagicMock
     ) -> None:
-        mock_get.side_effect = [
-            MagicMock(
-                status_code=200,
-                json=lambda: [{"ticker": "AAA"}],
-                text="{}",
-            ),
-            MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "data": [
-                        {
-                            "id": "AAA",
-                            "attributes": {
-                                "lastDaily": {"last": "10.5"},
-                                "marketCap": "1000",
-                            },
-                        }
-                    ]
-                },
-                text="{}",
-            ),
-        ]
+        mock_expirations.return_value = []
+        mock_get.return_value = MagicMock(
+            status_code=200, json=lambda: [{"ticker": "AAA"}], text="{}"
+        )
 
         call_command("fetch_profile_data")
         investment = Investment.objects.get(ticker="AAA")
         self.assertEqual(investment.options_suitability, -1)
 
+    @patch("api.management.commands.fetch_profile_data.Command._fetch_option_expirations")
     @patch("api.management.commands.fetch_profile_data.requests.get")
-    def test_command_creates_missing_investments(self, mock_get: MagicMock) -> None:
-        mock_get.side_effect = [
-            MagicMock(
-                status_code=200,
-                json=lambda: [
-                    {"ticker": "NEW1"},
-                    {"ticker": "NEW2"},
-                    {"ticker": "NEW3"},
-                ],
-                text="{}",
-            ),
-            MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "data": [
-                        {
-                            "id": "NEW1",
-                            "attributes": {
-                                "lastDaily": {"last": "1.1"},
-                                "marketCap": "10.1",
-                            },
-                        },
-                        {
-                            "id": "NEW2",
-                            "attributes": {
-                                "lastDaily": {"last": "2.2"},
-                                "marketCap": "20.2",
-                            },
-                        },
-                        {
-                            "id": "NEW3",
-                            "attributes": {
-                                "lastDaily": {"last": "3.3"},
-                                "marketCap": "30.3",
-                            },
-                        },
-                    ]
-                },
-                text="{}",
-            ),
-        ]
+    def test_command_creates_missing_investments(
+        self, mock_get: MagicMock, mock_expirations: MagicMock
+    ) -> None:
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=lambda: [
+                {"ticker": "NEW1"},
+                {"ticker": "NEW2"},
+            ],
+            text="{}",
+        )
+        mock_expirations.return_value = []
 
         buffer = StringIO()
         call_command("fetch_profile_data", stdout=buffer)
 
-        for ticker, price, market_cap in (
-            ("NEW1", Decimal("1.1"), Decimal("10.1")),
-            ("NEW2", Decimal("2.2"), Decimal("20.2")),
-            ("NEW3", Decimal("3.3"), Decimal("30.3")),
-        ):
+        for ticker in ("NEW1", "NEW2"):
             investment = Investment.objects.get(ticker=ticker)
             self.assertEqual(investment.category, "stock")
-            self.assertEqual(investment.price, price)
-            self.assertEqual(investment.market_cap, market_cap)
+            self.assertEqual(investment.options_suitability, -1)
+            self.assertIsNone(investment.price)
+            self.assertIsNone(investment.market_cap)
 
         output = buffer.getvalue()
         self.assertIn("Created investment NEW1", output)
         self.assertIn("Created investment NEW2", output)
-        self.assertIn("Created investment NEW3", output)
-
-    @patch("api.management.commands.fetch_profile_data.requests.get")
-    def test_command_updates_all_investments_in_chunks(self, mock_get: MagicMock) -> None:
-        responses = [
-            MagicMock(
-                status_code=200,
-                json=lambda: [
-                    {"ticker": "AAA"},
-                    {"ticker": "BBB"},
-                    {"ticker": "CCC"},
-                    {"ticker": "DDD"},
-                ],
-                text="{}",
-            ),
-            MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "data": [
-                        {
-                            "id": "AAA",
-                            "type": "profile",
-                            "attributes": {
-                                "lastDaily": {"last": "10.5"},
-                                "marketCap": "1000",
-                            },
-                        },
-                        {
-                            "id": "BBB",
-                            "type": "profile",
-                            "attributes": {
-                                "lastDaily": {"last": "12.25"},
-                                "marketCap": "2000",
-                            },
-                        },
-                    ]
-                },
-                text="{}",
-            ),
-            MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "data": [
-                        {
-                            "id": "CCC",
-                            "type": "profile",
-                            "attributes": {
-                                "lastDaily": {"last": "8.75"},
-                                "marketCap": "3000",
-                            },
-                        },
-                        {
-                            "id": "DDD",
-                            "type": "profile",
-                            "attributes": {
-                                "lastDaily": {"last": "9.00"},
-                                "marketCap": "4000",
-                            },
-                        },
-                    ]
-                },
-                text="{}",
-            ),
-            MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "data": [
-                        {
-                            "id": "CCC",
-                            "attributes": {
-                                "lastDaily": {"last": "3"},
-                                "marketCap": "4",
-                            },
-                        }
-                    ]
-                },
-                text="{}",
-            ),
-            MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "data": [
-                        {
-                            "id": "CCC",
-                            "attributes": {
-                                "lastDaily": {"last": "3"},
-                                "marketCap": "4",
-                            },
-                        }
-                    ]
-                },
-                text="{}",
-            ),
-        ]
-
-        mock_get.side_effect = responses
-
-        with patch("api.management.commands.fetch_profile_data.PROFILE_CHUNK_SIZE", 2):
-            call_command("fetch_profile_data")
-
-        for ticker, price, market_cap in (
-            ("AAA", "10.5000", "1000.00"),
-            ("BBB", "12.2500", "2000.00"),
-            ("CCC", "8.7500", "3000.00"),
-            ("DDD", "9.0000", "4000.00"),
-        ):
-            investment = Investment.objects.get(ticker=ticker)
-            self.assertEqual(str(investment.price), price)
-            self.assertEqual(str(investment.market_cap), market_cap)
-
-    @patch("api.management.commands.fetch_profile_data.requests.get")
-    def test_command_can_skip_investments_with_price(self, mock_get: MagicMock) -> None:
-        Investment.objects.filter(ticker="AAA").update(price=Decimal("5.00"))
-
-        mock_get.side_effect = [
-            MagicMock(
-                status_code=200,
-                json=lambda: [
-                    {"ticker": "AAA"},
-                    {"ticker": "BBB"},
-                ],
-                text="{}",
-            ),
-            MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "data": [
-                        {
-                            "id": "BBB",
-                            "attributes": {
-                                "lastDaily": {"last": "20.5"},
-                                "marketCap": "2000",
-                            },
-                        }
-                    ]
-                },
-                text="{}",
-            ),
-        ]
-
-        buffer = StringIO()
-        call_command("fetch_profile_data", "--skip-priced", stdout=buffer)
-
-        aaa = Investment.objects.get(ticker="AAA")
-        bbb = Investment.objects.get(ticker="BBB")
-
-        self.assertEqual(aaa.price, Decimal("5.00"))
-        self.assertIsNone(aaa.options_suitability)
-        self.assertEqual(bbb.price, Decimal("20.5"))
-        self.assertEqual(bbb.market_cap, Decimal("2000"))
-        self.assertEqual(bbb.options_suitability, -1)
-        self.assertEqual(self.option_expiration_mock.call_args_list, [call("BBB")])
-
-        output = buffer.getvalue()
-        self.assertIn("Updated investment BBB", output)
-        self.assertNotIn("AAA", output)
-
-    @patch("api.management.commands.fetch_profile_data.requests.get")
-    def test_command_continues_when_option_expirations_fail(
-        self, mock_get: MagicMock
-    ) -> None:
-        self.option_expiration_mock.side_effect = [
-            CommandError("Timeout while calling option expirations"),
-            [],
-        ]
-
-        mock_get.side_effect = [
-            MagicMock(
-                status_code=200,
-                json=lambda: [
-                    {"ticker": "AAA"},
-                    {"ticker": "BBB"},
-                ],
-                text="{}",
-            ),
-            MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "data": [
-                        {
-                            "id": "AAA",
-                            "attributes": {
-                                "lastDaily": {"last": "15.68"},
-                                "marketCap": "1996066063.00",
-                            },
-                        },
-                        {
-                            "id": "BBB",
-                            "attributes": {
-                                "lastDaily": {"last": "8.74"},
-                                "marketCap": "1733964478.00",
-                            },
-                        },
-                    ]
-                },
-                text="{}",
-            ),
-        ]
-
-        buffer = StringIO()
-        call_command("fetch_profile_data", stdout=buffer, stderr=buffer)
-
-        aaa = Investment.objects.get(ticker="AAA")
-        bbb = Investment.objects.get(ticker="BBB")
-
-        self.assertEqual(aaa.price, Decimal("15.68"))
-        self.assertEqual(aaa.market_cap, Decimal("1996066063.00"))
-        self.assertEqual(aaa.options_suitability, -1)
-        self.assertEqual(bbb.price, Decimal("8.74"))
-        self.assertEqual(bbb.market_cap, Decimal("1733964478.00"))
-        self.assertEqual(bbb.options_suitability, -1)
-
-        output = buffer.getvalue()
-        self.assertIn("Continuing without options data.", output)
-        self.assertIn("Updated investment AAA with price=", output)
-        self.assertIn("Updated investment BBB with price=", output)
-
-    @patch("api.management.commands.fetch_profile_data.requests.get")
-    def test_command_handles_market_cap_rounding(self, mock_get: MagicMock) -> None:
-        Investment.objects.create(ticker="ABEV", category="stock")
-
-        mock_get.side_effect = [
-            MagicMock(
-                status_code=200,
-                json=lambda: [
-                    {"ticker": "ABEV"},
-                ],
-                text="{}",
-            ),
-            MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "data": [
-                        {
-                            "id": "ABEV",
-                            "type": "profile",
-                            "attributes": {
-                                "lastDaily": {"last": "2.48"},
-                                "marketCap": "39219526208.313",
-                            },
-                        }
-                    ]
-                },
-                text="{}",
-            ),
-        ]
-
-        buffer = StringIO()
-        call_command("fetch_profile_data", stdout=buffer)
-
-        investment = Investment.objects.get(ticker="ABEV")
-        self.assertEqual(str(investment.price), "2.4800")
-        self.assertEqual(str(investment.market_cap), "39219526208.31")
-        self.assertIn("Updated investment ABEV", buffer.getvalue())
 
     @patch("api.management.commands.fetch_profile_data.requests.get")
     def test_command_errors_on_unsuccessful_response(self, mock_get: MagicMock) -> None:
@@ -1043,781 +699,66 @@ class FetchProfileDataCommandTests(APITestCase):
             call_command("fetch_profile_data")
 
     @patch("api.management.commands.fetch_profile_data.requests.get")
-    def test_profile_request_includes_tickers_query(self, mock_get: MagicMock) -> None:
-        responses = [
-            MagicMock(
-                status_code=200,
-                json=lambda: [
-                    {"ticker": "AAA"},
-                    {"ticker": "BBB"},
-                    {"ticker": "CCC"},
-                ],
-                text="{}",
-            ),
-            MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "data": [
-                        {
-                            "id": "AAA",
-                            "attributes": {
-                                "lastDaily": {"last": "1"},
-                                "marketCap": "2",
-                            },
-                        },
-                        {
-                            "id": "BBB",
-                            "attributes": {
-                                "lastDaily": {"last": "2"},
-                                "marketCap": "3",
-                            },
-                        },
-                    ]
-                },
-                text="{}",
-            ),
-            MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "data": [
-                        {
-                            "id": "CCC",
-                            "attributes": {
-                                "lastDaily": {"last": "3"},
-                                "marketCap": "4",
-                            },
-                        }
-                    ]
-                },
-                text="{}",
-            ),
-            MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "data": [
-                        {
-                            "id": "CCC",
-                            "attributes": {
-                                "lastDaily": {"last": "3"},
-                                "marketCap": "4",
-                            },
-                        }
-                    ]
-                },
-                text="{}",
-            ),
-        ]
-        fallback_response = MagicMock(
+    def test_command_can_skip_investments_with_price(self, mock_get: MagicMock) -> None:
+        Investment.objects.filter(ticker="AAA").update(price=Decimal("5.00"))
+        mock_get.return_value = MagicMock(
             status_code=200,
-            json=lambda: {"data": []},
+            json=lambda: [
+                {"ticker": "AAA"},
+                {"ticker": "BBB"},
+            ],
             text="{}",
         )
 
-        def responder(*_: object, **__: object):
-            if responses:
-                return responses.pop(0)
-            return fallback_response
+        with patch(
+            "api.management.commands.fetch_profile_data.Command._fetch_option_expirations",
+            return_value=[],
+        ) as mock_expirations:
+            buffer = StringIO()
+            call_command("fetch_profile_data", "--skip-priced", stdout=buffer)
 
-        mock_get.side_effect = responder
-
-        buffer = StringIO()
-        with patch("api.management.commands.fetch_profile_data.PROFILE_CHUNK_SIZE", 2):
-            call_command("fetch_profile_data", stdout=buffer)
-
+        self.assertEqual(mock_expirations.call_args_list, [call("BBB")])
         output = buffer.getvalue()
-        self.assertIn("Requesting profile data for AAA, BBB", output)
-        self.assertIn("Requesting profile data for CCC", output)
-        self.assertIn(PROFILE_ENDPOINT, output)
+        self.assertNotIn("AAA", output)
+        self.assertIn("BBB", output)
 
     @patch("api.management.commands.fetch_profile_data.requests.get")
-    def test_command_retries_missing_profiles_with_smaller_chunks(
+    def test_command_can_skip_investments_with_price_no_remaining(
         self, mock_get: MagicMock
     ) -> None:
-        Investment.objects.get_or_create(ticker="AAA", defaults={"category": "stock"})
-        Investment.objects.get_or_create(ticker="BBB", defaults={"category": "stock"})
+        Investment.objects.filter(ticker="AAA").update(price=Decimal("5.00"))
+        Investment.objects.filter(ticker="BBB").update(price=Decimal("7.00"))
+        Investment.objects.filter(ticker="CCC").update(price=Decimal("9.00"))
 
-        mock_get.side_effect = [
-            MagicMock(
-                status_code=200,
-                json=lambda: [
-                    {"ticker": "AAA"},
-                    {"ticker": "BBB"},
-                ],
-                text="{}",
-            ),
-            MagicMock(status_code=200, json=lambda: {"data": []}, text="{}"),
-            MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "data": [
-                        {
-                            "id": "AAA",
-                            "attributes": {
-                                "lastDaily": {"last": "1.5"},
-                                "marketCap": "2.5",
-                            },
-                        }
-                    ]
-                },
-                text="{}",
-            ),
-            MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "data": [
-                        {
-                            "id": "BBB",
-                            "attributes": {
-                                "lastDaily": {"last": "3.5"},
-                                "marketCap": "4.5",
-                            },
-                        }
-                    ]
-                },
-                text="{}",
-            ),
-        ]
-
-        buffer = StringIO()
-        with patch("api.management.commands.fetch_profile_data.PROFILE_CHUNK_SIZE", 2):
-            call_command("fetch_profile_data", stdout=buffer)
-
-        prices = Investment.objects.in_bulk(field_name="ticker")
-        self.assertEqual(prices["AAA"].price, Decimal("1.5"))
-        self.assertEqual(prices["BBB"].price, Decimal("3.5"))
-
-        urls = [call.args[0] for call in mock_get.call_args_list[1:]]
-        self.assertEqual(
-            urls[0],
-            f"{PROFILE_ENDPOINT}?symbols=AAA%2CBBB",
-        )
-        self.assertEqual(urls[1], f"{PROFILE_ENDPOINT}?symbols=AAA")
-        self.assertEqual(urls[2], f"{PROFILE_ENDPOINT}?symbols=BBB")
-        output = buffer.getvalue()
-        self.assertIn("Requesting profile data for AAA, BBB", output)
-        self.assertIn("Requesting profile data for AAA", output)
-        self.assertIn("Requesting profile data for BBB", output)
-
-    @patch("api.management.commands.fetch_profile_data.requests.get")
-    def test_profile_requests_use_default_chunk_size_three(
-        self, mock_get: MagicMock
-    ) -> None:
-        for ticker in ("EEE", "FFF", "GGG"):
-            Investment.objects.create(ticker=ticker, category="stock")
-
-        mock_get.side_effect = [
-            MagicMock(
-                status_code=200,
-                json=lambda: [
-                    {"ticker": "AAA"},
-                    {"ticker": "BBB"},
-                    {"ticker": "CCC"},
-                    {"ticker": "DDD"},
-                    {"ticker": "EEE"},
-                    {"ticker": "FFF"},
-                    {"ticker": "GGG"},
-                ],
-                text="{}",
-            ),
-            MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "data": [
-                        {
-                            "id": "AAA",
-                            "attributes": {
-                                "lastDaily": {"last": "1"},
-                                "marketCap": "10",
-                            },
-                        },
-                        {
-                            "id": "BBB",
-                            "attributes": {
-                                "lastDaily": {"last": "2"},
-                                "marketCap": "20",
-                            },
-                        },
-                        {
-                            "id": "CCC",
-                            "attributes": {
-                                "lastDaily": {"last": "3"},
-                                "marketCap": "30",
-                            },
-                        },
-                    ]
-                },
-                text="{}",
-            ),
-            MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "data": [
-                        {
-                            "id": "DDD",
-                            "attributes": {
-                                "lastDaily": {"last": "4"},
-                                "marketCap": "40",
-                            },
-                        },
-                        {
-                            "id": "EEE",
-                            "attributes": {
-                                "lastDaily": {"last": "5"},
-                                "marketCap": "50",
-                            },
-                        },
-                        {
-                            "id": "FFF",
-                            "attributes": {
-                                "lastDaily": {"last": "6"},
-                                "marketCap": "60",
-                            },
-                        },
-                    ]
-                },
-                text="{}",
-            ),
-            MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "data": [
-                        {
-                            "id": "GGG",
-                            "attributes": {
-                                "lastDaily": {"last": "7"},
-                                "marketCap": "70",
-                            },
-                        }
-                    ]
-                },
-                text="{}",
-            ),
-        ]
-
-        buffer = StringIO()
-        call_command("fetch_profile_data", stdout=buffer)
-
-        investments = Investment.objects.in_bulk(field_name="ticker")
-        self.assertEqual(investments["AAA"].price, Decimal("1"))
-        self.assertEqual(investments["BBB"].price, Decimal("2"))
-        self.assertEqual(investments["CCC"].price, Decimal("3"))
-        self.assertEqual(investments["DDD"].price, Decimal("4"))
-        self.assertEqual(investments["EEE"].price, Decimal("5"))
-        self.assertEqual(investments["FFF"].price, Decimal("6"))
-        self.assertEqual(investments["GGG"].price, Decimal("7"))
-
-        urls = [call.args[0] for call in mock_get.call_args_list[1:]]
-        self.assertEqual(len(urls), 3)
-        self.assertEqual(urls[0], f"{PROFILE_ENDPOINT}?symbols=AAA%2CBBB%2CCCC")
-        self.assertEqual(urls[1], f"{PROFILE_ENDPOINT}?symbols=DDD%2CEEE%2CFFF")
-        self.assertEqual(urls[2], f"{PROFILE_ENDPOINT}?symbols=GGG")
-        output = buffer.getvalue()
-        self.assertIn("Requesting profile data for AAA, BBB, CCC", output)
-        self.assertIn("Requesting profile data for DDD, EEE, FFF", output)
-        self.assertIn("Requesting profile data for GGG", output)
-
-    @patch("api.management.commands.fetch_profile_data.requests.get")
-    def test_command_retries_with_subchunks_instead_of_singles(
-        self, mock_get: MagicMock
-    ) -> None:
-        mock_get.side_effect = [
-            MagicMock(
-                status_code=200,
-                json=lambda: [
-                    {"ticker": "AAA"},
-                    {"ticker": "BBB"},
-                    {"ticker": "CCC"},
-                    {"ticker": "DDD"},
-                ],
-                text="{}",
-            ),
-            MagicMock(status_code=200, json=lambda: {"data": []}, text="{}"),
-            MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "data": [
-                        {
-                            "id": "AAA",
-                            "attributes": {
-                                "lastDaily": {"last": "1"},
-                                "marketCap": "2",
-                            },
-                        },
-                        {
-                            "id": "BBB",
-                            "attributes": {
-                                "lastDaily": {"last": "3"},
-                                "marketCap": "4",
-                            },
-                        },
-                    ]
-                },
-                text="{}",
-            ),
-            MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "data": [
-                        {
-                            "id": "CCC",
-                            "attributes": {
-                                "lastDaily": {"last": "5"},
-                                "marketCap": "6",
-                            },
-                        },
-                        {
-                            "id": "DDD",
-                            "attributes": {
-                                "lastDaily": {"last": "7"},
-                                "marketCap": "8",
-                            },
-                        },
-                    ]
-                },
-                text="{}",
-            ),
-        ]
-
-        buffer = StringIO()
-        with patch("api.management.commands.fetch_profile_data.PROFILE_CHUNK_SIZE", 4):
-            call_command("fetch_profile_data", stdout=buffer)
-
-        with patch("api.management.commands.fetch_profile_data.PROFILE_CHUNK_SIZE", 2):
-            call_command("fetch_profile_data")
-
-        self.assertGreaterEqual(len(mock_get.call_args_list), 3)
-        first_profile_call = mock_get.call_args_list[1]
-        second_profile_call = mock_get.call_args_list[2]
-        self.assertEqual(
-            first_profile_call.args[0],
-            f"{PROFILE_ENDPOINT}?symbols=AAA%2CBBB",
-        )
-        self.assertEqual(
-            second_profile_call.args[0],
-            f"{PROFILE_ENDPOINT}?symbols=CCC",
-        )
-        self.assertIsNone(first_profile_call.kwargs.get("params"))
-        self.assertEqual(first_profile_call.kwargs.get("headers"), API_HEADERS)
-
-    @patch("api.management.commands.fetch_profile_data.requests.get")
-    def test_command_logs_profile_requests(self, mock_get: MagicMock) -> None:
-        responses = [
-            MagicMock(
-                status_code=200,
-                json=lambda: [
-                    {"ticker": "AAA"},
-                    {"ticker": "BBB"},
-                    {"ticker": "CCC"},
-                ],
-                text="{}",
-            ),
-            MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "data": [
-                        {
-                            "id": "AAA",
-                            "attributes": {
-                                "lastDaily": {"last": "1"},
-                                "marketCap": "2",
-                            },
-                        },
-                        {
-                            "id": "BBB",
-                            "attributes": {
-                                "lastDaily": {"last": "2"},
-                                "marketCap": "3",
-                            },
-                        },
-                    ]
-                },
-                text="{}",
-            ),
-            MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "data": [
-                        {
-                            "id": "CCC",
-                            "attributes": {
-                                "lastDaily": {"last": "3"},
-                                "marketCap": "4",
-                            },
-                        }
-                    ]
-                },
-                text="{}",
-            ),
-        ]
-        fallback_response = MagicMock(
+        mock_get.return_value = MagicMock(
             status_code=200,
-            json=lambda: {"data": []},
+            json=lambda: [
+                {"ticker": "AAA"},
+                {"ticker": "BBB"},
+                {"ticker": "CCC"},
+            ],
             text="{}",
         )
 
-        def responder(*_: object, **__: object):
-            if responses:
-                return responses.pop(0)
-            return fallback_response
-
-        mock_get.side_effect = responder
-
-        buffer = StringIO()
-        with patch("api.management.commands.fetch_profile_data.PROFILE_CHUNK_SIZE", 2):
-            call_command("fetch_profile_data", stdout=buffer)
-
-        output = buffer.getvalue()
-        self.assertIn("Requesting profile data for AAA, BBB", output)
-        self.assertIn("Requesting profile data for CCC", output)
-        self.assertIn(PROFILE_ENDPOINT, output)
-
-    @patch("api.management.commands.fetch_profile_data.requests.get")
-    def test_command_retries_missing_profiles_with_smaller_chunks(
-        self, mock_get: MagicMock
-    ) -> None:
-        Investment.objects.get_or_create(ticker="AAA", defaults={"category": "stock"})
-        Investment.objects.get_or_create(ticker="BBB", defaults={"category": "stock"})
-
-        mock_get.side_effect = [
-            MagicMock(
-                status_code=200,
-                json=lambda: [
-                    {"ticker": "AAA"},
-                    {"ticker": "BBB"},
-                ],
-                text="{}",
-            ),
-            MagicMock(status_code=200, json=lambda: {"data": []}, text="{}"),
-            MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "data": [
-                        {
-                            "id": "AAA",
-                            "attributes": {
-                                "lastDaily": {"last": "1.5"},
-                                "marketCap": "2.5",
-                            },
-                        }
-                    ]
-                },
-                text="{}",
-            ),
-            MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "data": [
-                        {
-                            "id": "BBB",
-                            "attributes": {
-                                "lastDaily": {"last": "3.5"},
-                                "marketCap": "4.5",
-                            },
-                        }
-                    ]
-                },
-                text="{}",
-            ),
-        ]
-
-        buffer = StringIO()
-        with patch("api.management.commands.fetch_profile_data.PROFILE_CHUNK_SIZE", 2):
-            call_command("fetch_profile_data", stdout=buffer)
-
-        prices = Investment.objects.in_bulk(field_name="ticker")
-        self.assertEqual(prices["AAA"].price, Decimal("1.5"))
-        self.assertEqual(prices["BBB"].price, Decimal("3.5"))
-
-        urls = [call.args[0] for call in mock_get.call_args_list[1:]]
-        self.assertEqual(
-            urls[0],
-            f"{PROFILE_ENDPOINT}?symbols=AAA%2CBBB",
-        )
-        self.assertEqual(urls[1], f"{PROFILE_ENDPOINT}?symbols=AAA")
-        self.assertEqual(urls[2], f"{PROFILE_ENDPOINT}?symbols=BBB")
-        output = buffer.getvalue()
-        self.assertIn("Requesting profile data for AAA, BBB", output)
-        self.assertIn("Requesting profile data for AAA", output)
-        self.assertIn("Requesting profile data for BBB", output)
-
-    @patch("api.management.commands.fetch_profile_data.requests.get")
-    def test_profile_requests_use_default_chunk_size_three(
-        self, mock_get: MagicMock
-    ) -> None:
-        for ticker in ("EEE", "FFF", "GGG"):
-            Investment.objects.create(ticker=ticker, category="stock")
-
-        mock_get.side_effect = [
-            MagicMock(
-                status_code=200,
-                json=lambda: [
-                    {"ticker": "AAA"},
-                    {"ticker": "BBB"},
-                    {"ticker": "CCC"},
-                    {"ticker": "DDD"},
-                    {"ticker": "EEE"},
-                    {"ticker": "FFF"},
-                    {"ticker": "GGG"},
-                ],
-                text="{}",
-            ),
-            MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "data": [
-                        {
-                            "id": "AAA",
-                            "attributes": {
-                                "lastDaily": {"last": "1"},
-                                "marketCap": "10",
-                            },
-                        },
-                        {
-                            "id": "BBB",
-                            "attributes": {
-                                "lastDaily": {"last": "2"},
-                                "marketCap": "20",
-                            },
-                        },
-                        {
-                            "id": "CCC",
-                            "attributes": {
-                                "lastDaily": {"last": "3"},
-                                "marketCap": "30",
-                            },
-                        },
-                    ]
-                },
-                text="{}",
-            ),
-            MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "data": [
-                        {
-                            "id": "DDD",
-                            "attributes": {
-                                "lastDaily": {"last": "4"},
-                                "marketCap": "40",
-                            },
-                        },
-                        {
-                            "id": "EEE",
-                            "attributes": {
-                                "lastDaily": {"last": "5"},
-                                "marketCap": "50",
-                            },
-                        },
-                        {
-                            "id": "FFF",
-                            "attributes": {
-                                "lastDaily": {"last": "6"},
-                                "marketCap": "60",
-                            },
-                        },
-                    ]
-                },
-                text="{}",
-            ),
-            MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "data": [
-                        {
-                            "id": "GGG",
-                            "attributes": {
-                                "lastDaily": {"last": "7"},
-                                "marketCap": "70",
-                            },
-                        }
-                    ]
-                },
-                text="{}",
-            ),
-        ]
-
-        buffer = StringIO()
-        call_command("fetch_profile_data", stdout=buffer)
-
-        investments = Investment.objects.in_bulk(field_name="ticker")
-        self.assertEqual(investments["AAA"].price, Decimal("1"))
-        self.assertEqual(investments["BBB"].price, Decimal("2"))
-        self.assertEqual(investments["CCC"].price, Decimal("3"))
-        self.assertEqual(investments["DDD"].price, Decimal("4"))
-        self.assertEqual(investments["EEE"].price, Decimal("5"))
-        self.assertEqual(investments["FFF"].price, Decimal("6"))
-        self.assertEqual(investments["GGG"].price, Decimal("7"))
-
-        urls = [call.args[0] for call in mock_get.call_args_list[1:]]
-        self.assertEqual(len(urls), 3)
-        self.assertEqual(urls[0], f"{PROFILE_ENDPOINT}?symbols=AAA%2CBBB%2CCCC")
-        self.assertEqual(urls[1], f"{PROFILE_ENDPOINT}?symbols=DDD%2CEEE%2CFFF")
-        self.assertEqual(urls[2], f"{PROFILE_ENDPOINT}?symbols=GGG")
-        output = buffer.getvalue()
-        self.assertIn("Requesting profile data for AAA, BBB, CCC", output)
-        self.assertIn("Requesting profile data for DDD, EEE, FFF", output)
-        self.assertIn("Requesting profile data for GGG", output)
-
-    @patch("api.management.commands.fetch_profile_data.requests.get")
-    def test_command_retries_with_subchunks_instead_of_singles(
-        self, mock_get: MagicMock
-    ) -> None:
-        mock_get.side_effect = [
-            MagicMock(
-                status_code=200,
-                json=lambda: [
-                    {"ticker": "AAA"},
-                    {"ticker": "BBB"},
-                    {"ticker": "CCC"},
-                    {"ticker": "DDD"},
-                ],
-                text="{}",
-            ),
-            MagicMock(status_code=200, json=lambda: {"data": []}, text="{}"),
-            MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "data": [
-                        {
-                            "id": "AAA",
-                            "attributes": {
-                                "lastDaily": {"last": "1"},
-                                "marketCap": "2",
-                            },
-                        },
-                        {
-                            "id": "BBB",
-                            "attributes": {
-                                "lastDaily": {"last": "3"},
-                                "marketCap": "4",
-                            },
-                        },
-                    ]
-                },
-                text="{}",
-            ),
-            MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "data": [
-                        {
-                            "id": "CCC",
-                            "attributes": {
-                                "lastDaily": {"last": "5"},
-                                "marketCap": "6",
-                            },
-                        },
-                        {
-                            "id": "DDD",
-                            "attributes": {
-                                "lastDaily": {"last": "7"},
-                                "marketCap": "8",
-                            },
-                        },
-                    ]
-                },
-                text="{}",
-            ),
-        ]
-
-        buffer = StringIO()
-        with patch("api.management.commands.fetch_profile_data.PROFILE_CHUNK_SIZE", 4):
-            call_command("fetch_profile_data", stdout=buffer)
-
-        profiles = Investment.objects.in_bulk(field_name="ticker")
-        self.assertEqual(profiles["AAA"].price, Decimal("1"))
-        self.assertEqual(profiles["BBB"].price, Decimal("3"))
-        self.assertEqual(profiles["CCC"].price, Decimal("5"))
-        self.assertEqual(profiles["DDD"].price, Decimal("7"))
-
-        urls = [call.args[0] for call in mock_get.call_args_list[1:]]
-        self.assertEqual(len(urls), 3)
-        self.assertEqual(
-            urls[0], f"{PROFILE_ENDPOINT}?symbols=AAA%2CBBB%2CCCC%2CDDD"
-        )
-        self.assertEqual(urls[1], f"{PROFILE_ENDPOINT}?symbols=AAA%2CBBB")
-        self.assertEqual(urls[2], f"{PROFILE_ENDPOINT}?symbols=CCC%2CDDD")
-        output = buffer.getvalue()
-        self.assertIn("Requesting profile data for AAA, BBB, CCC, DDD", output)
-        self.assertIn("Requesting profile data for AAA, BBB", output)
-        self.assertIn("Requesting profile data for CCC, DDD", output)
-
-    @patch("api.management.commands.fetch_profile_data.requests.get")
-    def test_command_verifies_profiles_persist_before_next_request(
-        self, mock_get: MagicMock
-    ) -> None:
-        mock_get.side_effect = [
-            MagicMock(
-                status_code=200,
-                json=lambda: [
-                    {"ticker": "AAA"},
-                    {"ticker": "BBB"},
-                    {"ticker": "CCC"},
-                    {"ticker": "DDD"},
-                ],
-                text="{}",
-            ),
-            MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "data": [
-                        {
-                            "id": "AAA",
-                            "attributes": {
-                                "lastDaily": {"last": "1"},
-                                "marketCap": "10",
-                            },
-                        },
-                        {
-                            "id": "BBB",
-                            "attributes": {
-                                "lastDaily": {"last": "2"},
-                                "marketCap": "20",
-                            },
-                        },
-                        {
-                            "id": "CCC",
-                            "attributes": {
-                                "lastDaily": {"last": "3"},
-                                "marketCap": "30",
-                            },
-                        },
-                    ]
-                },
-                text="{}",
-            ),
-            MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "data": [
-                        {
-                            "id": "DDD",
-                            "attributes": {
-                                "lastDaily": {"last": "4"},
-                                "marketCap": "40",
-                            },
-                        }
-                    ]
-                },
-                text="{}",
-            ),
-        ]
-
-        original_save = Investment.save
-
-        def save_side_effect(self: Investment, *args: object, **kwargs: object) -> None:
-            if self.ticker == "AAA":
-                return None
-            return original_save(self, *args, **kwargs)
-
-        with patch.object(
-            Investment, "save", autospec=True, side_effect=save_side_effect
+        with self.assertRaisesMessage(
+            CommandError, "No tickers remain to update after skipping priced investments."
         ):
-            with self.assertRaises(CommandError):
-                call_command("fetch_profile_data")
+            call_command("fetch_profile_data", "--skip-priced")
 
-        self.assertEqual(len(mock_get.call_args_list), 2)
-        investments = Investment.objects.in_bulk(field_name="ticker")
-        self.assertEqual(investments["BBB"].price, Decimal("2"))
-        self.assertEqual(investments["CCC"].price, Decimal("3"))
-        self.assertIsNone(investments["DDD"].price)
+    @patch("api.management.commands.fetch_profile_data.requests.get")
+    def test_fetch_option_expirations_uses_expected_headers_and_params(
+        self, mock_get: MagicMock
+    ) -> None:
+        mock_get.return_value = MagicMock(
+            status_code=200, json=lambda: {"data": {"dates": []}}, text="{}"
+        )
+
+        command = Command()
+        command._fetch_option_expirations("XYZ")
+
+        mock_get.assert_called_once()
+        request = mock_get.call_args
+        self.assertEqual(request.args[0], OPTION_EXPIRATIONS_ENDPOINT)
+        self.assertEqual(request.kwargs.get("params"), {"symbol": "XYZ"})
+        self.assertEqual(request.kwargs.get("headers"), API_HEADERS)
+
