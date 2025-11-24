@@ -72,6 +72,15 @@ class Command(BaseCommand):
                 "Useful when a screener stores additional filters that should be ignored."
             ),
         )
+        parser.add_argument(
+            "--quant-rating",
+            choices=["strong_buy", "buy"],
+            dest="quant_rating",
+            help=(
+                "Limit quant_rating filters to a specific value (e.g. strong_buy). "
+                "Only applies when the screener stores a quant_rating filter."
+            ),
+        )
 
     def handle(self, *args: Any, **options: Any) -> str:
         screener_name: str = options["screener_name"]
@@ -82,6 +91,7 @@ class Command(BaseCommand):
         min_price_raw: str | None = options.get("min_price")
         max_price_raw: str | None = options.get("max_price")
         only_filter_keys: Iterable[str] | None = options.get("only_filter_keys")
+        quant_rating: str | None = options.get("quant_rating")
 
         screener = self._get_screener(screener_name)
         payload = self._build_payload(screener.filters.all())
@@ -103,6 +113,8 @@ class Command(BaseCommand):
                     "Minimum price cannot be greater than maximum price."
                 )
             payload = self._apply_price_filter(payload, price_bounds)
+        if quant_rating:
+            payload = self._apply_quant_rating_filter(payload, quant_rating)
         if not payload:
             raise CommandError(
                 f"Screener '{screener_name}' does not have any stored filters."
@@ -415,6 +427,82 @@ class Command(BaseCommand):
             raise CommandError("Price filters cannot be negative.")
 
         return float(numeric_value)
+
+    def _apply_quant_rating_filter(
+        self, payload: Any, selected_rating: str
+    ) -> Any:
+        if not isinstance(payload, (dict, list)):
+            raise CommandError(
+                "Screener filters payload has an unexpected structure."
+            )
+
+        filtered_payload, found = self._filter_quant_rating_entries(
+            payload, selected_rating
+        )
+
+        if not found:
+            raise CommandError(
+                "Screener filters do not include a quant_rating entry to override."
+            )
+
+        return filtered_payload
+
+    def _filter_quant_rating_entries(
+        self, value: Any, selected_rating: str
+    ) -> tuple[Any, bool]:
+        if isinstance(value, dict):
+            found = False
+            changed = False
+            updated_dict: dict[str, Any] = {}
+            for key, entry in value.items():
+                if key == "quant_rating":
+                    new_entry, entry_found = self._override_quant_rating_entry(
+                        entry, selected_rating
+                    )
+                else:
+                    new_entry, entry_found = self._filter_quant_rating_entries(
+                        entry, selected_rating
+                    )
+                updated_dict[key] = new_entry
+                found = found or entry_found
+                if new_entry is not entry:
+                    changed = True
+            if changed:
+                return updated_dict, found
+            return value, found
+
+        if isinstance(value, list):
+            found = False
+            changed = False
+            updated_list: list[Any] = []
+            for item in value:
+                new_item, item_found = self._filter_quant_rating_entries(
+                    item, selected_rating
+                )
+                updated_list.append(new_item)
+                found = found or item_found
+                if new_item is not item:
+                    changed = True
+            if changed:
+                return updated_list, found
+            return value, found
+
+        return value, False
+
+    def _override_quant_rating_entry(
+        self, value: Any, selected_rating: str
+    ) -> tuple[Any, bool]:
+        canonical_rating = self._canonical_quant_rating_value(selected_rating)
+
+        return {"in": [canonical_rating]}, True
+
+    def _normalise_quant_rating_value(self, value: str) -> str:
+        cleaned = value.strip().lower().replace("_", " ")
+        cleaned = cleaned.replace("-", " ")
+        return " ".join(cleaned.split())
+
+    def _canonical_quant_rating_value(self, value: str) -> str:
+        return self._normalise_quant_rating_value(value).replace(" ", "_")
 
     def _extract_ticker_names(self, payload: Any) -> List[str]:
         if not isinstance(payload, dict):

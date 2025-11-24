@@ -563,6 +563,86 @@ class FetchScreenerResultsCommandTests(APITestCase):
         self.assertEqual(payload["filter"]["close"].get("lte"), 50.0)
         self.assertEqual(payload["filter"]["close"].get("gte"), 12.0)
 
+    @patch("api.management.commands.fetch_screener_results.requests.post")
+    def test_command_limits_quant_rating_value(self, mock_post: MagicMock) -> None:
+        quant_screener = ScreenerType.objects.create(
+            name="Quant Focus", description="Quant driven filters."
+        )
+        ScreenerFilter.objects.create(
+            screener_type=quant_screener,
+            label="Quant Rating",
+            payload={"filter": {"quant_rating": ["strong_buy", "buy"]}},
+            display_order=1,
+        )
+
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {"data": [{"attributes": {"name": "Sample"}}]},
+            text="{}",
+        )
+
+        call_command(
+            "fetch_screener_results",
+            quant_screener.name,
+            "--quant-rating",
+            "strong_buy",
+        )
+
+        _, kwargs = mock_post.call_args
+        payload = kwargs["json"]
+
+        self.assertIn("filter", payload)
+        self.assertEqual(
+            payload["filter"].get("quant_rating"), {"in": ["strong_buy"]}
+        )
+
+    @patch("api.management.commands.fetch_screener_results.requests.post")
+    def test_command_overrides_missing_quant_rating_value(
+        self, mock_post: MagicMock
+    ) -> None:
+        quant_screener = ScreenerType.objects.create(
+            name="Quant Focus", description="Quant driven filters."
+        )
+        ScreenerFilter.objects.create(
+            screener_type=quant_screener,
+            label="Quant Rating",
+            payload={"filter": {"quant_rating": ["buy"]}},
+            display_order=1,
+        )
+
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {"data": [{"attributes": {"name": "Sample"}}]},
+            text="{}",
+        )
+
+        call_command(
+            "fetch_screener_results",
+            quant_screener.name,
+            "--quant-rating",
+            "strong_buy",
+        )
+
+        _, kwargs = mock_post.call_args
+        payload = kwargs["json"]
+
+        self.assertIn("filter", payload)
+        self.assertEqual(
+            payload["filter"].get("quant_rating"), {"in": ["strong_buy"]}
+        )
+
+    def test_command_errors_when_quant_rating_missing(self) -> None:
+        with self.assertRaisesMessage(
+            CommandError,
+            "Screener filters do not include a quant_rating entry to override.",
+        ):
+            call_command(
+                "fetch_screener_results",
+                self.screener.name,
+                "--quant-rating",
+                "strong_buy",
+            )
+
     def test_command_rejects_invalid_market_cap_argument(self) -> None:
         with self.assertRaisesMessage(CommandError, "Market cap value must be a number optionally followed by K, M, B, or T."):
             call_command("fetch_screener_results", self.screener.name, "--market-cap", "ten-billion")
