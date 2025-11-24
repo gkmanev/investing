@@ -436,88 +436,79 @@ class Command(BaseCommand):
                 "Screener filters payload has an unexpected structure."
             )
 
-        normalised_rating = self._normalise_quant_rating_value(selected_rating)
-        filtered_payload, found, matched = self._filter_quant_rating_entries(
-            payload, {normalised_rating}
+        filtered_payload, found = self._filter_quant_rating_entries(
+            payload, selected_rating
         )
 
         if not found:
             raise CommandError(
                 "Screener filters do not include a quant_rating entry to override."
             )
-        if not matched:
-            raise CommandError(
-                "Selected quant_rating value is not present in the screener filters."
-            )
 
         return filtered_payload
 
     def _filter_quant_rating_entries(
-        self, value: Any, allowed_values: set[str]
-    ) -> tuple[Any, bool, bool]:
+        self, value: Any, selected_rating: str
+    ) -> tuple[Any, bool]:
         if isinstance(value, dict):
             found = False
-            matched = False
             changed = False
             updated_dict: dict[str, Any] = {}
             for key, entry in value.items():
                 if key == "quant_rating":
-                    new_entry, entry_found, entry_matched = (
-                        self._filter_quant_rating_list(entry, allowed_values)
+                    new_entry, entry_found = self._override_quant_rating_entry(
+                        entry, selected_rating
                     )
                 else:
-                    new_entry, entry_found, entry_matched = (
-                        self._filter_quant_rating_entries(entry, allowed_values)
+                    new_entry, entry_found = self._filter_quant_rating_entries(
+                        entry, selected_rating
                     )
                 updated_dict[key] = new_entry
                 found = found or entry_found
-                matched = matched or entry_matched
                 if new_entry is not entry:
                     changed = True
             if changed:
-                return updated_dict, found, matched
-            return value, found, matched
+                return updated_dict, found
+            return value, found
 
         if isinstance(value, list):
             found = False
-            matched = False
             changed = False
             updated_list: list[Any] = []
             for item in value:
-                new_item, item_found, item_matched = self._filter_quant_rating_entries(
-                    item, allowed_values
+                new_item, item_found = self._filter_quant_rating_entries(
+                    item, selected_rating
                 )
                 updated_list.append(new_item)
                 found = found or item_found
-                matched = matched or item_matched
                 if new_item is not item:
                     changed = True
             if changed:
-                return updated_list, found, matched
-            return value, found, matched
+                return updated_list, found
+            return value, found
 
-        return value, False, False
+        return value, False
 
-    def _filter_quant_rating_list(
-        self, value: Any, allowed_values: set[str]
-    ) -> tuple[Any, bool, bool]:
-        if not isinstance(value, list):
-            return value, True, False
+    def _override_quant_rating_entry(
+        self, value: Any, selected_rating: str
+    ) -> tuple[Any, bool]:
+        canonical_rating = self._canonical_quant_rating_value(selected_rating)
 
-        filtered = [
-            item
-            for item in value
-            if isinstance(item, str)
-            and self._normalise_quant_rating_value(item) in allowed_values
-        ]
+        if isinstance(value, dict):
+            updated = dict(value)
+            updated.clear()
+            updated["quant_rating"] = [canonical_rating]
+            return updated, True
 
-        matched = len(filtered) > 0
-        if filtered != value:
-            return filtered, True, matched
-        return value, True, matched
+        return [canonical_rating], True
 
     def _normalise_quant_rating_value(self, value: str) -> str:
-        return value.strip().lower().replace("_", " ")
+        cleaned = value.strip().lower().replace("_", " ")
+        cleaned = cleaned.replace("-", " ")
+        return " ".join(cleaned.split())
+
+    def _canonical_quant_rating_value(self, value: str) -> str:
+        return self._normalise_quant_rating_value(value).replace(" ", "_")
 
     def _extract_ticker_names(self, payload: Any) -> List[str]:
         if not isinstance(payload, dict):
