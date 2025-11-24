@@ -72,6 +72,15 @@ class Command(BaseCommand):
                 "Useful when a screener stores additional filters that should be ignored."
             ),
         )
+        parser.add_argument(
+            "--quant-rating",
+            choices=["strong_buy", "buy"],
+            dest="quant_rating",
+            help=(
+                "Limit quant_rating filters to a specific value (e.g. strong_buy). "
+                "Only applies when the screener stores a quant_rating filter."
+            ),
+        )
 
     def handle(self, *args: Any, **options: Any) -> str:
         screener_name: str = options["screener_name"]
@@ -82,6 +91,7 @@ class Command(BaseCommand):
         min_price_raw: str | None = options.get("min_price")
         max_price_raw: str | None = options.get("max_price")
         only_filter_keys: Iterable[str] | None = options.get("only_filter_keys")
+        quant_rating: str | None = options.get("quant_rating")
 
         screener = self._get_screener(screener_name)
         payload = self._build_payload(screener.filters.all())
@@ -103,6 +113,8 @@ class Command(BaseCommand):
                     "Minimum price cannot be greater than maximum price."
                 )
             payload = self._apply_price_filter(payload, price_bounds)
+        if quant_rating:
+            payload = self._apply_quant_rating_filter(payload, quant_rating)
         if not payload:
             raise CommandError(
                 f"Screener '{screener_name}' does not have any stored filters."
@@ -415,6 +427,97 @@ class Command(BaseCommand):
             raise CommandError("Price filters cannot be negative.")
 
         return float(numeric_value)
+
+    def _apply_quant_rating_filter(
+        self, payload: Any, selected_rating: str
+    ) -> Any:
+        if not isinstance(payload, (dict, list)):
+            raise CommandError(
+                "Screener filters payload has an unexpected structure."
+            )
+
+        normalised_rating = self._normalise_quant_rating_value(selected_rating)
+        filtered_payload, found, matched = self._filter_quant_rating_entries(
+            payload, {normalised_rating}
+        )
+
+        if not found:
+            raise CommandError(
+                "Screener filters do not include a quant_rating entry to override."
+            )
+        if not matched:
+            raise CommandError(
+                "Selected quant_rating value is not present in the screener filters."
+            )
+
+        return filtered_payload
+
+    def _filter_quant_rating_entries(
+        self, value: Any, allowed_values: set[str]
+    ) -> tuple[Any, bool, bool]:
+        if isinstance(value, dict):
+            found = False
+            matched = False
+            changed = False
+            updated_dict: dict[str, Any] = {}
+            for key, entry in value.items():
+                if key == "quant_rating":
+                    new_entry, entry_found, entry_matched = (
+                        self._filter_quant_rating_list(entry, allowed_values)
+                    )
+                else:
+                    new_entry, entry_found, entry_matched = (
+                        self._filter_quant_rating_entries(entry, allowed_values)
+                    )
+                updated_dict[key] = new_entry
+                found = found or entry_found
+                matched = matched or entry_matched
+                if new_entry is not entry:
+                    changed = True
+            if changed:
+                return updated_dict, found, matched
+            return value, found, matched
+
+        if isinstance(value, list):
+            found = False
+            matched = False
+            changed = False
+            updated_list: list[Any] = []
+            for item in value:
+                new_item, item_found, item_matched = self._filter_quant_rating_entries(
+                    item, allowed_values
+                )
+                updated_list.append(new_item)
+                found = found or item_found
+                matched = matched or item_matched
+                if new_item is not item:
+                    changed = True
+            if changed:
+                return updated_list, found, matched
+            return value, found, matched
+
+        return value, False, False
+
+    def _filter_quant_rating_list(
+        self, value: Any, allowed_values: set[str]
+    ) -> tuple[Any, bool, bool]:
+        if not isinstance(value, list):
+            return value, True, False
+
+        filtered = [
+            item
+            for item in value
+            if isinstance(item, str)
+            and self._normalise_quant_rating_value(item) in allowed_values
+        ]
+
+        matched = len(filtered) > 0
+        if filtered != value:
+            return filtered, True, matched
+        return value, True, matched
+
+    def _normalise_quant_rating_value(self, value: str) -> str:
+        return value.strip().lower().replace("_", " ")
 
     def _extract_ticker_names(self, payload: Any) -> List[str]:
         if not isinstance(payload, dict):
