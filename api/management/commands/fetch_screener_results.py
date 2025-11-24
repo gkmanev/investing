@@ -494,13 +494,7 @@ class Command(BaseCommand):
     ) -> tuple[Any, bool]:
         canonical_rating = self._canonical_quant_rating_value(selected_rating)
 
-        if isinstance(value, dict):
-            updated = dict(value)
-            updated.clear()
-            updated["quant_rating"] = [canonical_rating]
-            return updated, True
-
-        return [canonical_rating], True
+        return {"in": [canonical_rating]}, True
 
     def _normalise_quant_rating_value(self, value: str) -> str:
         cleaned = value.strip().lower().replace("_", " ")

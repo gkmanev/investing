@@ -592,7 +592,9 @@ class FetchScreenerResultsCommandTests(APITestCase):
         payload = kwargs["json"]
 
         self.assertIn("filter", payload)
-        self.assertEqual(payload["filter"].get("quant_rating"), ["strong_buy"])
+        self.assertEqual(
+            payload["filter"].get("quant_rating"), {"in": ["strong_buy"]}
+        )
 
     @patch("api.management.commands.fetch_screener_results.requests.post")
     def test_command_overrides_missing_quant_rating_value(
@@ -625,7 +627,9 @@ class FetchScreenerResultsCommandTests(APITestCase):
         payload = kwargs["json"]
 
         self.assertIn("filter", payload)
-        self.assertEqual(payload["filter"].get("quant_rating"), ["strong_buy"])
+        self.assertEqual(
+            payload["filter"].get("quant_rating"), {"in": ["strong_buy"]}
+        )
 
     def test_command_errors_when_quant_rating_missing(self) -> None:
         with self.assertRaisesMessage(
