@@ -31,7 +31,7 @@ You can refine the investment list by passing query parameters:
 
 - `ticker` – partial, case-insensitive match on the ticker symbol.
 - `category` – exact, case-insensitive match on the investment category.
-- `screenter_type` – exact, case-insensitive match on the screenter type (for example, `growth` or `value`).
+- `screenter_type` – exact, case-insensitive match on the screenter type (for example, `growth` or `value`). If the screenter type contains spaces, URL-encode them (e.g., `Strong%20Buy%20Stocks%20With%20Short%20Squeeze%20Potential`).
 - `options_suitability` – exact integer match for options suitability (for example, `0` or `1`).
 - Numeric range filters – use `min_price`, `max_price`, `min_market_cap`, `max_market_cap`, `min_volume`, and `max_volume`.
 
@@ -41,6 +41,12 @@ List only growth screenter investments suitable for options:
 
 ```bash
 curl "http://127.0.0.1:8000/api/investments/?screenter_type=growth&options_suitability=1"
+```
+
+Filter by a screenter type that includes spaces:
+
+```bash
+curl "http://127.0.0.1:8000/api/investments/?screenter_type=Strong%20Buy%20Stocks%20With%20Short%20Squeeze%20Potential"
 ```
 
 Find ETFs with a minimum price of $10 and minimum volume of 1,000:

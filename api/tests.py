@@ -103,6 +103,27 @@ class InvestmentAPITestCase(APITestCase):
         self.assertEqual(len(response.data), 1)
         self.assertEqual(response.data[0]["ticker"], "OPT1")
 
+    def test_list_can_filter_by_screenter_type_with_spaces(self) -> None:
+        screenter = "Strong Buy Stocks With Short Squeeze Potential"
+        self.create_investment(
+            ticker="SBS", category="Stock", screenter_type=screenter, options_suitability=1
+        )
+        self.create_investment(
+            ticker="OTHER",
+            category="Stock",
+            screenter_type="Other Screener",
+            options_suitability=1,
+        )
+
+        response = self.client.get(
+            self.list_url,
+            {"screenter_type": screenter, "options_suitability": "1"},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["ticker"], "SBS")
+
     def test_list_can_filter_by_numeric_ranges(self) -> None:
         self.create_investment(ticker="LOW", price=5, market_cap=1_000_000, volume=10)
         self.create_investment(ticker="MID", price=15, market_cap=5_000_000, volume=1_000)
