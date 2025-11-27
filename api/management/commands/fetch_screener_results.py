@@ -185,7 +185,7 @@ class Command(BaseCommand):
         return formatted_payload
 
     def _delete_existing_investments(self, screener_name: str) -> None:
-        Investment.objects.filter(screenter_type=screener_name).delete()
+        Investment.objects.filter(screener_type=screener_name).delete()
 
     def _sync_investments(
         self, tickers: Iterable[str], asset_type: str, screener_name: str
@@ -199,7 +199,7 @@ class Command(BaseCommand):
                 ticker=ticker_value,
                 defaults={
                     "category": asset_type,
-                    "screenter_type": screener_name,
+                    "screener_type": screener_name,
                 },
             )
 

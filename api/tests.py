@@ -73,20 +73,20 @@ class InvestmentAPITestCase(APITestCase):
         self.assertEqual(len(response.data), 1)
         self.assertEqual(response.data[0]["ticker"], "GRW")
 
-    def test_list_can_filter_by_screenter_type_and_options_suitability(self) -> None:
+    def test_list_can_filter_by_screener_type_and_options_suitability(self) -> None:
         self.create_investment(
-            ticker="BND", category="ETF", screenter_type="Growth", options_suitability=1
+            ticker="BND", category="ETF", screener_type="Growth", options_suitability=1
         )
         self.create_investment(
-            ticker="GRW", category="Fund", screenter_type="Value", options_suitability=0
+            ticker="GRW", category="Fund", screener_type="Value", options_suitability=0
         )
         self.create_investment(
-            ticker="MOM", category="ETF", screenter_type="Growth", options_suitability=0
+            ticker="MOM", category="ETF", screener_type="Growth", options_suitability=0
         )
 
         response = self.client.get(
             self.list_url,
-            {"screenter_type": "growth", "options_suitability": "0"},
+            {"screener_type": "growth", "options_suitability": "0"},
         )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -103,26 +103,36 @@ class InvestmentAPITestCase(APITestCase):
         self.assertEqual(len(response.data), 1)
         self.assertEqual(response.data[0]["ticker"], "OPT1")
 
-    def test_list_can_filter_by_screenter_type_with_spaces(self) -> None:
-        screenter = "Strong Buy Stocks With Short Squeeze Potential"
+    def test_list_can_filter_by_screener_type_with_spaces(self) -> None:
+        screener = "Strong Buy Stocks With Short Squeeze Potential"
         self.create_investment(
-            ticker="SBS", category="Stock", screenter_type=screenter, options_suitability=1
+            ticker="SBS", category="Stock", screener_type=screener, options_suitability=1
         )
         self.create_investment(
             ticker="OTHER",
             category="Stock",
-            screenter_type="Other Screener",
+            screener_type="Other Screener",
             options_suitability=1,
         )
 
         response = self.client.get(
             self.list_url,
-            {"screenter_type": screenter, "options_suitability": "1"},
+            {"screener_type": screener, "options_suitability": "1"},
         )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data), 1)
         self.assertEqual(response.data[0]["ticker"], "SBS")
+
+    def test_legacy_screenter_type_query_param_is_supported(self) -> None:
+        self.create_investment(ticker="BND", category="ETF", screener_type="Growth")
+        self.create_investment(ticker="GRW", category="Fund", screener_type="Value")
+
+        response = self.client.get(self.list_url, {"screenter_type": "value"})
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["ticker"], "GRW")
 
     def test_list_can_filter_by_numeric_ranges(self) -> None:
         self.create_investment(ticker="LOW", price=5, market_cap=1_000_000, volume=10)
@@ -469,7 +479,7 @@ class FetchScreenerResultsCommandTests(APITestCase):
             Investment.objects.filter(ticker="Apple Inc.", category="stock").exists()
         )
         self.assertEqual(
-            Investment.objects.filter(screenter_type=self.screener.name).count(), 3
+            Investment.objects.filter(screener_type=self.screener.name).count(), 3
         )
 
     @patch("api.management.commands.fetch_screener_results.requests.post")
@@ -514,10 +524,10 @@ class FetchScreenerResultsCommandTests(APITestCase):
     @patch("api.management.commands.fetch_screener_results.requests.post")
     def test_command_replaces_existing_screener_entries(self, mock_post: MagicMock) -> None:
         Investment.objects.create(
-            ticker="Legacy", category="stock", screenter_type=self.screener.name
+            ticker="Legacy", category="stock", screener_type=self.screener.name
         )
         Investment.objects.create(
-            ticker="Keep", category="stock", screenter_type="Another Screener"
+            ticker="Keep", category="stock", screener_type="Another Screener"
         )
 
         mock_post.return_value = MagicMock(
@@ -530,17 +540,17 @@ class FetchScreenerResultsCommandTests(APITestCase):
 
         self.assertFalse(
             Investment.objects.filter(
-                ticker="Legacy", screenter_type=self.screener.name
+                ticker="Legacy", screener_type=self.screener.name
             ).exists()
         )
         self.assertTrue(
             Investment.objects.filter(
-                ticker="Keep", screenter_type="Another Screener"
+                ticker="Keep", screener_type="Another Screener"
             ).exists()
         )
         self.assertTrue(
             Investment.objects.filter(
-                ticker="Fresh", screenter_type=self.screener.name
+                ticker="Fresh", screener_type=self.screener.name
             ).exists()
         )
 
@@ -570,7 +580,7 @@ class FetchScreenerResultsCommandTests(APITestCase):
 
         investment.refresh_from_db()
         self.assertEqual(investment.category, "fund")
-        self.assertEqual(investment.screenter_type, self.screener.name)
+        self.assertEqual(investment.screener_type, self.screener.name)
 
     @patch("api.management.commands.fetch_screener_results.requests.post")
     def test_command_applies_market_cap_argument(self, mock_post: MagicMock) -> None:

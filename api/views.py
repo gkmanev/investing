@@ -28,9 +28,9 @@ class InvestmentViewSet(viewsets.ModelViewSet):
         if category:
             queryset = queryset.filter(category__iexact=category)
 
-        screenter_type = params.get("screenter_type")
-        if screenter_type:
-            queryset = queryset.filter(screenter_type__iexact=screenter_type)
+        screener_type = params.get("screener_type") or params.get("screenter_type")
+        if screener_type:
+            queryset = queryset.filter(screener_type__iexact=screener_type)
 
         ticker_query = params.get("ticker")
         if ticker_query:

@@ -10,7 +10,7 @@ class InvestmentSerializer(serializers.ModelSerializer):
             "id",
             "ticker",
             "category",
-            "screenter_type",
+            "screener_type",
             "price",
             "volume",
             "market_cap",
