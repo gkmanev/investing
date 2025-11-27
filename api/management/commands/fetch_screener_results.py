@@ -23,7 +23,7 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser) -> None:  # pragma: no cover - argument wiring
         parser.add_argument(
-            "screener_name",
+            "--screener_name",
             help="Name of the screener type whose filters should be used.",
         )
         parser.add_argument(
