@@ -8,14 +8,14 @@ class InvestmentAdmin(admin.ModelAdmin):
     list_display = (
         "ticker",
         "category",
-        "screenter_type",
+        "screener_type",
         "price",
         "market_cap",
         "options_suitability",
         "created_at",
     )
-    search_fields = ("ticker", "category", "screenter_type")
-    list_filter = ("category", "screenter_type")
+    search_fields = ("ticker", "category", "screener_type")
+    list_filter = ("category", "screener_type")
 
 
 @admin.register(ScreenerType)
