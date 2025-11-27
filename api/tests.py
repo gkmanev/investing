@@ -73,6 +73,36 @@ class InvestmentAPITestCase(APITestCase):
         self.assertEqual(len(response.data), 1)
         self.assertEqual(response.data[0]["ticker"], "GRW")
 
+    def test_list_can_filter_by_screenter_type_and_options_suitability(self) -> None:
+        self.create_investment(
+            ticker="BND", category="ETF", screenter_type="Growth", options_suitability=1
+        )
+        self.create_investment(
+            ticker="GRW", category="Fund", screenter_type="Value", options_suitability=0
+        )
+        self.create_investment(
+            ticker="MOM", category="ETF", screenter_type="Growth", options_suitability=0
+        )
+
+        response = self.client.get(
+            self.list_url,
+            {"screenter_type": "growth", "options_suitability": "0"},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["ticker"], "MOM")
+
+    def test_list_can_filter_by_options_suitability_only(self) -> None:
+        self.create_investment(ticker="OPT1", options_suitability=1)
+        self.create_investment(ticker="OPT0", options_suitability=0)
+
+        response = self.client.get(self.list_url, {"options_suitability": "1"})
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["ticker"], "OPT1")
+
     def test_list_can_filter_by_numeric_ranges(self) -> None:
         self.create_investment(ticker="LOW", price=5, market_cap=1_000_000, volume=10)
         self.create_investment(ticker="MID", price=15, market_cap=5_000_000, volume=1_000)
@@ -98,6 +128,14 @@ class InvestmentAPITestCase(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("min_price", response.data)
+
+    def test_list_rejects_invalid_options_suitability_filter(self) -> None:
+        response = self.client.get(
+            self.list_url, {"options_suitability": "not-an-integer"}
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("options_suitability", response.data)
 
     def test_can_update_investment(self) -> None:
         investment = self.create_investment()

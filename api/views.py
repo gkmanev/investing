@@ -28,6 +28,10 @@ class InvestmentViewSet(viewsets.ModelViewSet):
         if category:
             queryset = queryset.filter(category__iexact=category)
 
+        screenter_type = params.get("screenter_type")
+        if screenter_type:
+            queryset = queryset.filter(screenter_type__iexact=screenter_type)
+
         ticker_query = params.get("ticker")
         if ticker_query:
             queryset = queryset.filter(ticker__icontains=ticker_query)
@@ -44,6 +48,12 @@ class InvestmentViewSet(viewsets.ModelViewSet):
         )
         queryset = self._apply_integer_min_filter(
             queryset, params, field_name="volume", param_name="min_volume"
+        )
+        queryset = self._apply_integer_exact_filter(
+            queryset,
+            params,
+            field_name="options_suitability",
+            param_name="options_suitability",
         )
 
         return queryset
@@ -77,16 +87,20 @@ class InvestmentViewSet(viewsets.ModelViewSet):
     def _apply_integer_min_filter(
         self, queryset, params: Mapping[str, str], *, field_name: str, param_name: str
     ):
-        raw_value = params.get(param_name)
-        if raw_value is None:
+        value = self._parse_integer(params.get(param_name), param_name)
+        if value is None:
             return queryset
 
-        try:
-            value = int(raw_value)
-        except (TypeError, ValueError):
-            raise ValidationError({param_name: "Enter a valid integer."})
-
         return queryset.filter(**{f"{field_name}__gte": value})
+
+    def _apply_integer_exact_filter(
+        self, queryset, params: Mapping[str, str], *, field_name: str, param_name: str
+    ):
+        value = self._parse_integer(params.get(param_name), param_name)
+        if value is None:
+            return queryset
+
+        return queryset.filter(**{field_name: value})
 
     def _parse_decimal(self, raw_value: str | None, field: str) -> Decimal | None:
         if raw_value is None:
@@ -96,6 +110,15 @@ class InvestmentViewSet(viewsets.ModelViewSet):
         except (InvalidOperation, TypeError):
             raise ValidationError({field: "Enter a valid number."})
         return value
+
+    def _parse_integer(self, raw_value: str | None, field: str) -> int | None:
+        if raw_value is None:
+            return None
+
+        try:
+            return int(raw_value)
+        except (TypeError, ValueError):
+            raise ValidationError({field: "Enter a valid integer."})
 
 
 class ScreenerTypeViewSet(viewsets.ModelViewSet):
