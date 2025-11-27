@@ -25,6 +25,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--screener_name",
             help="Name of the screener type whose filters should be used.",
+            required=True,
         )
         parser.add_argument(
             "--page",
@@ -94,6 +95,7 @@ class Command(BaseCommand):
         quant_rating: str | None = options.get("quant_rating")
 
         screener = self._get_screener(screener_name)
+        self._delete_existing_investments(screener_name)
         payload = self._build_payload(screener.filters.all())
         if only_filter_keys:
             payload = self._limit_payload_to_keys(payload, only_filter_keys)
@@ -177,12 +179,17 @@ class Command(BaseCommand):
                 "Seeking Alpha API response did not include any ticker names."
             )
 
-        self._sync_investments(all_ticker_names, asset_type)
+        self._sync_investments(all_ticker_names, asset_type, screener_name)
 
         formatted_payload = "\n".join(all_ticker_names)
         return formatted_payload
 
-    def _sync_investments(self, tickers: Iterable[str], asset_type: str) -> None:
+    def _delete_existing_investments(self, screener_name: str) -> None:
+        Investment.objects.filter(screenter_type=screener_name).delete()
+
+    def _sync_investments(
+        self, tickers: Iterable[str], asset_type: str, screener_name: str
+    ) -> None:
         for ticker in tickers:
             ticker_value = ticker.strip()
             if not ticker_value:
@@ -190,7 +197,10 @@ class Command(BaseCommand):
 
             Investment.objects.update_or_create(
                 ticker=ticker_value,
-                defaults={"category": asset_type},
+                defaults={
+                    "category": asset_type,
+                    "screenter_type": screener_name,
+                },
             )
 
     def _get_screener(self, screener_name: str) -> ScreenerType:

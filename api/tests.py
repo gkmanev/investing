@@ -396,7 +396,9 @@ class FetchScreenerResultsCommandTests(APITestCase):
         )
 
         buffer = StringIO()
-        result = call_command("fetch_screener_results", self.screener.name, stdout=buffer)
+        result = call_command(
+            "fetch_screener_results", screener_name=self.screener.name, stdout=buffer
+        )
 
         expected_output = "Apple Inc.\nMicrosoft Corporation\nTesla, Inc."
         self.assertEqual(result, expected_output)
@@ -406,6 +408,9 @@ class FetchScreenerResultsCommandTests(APITestCase):
         self.assertEqual(list(tickers), ["Apple Inc.", "Microsoft Corporation", "Tesla, Inc."])
         self.assertTrue(
             Investment.objects.filter(ticker="Apple Inc.", category="stock").exists()
+        )
+        self.assertEqual(
+            Investment.objects.filter(screenter_type=self.screener.name).count(), 3
         )
 
     @patch("api.management.commands.fetch_screener_results.requests.post")
@@ -429,9 +434,8 @@ class FetchScreenerResultsCommandTests(APITestCase):
         buffer = StringIO()
         result = call_command(
             "fetch_screener_results",
-            self.screener.name,
-            "--per-page",
-            "1",
+            screener_name=self.screener.name,
+            per_page=1,
             stdout=buffer,
         )
 
@@ -447,6 +451,39 @@ class FetchScreenerResultsCommandTests(APITestCase):
 
         tickers = Investment.objects.order_by("ticker").values_list("ticker", flat=True)
         self.assertEqual(list(tickers), ["Alpha Corp", "Beta LLC"])
+
+    @patch("api.management.commands.fetch_screener_results.requests.post")
+    def test_command_replaces_existing_screener_entries(self, mock_post: MagicMock) -> None:
+        Investment.objects.create(
+            ticker="Legacy", category="stock", screenter_type=self.screener.name
+        )
+        Investment.objects.create(
+            ticker="Keep", category="stock", screenter_type="Another Screener"
+        )
+
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {"data": [{"attributes": {"name": "Fresh"}}]},
+            text="{}",
+        )
+
+        call_command("fetch_screener_results", screener_name=self.screener.name)
+
+        self.assertFalse(
+            Investment.objects.filter(
+                ticker="Legacy", screenter_type=self.screener.name
+            ).exists()
+        )
+        self.assertTrue(
+            Investment.objects.filter(
+                ticker="Keep", screenter_type="Another Screener"
+            ).exists()
+        )
+        self.assertTrue(
+            Investment.objects.filter(
+                ticker="Fresh", screenter_type=self.screener.name
+            ).exists()
+        )
 
     @patch("api.management.commands.fetch_screener_results.requests.post")
     def test_command_updates_existing_investments(self, mock_post: MagicMock) -> None:
@@ -468,13 +505,13 @@ class FetchScreenerResultsCommandTests(APITestCase):
 
         call_command(
             "fetch_screener_results",
-            self.screener.name,
-            "--type",
-            "fund",
+            screener_name=self.screener.name,
+            asset_type="fund",
         )
 
         investment.refresh_from_db()
         self.assertEqual(investment.category, "fund")
+        self.assertEqual(investment.screenter_type, self.screener.name)
 
     @patch("api.management.commands.fetch_screener_results.requests.post")
     def test_command_applies_market_cap_argument(self, mock_post: MagicMock) -> None:
@@ -485,7 +522,12 @@ class FetchScreenerResultsCommandTests(APITestCase):
         )
 
         buffer = StringIO()
-        call_command("fetch_screener_results", self.screener.name, "--market-cap", "10B", stdout=buffer)
+        call_command(
+            "fetch_screener_results",
+            screener_name=self.screener.name,
+            market_cap="10B",
+            stdout=buffer,
+        )
 
         _, kwargs = mock_post.call_args
         self.assertIn("json", kwargs)
@@ -506,11 +548,9 @@ class FetchScreenerResultsCommandTests(APITestCase):
 
         call_command(
             "fetch_screener_results",
-            self.screener.name,
-            "--min-price",
-            "10",
-            "--max-price",
-            "25.5",
+            screener_name=self.screener.name,
+            min_price="10",
+            max_price="25.5",
         )
 
         _, kwargs = mock_post.call_args
@@ -545,11 +585,9 @@ class FetchScreenerResultsCommandTests(APITestCase):
 
         call_command(
             "fetch_screener_results",
-            nested_screener.name,
-            "--market-cap",
-            "5B",
-            "--min-price",
-            "12",
+            screener_name=nested_screener.name,
+            market_cap="5B",
+            min_price="12",
         )
 
         _, kwargs = mock_post.call_args
@@ -583,9 +621,8 @@ class FetchScreenerResultsCommandTests(APITestCase):
 
         call_command(
             "fetch_screener_results",
-            quant_screener.name,
-            "--quant-rating",
-            "strong_buy",
+            screener_name=quant_screener.name,
+            quant_rating="strong_buy",
         )
 
         _, kwargs = mock_post.call_args
@@ -618,9 +655,8 @@ class FetchScreenerResultsCommandTests(APITestCase):
 
         call_command(
             "fetch_screener_results",
-            quant_screener.name,
-            "--quant-rating",
-            "strong_buy",
+            screener_name=quant_screener.name,
+            quant_rating="strong_buy",
         )
 
         _, kwargs = mock_post.call_args
@@ -638,32 +674,32 @@ class FetchScreenerResultsCommandTests(APITestCase):
         ):
             call_command(
                 "fetch_screener_results",
-                self.screener.name,
-                "--quant-rating",
-                "strong_buy",
+                screener_name=self.screener.name,
+                quant_rating="strong_buy",
             )
 
     def test_command_rejects_invalid_market_cap_argument(self) -> None:
         with self.assertRaisesMessage(CommandError, "Market cap value must be a number optionally followed by K, M, B, or T."):
-            call_command("fetch_screener_results", self.screener.name, "--market-cap", "ten-billion")
+            call_command(
+                "fetch_screener_results",
+                screener_name=self.screener.name,
+                market_cap="ten-billion",
+            )
 
     def test_command_rejects_invalid_price_arguments(self) -> None:
         with self.assertRaisesMessage(CommandError, "Price filters must be numeric values."):
             call_command(
                 "fetch_screener_results",
-                self.screener.name,
-                "--min-price",
-                "ten",
+                screener_name=self.screener.name,
+                min_price="ten",
             )
 
         with self.assertRaisesMessage(CommandError, "Minimum price cannot be greater than maximum price."):
             call_command(
                 "fetch_screener_results",
-                self.screener.name,
-                "--min-price",
-                "50",
-                "--max-price",
-                "10",
+                screener_name=self.screener.name,
+                min_price="50",
+                max_price="10",
             )
 
     @patch("api.management.commands.fetch_screener_results.requests.post")
@@ -677,7 +713,9 @@ class FetchScreenerResultsCommandTests(APITestCase):
         with self.assertRaisesMessage(
             CommandError, "Seeking Alpha API response did not include any ticker names."
         ):
-            call_command("fetch_screener_results", self.screener.name)
+            call_command(
+                "fetch_screener_results", screener_name=self.screener.name
+            )
 
 
 class FetchProfileDataCommandTests(APITestCase):

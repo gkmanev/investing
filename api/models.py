@@ -40,6 +40,7 @@ class Investment(models.Model):
 
     ticker = models.CharField(max_length=50, unique=True)
     category = models.CharField(max_length=100)
+    screenter_type = models.CharField(max_length=255, blank=True, null=True)
     price = models.DecimalField(max_digits=20, decimal_places=4, null=True, blank=True)
     volume = models.BigIntegerField(null=True, blank=True)
     market_cap = models.DecimalField(max_digits=24, decimal_places=2, null=True, blank=True)
