@@ -26,13 +26,20 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser) -> None:  # pragma: no cover - argparse wiring
         parser.add_argument(
+            "screener_name",
+            help="Name of the screener whose investments should be processed.",
+        )
+        parser.add_argument(
             "--skip-priced",
             action="store_true",
             help="Skip investments that already have a stored price.",
         )
 
     def handle(self, *args: Any, **options: Any) -> str:
-        investments_payload = self._fetch_json(INVESTMENTS_ENDPOINT)
+        screener_name: str = options["screener_name"]
+        investments_payload = self._fetch_json(
+            INVESTMENTS_ENDPOINT, params={"screener_type": screener_name}
+        )
         tickers = self._extract_tickers(investments_payload)
         if not tickers:
             raise CommandError(
