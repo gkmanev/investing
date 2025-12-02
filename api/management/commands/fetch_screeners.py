@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Iterable, List, Tuple
+import copy
 import json
 
 import requests
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
+from api.custom_filters import CUSTOM_FILTER_PAYLOAD
 from api.models import ScreenerFilter, ScreenerType
 
 API_URL = "https://seeking-alpha.p.rapidapi.com/screeners/list"
@@ -49,6 +51,7 @@ class Command(BaseCommand):
                 name = attributes["name"]
                 description = _extract_description(attributes)
                 filter_specs = _extract_filters(attributes, index)
+                filter_specs.append(_build_custom_filter(index, len(filter_specs)))
 
                 screener_type, _ = ScreenerType.objects.update_or_create(
                     name=name,

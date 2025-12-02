@@ -319,7 +319,7 @@ class FetchScreenersCommandTests(APITestCase):
         self.assertEqual(screener.description, "Stocks filtered by valuation metrics.")
 
         filters = list(screener.filters.order_by("display_order"))
-        self.assertEqual(len(filters), 2)
+        self.assertEqual(len(filters), 3)
         self.assertEqual(filters[0].label, "field=pe_ratio, operator=<, value=15")
         self.assertEqual(
             filters[0].payload,
@@ -334,10 +334,13 @@ class FetchScreenersCommandTests(APITestCase):
         )
         self.assertEqual(filters[1].display_order, 2)
 
+        self.assertEqual(filters[2].payload, CUSTOM_FILTER_PAYLOAD)
+        self.assertEqual(filters[2].display_order, 3)
+
         second = ScreenerType.objects.get(name="Growth Picks")
         self.assertEqual(second.description, "High growth companies.")
         filters = list(second.filters.order_by("display_order"))
-        self.assertEqual(len(filters), 2)
+        self.assertEqual(len(filters), 3)
 
         industry_filter = filters[0]
         self.assertEqual(industry_filter.label, "industry_id=999")
@@ -396,6 +399,7 @@ class FetchScreenersCommandTests(APITestCase):
         self.assertEqual(len(filters), 1)
         self.assertEqual(filters[0].label, "Volume Surge")
         self.assertEqual(filters[0].payload, "Volume Surge")
+        self.assertEqual(filters[1].payload, CUSTOM_FILTER_PAYLOAD)
 
     @patch("api.management.commands.fetch_screeners.requests.get")
     def test_command_trims_quant_rating_values(self, mock_get: MagicMock) -> None:
@@ -440,6 +444,7 @@ class FetchScreenersCommandTests(APITestCase):
             filters[0].label,
             'field=sample, quant_rating=["strong_buy", "buy"]',
         )
+        self.assertEqual(filters[1].payload, CUSTOM_FILTER_PAYLOAD)
 
 
 class FetchScreenerResultsCommandTests(APITestCase):
