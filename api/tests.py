@@ -896,6 +896,7 @@ class FetchScreenerResultsCommandTests(APITestCase):
 class FetchProfileDataCommandTests(APITestCase):
 
     def setUp(self) -> None:
+        self.screener_name = "Growth"
         self.investments = [
             Investment.objects.create(ticker="AAA", category="stock"),
             Investment.objects.create(ticker="BBB", category="stock"),
@@ -923,7 +924,7 @@ class FetchProfileDataCommandTests(APITestCase):
             status_code=200, json=lambda: [{"ticker": "AAA"}], text="{}"
         )
 
-        call_command("fetch_profile_data")
+        call_command("fetch_profile_data", self.screener_name)
         investment = Investment.objects.get(ticker="AAA")
         self.assertEqual(investment.options_suitability, 1)
 
@@ -937,7 +938,7 @@ class FetchProfileDataCommandTests(APITestCase):
             status_code=200, json=lambda: [{"ticker": "AAA"}], text="{}"
         )
 
-        call_command("fetch_profile_data")
+        call_command("fetch_profile_data", self.screener_name)
         investment = Investment.objects.get(ticker="AAA")
         self.assertEqual(investment.options_suitability, 0)
 
@@ -951,7 +952,7 @@ class FetchProfileDataCommandTests(APITestCase):
             status_code=200, json=lambda: [{"ticker": "AAA"}], text="{}"
         )
 
-        call_command("fetch_profile_data")
+        call_command("fetch_profile_data", self.screener_name)
         investment = Investment.objects.get(ticker="AAA")
         self.assertEqual(investment.options_suitability, -1)
 
@@ -971,7 +972,7 @@ class FetchProfileDataCommandTests(APITestCase):
         mock_expirations.return_value = []
 
         buffer = StringIO()
-        call_command("fetch_profile_data", stdout=buffer)
+        call_command("fetch_profile_data", self.screener_name, stdout=buffer)
 
         for ticker in ("NEW1", "NEW2"):
             investment = Investment.objects.get(ticker=ticker)
@@ -989,7 +990,7 @@ class FetchProfileDataCommandTests(APITestCase):
         mock_get.return_value = MagicMock(status_code=500, text="error")
 
         with self.assertRaises(CommandError):
-            call_command("fetch_profile_data")
+            call_command("fetch_profile_data", self.screener_name)
 
     @patch("api.management.commands.fetch_profile_data.requests.get")
     def test_command_can_skip_investments_with_price(self, mock_get: MagicMock) -> None:
@@ -1008,7 +1009,9 @@ class FetchProfileDataCommandTests(APITestCase):
             return_value=[],
         ) as mock_expirations:
             buffer = StringIO()
-            call_command("fetch_profile_data", "--skip-priced", stdout=buffer)
+            call_command(
+                "fetch_profile_data", self.screener_name, "--skip-priced", stdout=buffer
+            )
 
         self.assertEqual(mock_expirations.call_args_list, [call("BBB")])
         output = buffer.getvalue()
@@ -1036,7 +1039,25 @@ class FetchProfileDataCommandTests(APITestCase):
         with self.assertRaisesMessage(
             CommandError, "No tickers remain to update after skipping priced investments."
         ):
-            call_command("fetch_profile_data", "--skip-priced")
+            call_command("fetch_profile_data", self.screener_name, "--skip-priced")
+
+    @patch("api.management.commands.fetch_profile_data.Command._fetch_option_expirations")
+    @patch("api.management.commands.fetch_profile_data.requests.get")
+    def test_command_fetches_only_requested_screener(
+        self, mock_get: MagicMock, mock_expirations: MagicMock
+    ) -> None:
+        mock_get.return_value = MagicMock(
+            status_code=200, json=lambda: [{"ticker": "AAA"}], text="{}"
+        )
+        mock_expirations.return_value = []
+
+        call_command("fetch_profile_data", self.screener_name)
+
+        mock_get.assert_called_once()
+        self.assertEqual(
+            mock_get.call_args.kwargs.get("params"),
+            {"screener_type": self.screener_name},
+        )
 
     @patch("api.management.commands.fetch_profile_data.requests.get")
     def test_fetch_option_expirations_uses_expected_headers_and_params(
