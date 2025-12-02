@@ -21,7 +21,7 @@ class Command(BaseCommand):
 
     help = (
         "Query Stocks by Quant tickers with options suitability set to 1 and "
-        "print the closest option expiration date within the next 30 days."
+        "print the two closest option expiration dates within the next 30 days."
     )
 
     def handle(self, *args, **options) -> str | None:  # pragma: no cover - CLI entry
@@ -45,13 +45,14 @@ class Command(BaseCommand):
                 self.stderr.write(f"{ticker}: {exc}")
                 continue
 
-            closest_date = self._select_closest_date(dates, today, upper_bound)
-            if closest_date is None:
+            closest_dates = self._select_closest_dates(dates, today, upper_bound)
+            if not closest_dates:
                 self.stdout.write(
                     f"{ticker}: No option expiration date within the next 30 days."
                 )
             else:
-                self.stdout.write(f"{ticker}: {closest_date.isoformat()}")
+                formatted_dates = ", ".join(date.isoformat() for date in closest_dates)
+                self.stdout.write(f"{ticker}: {formatted_dates}")
 
         return None
 
@@ -78,10 +79,10 @@ class Command(BaseCommand):
         except (TypeError, KeyError) as exc:
             raise CommandError("Missing expected data in Seeking Alpha response") from exc
 
-    def _select_closest_date(
+    def _select_closest_dates(
         self, dates: Iterable[str], today: date, upper_bound: date
-    ) -> date | None:
-        """Return the soonest expiration date between today and the upper bound."""
+    ) -> list[date]:
+        """Return up to two soonest expiration dates between today and the upper bound."""
 
         valid_dates: list[date] = []
         for date_string in dates:
@@ -93,7 +94,4 @@ class Command(BaseCommand):
             if today <= parsed_date <= upper_bound:
                 valid_dates.append(parsed_date)
 
-        if not valid_dates:
-            return None
-
-        return min(valid_dates)
+        return sorted(valid_dates)[:2]
