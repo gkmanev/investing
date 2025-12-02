@@ -754,6 +754,42 @@ class FetchScreenerResultsCommandTests(APITestCase):
         self.assertEqual(payload["marketcap_display"].get("gte"), 7_000_000_000)
 
     @patch("api.management.commands.fetch_screener_results.requests.post")
+    def test_command_removes_industry_id_for_quant_screener(
+        self, mock_post: MagicMock
+    ) -> None:
+        quant_screener = ScreenerType.objects.create(
+            name="Stocks by Quant", description="Quant focused filters."
+        )
+        ScreenerFilter.objects.create(
+            screener_type=quant_screener,
+            label="Quant filters",
+            payload={
+                "quant_rating": {"in": ["strong_buy", "buy"]},
+                "industry_id": {"in": [1, 2], "exclude": False},
+                "close": {"gte": 30.0, "lte": 160.0},
+            },
+            display_order=1,
+        )
+
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {"data": [{"attributes": {"name": "Sample"}}]},
+            text="{}",
+        )
+
+        call_command(
+            "fetch_screener_results",
+            screener_name=quant_screener.name,
+            market_cap="5B",
+        )
+
+        _, kwargs = mock_post.call_args
+        payload = kwargs["json"]
+        self.assertNotIn("industry_id", payload)
+        self.assertIn("quant_rating", payload)
+        self.assertEqual(payload.get("close"), {"gte": 30.0, "lte": 160.0})
+
+    @patch("api.management.commands.fetch_screener_results.requests.post")
     def test_command_updates_nested_filter_section(self, mock_post: MagicMock) -> None:
         nested_screener = ScreenerType.objects.create(
             name="Energy Focus", description="Composite filter payload."
