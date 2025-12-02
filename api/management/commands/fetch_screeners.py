@@ -73,14 +73,6 @@ class FilterSpec:
     label: str
     payload: Any
 
-
-def _build_custom_filter(screener_index: int, filter_count: int) -> FilterSpec:
-    label = _format_filter_label(
-        CUSTOM_FILTER_PAYLOAD, screener_index, filter_count
-    )
-    return FilterSpec(label=label, payload=copy.deepcopy(CUSTOM_FILTER_PAYLOAD))
-
-
 def _extract_attributes(item: Any, index: int) -> dict[str, Any]:
     attributes = item.get("attributes") if isinstance(item, dict) else None
     if not isinstance(attributes, dict) or "name" not in attributes:

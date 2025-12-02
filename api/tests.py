@@ -363,7 +363,7 @@ class FetchScreenersCommandTests(APITestCase):
         )
         self.assertIn("industry_id", growth_filter.payload)
 
-        self.assertEqual(filters[2].payload, CUSTOM_FILTER_PAYLOAD)
+        self.assertEqual(filters[1].display_order, 2)
 
     @patch("api.management.commands.fetch_screeners.requests.get")
     def test_command_removes_missing_filters(self, mock_get: MagicMock) -> None:
@@ -396,7 +396,7 @@ class FetchScreenersCommandTests(APITestCase):
         screener.refresh_from_db()
         self.assertEqual(screener.description, "Updated description.")
         filters = list(screener.filters.order_by("display_order"))
-        self.assertEqual(len(filters), 2)
+        self.assertEqual(len(filters), 1)
         self.assertEqual(filters[0].label, "Volume Surge")
         self.assertEqual(filters[0].payload, "Volume Surge")
         self.assertEqual(filters[1].payload, CUSTOM_FILTER_PAYLOAD)
@@ -435,6 +435,7 @@ class FetchScreenersCommandTests(APITestCase):
         self.assertEqual(screener.description, "Quant focused screener.")
 
         filters = list(screener.filters.order_by("display_order"))
+        self.assertEqual(len(filters), 1)
         self.assertEqual(
             filters[0].payload,
             {"field": "sample", "quant_rating": ["strong_buy", "buy"]},
