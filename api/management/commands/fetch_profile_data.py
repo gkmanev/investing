@@ -188,4 +188,4 @@ class Command(BaseCommand):
             if expiration.year == target_year and expiration.month == target_month:
                 expirations_next_month += 1
 
-        return 1 if expirations_next_month >= 3 else 0
+        return 1 if expirations_next_month >= 4 else 0
