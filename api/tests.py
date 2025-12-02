@@ -456,6 +456,7 @@ class FetchScreenersCommandTests(APITestCase):
             filters[0].label,
             'field=sample, quant_rating=["strong_buy", "buy"]',
         )
+        self.assertEqual(filters[1].payload, CUSTOM_FILTER_PAYLOAD)
 
         custom_filter = filters[1]
         self.assertEqual(custom_filter.label, "Custom screener filter")
