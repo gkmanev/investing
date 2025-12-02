@@ -84,7 +84,6 @@ class Command(BaseCommand):
                 "Only applies when the screener stores a quant_rating filter."
             ),
         )
-
     def handle(self, *args: Any, **options: Any) -> str:
         screener_name: str = options["screener_name"]
         page: int = options["page"]
@@ -98,7 +97,10 @@ class Command(BaseCommand):
 
         screener = self._get_screener(screener_name)
         self._delete_existing_investments(screener_name)
-        payload = self._build_payload(screener.filters.all())
+        payload = self._build_payload(
+            screener.filters.all(),
+            include_custom_filters=self._should_include_custom_filters(screener_name),
+        )
         if only_filter_keys:
             payload = self._limit_payload_to_keys(payload, only_filter_keys)
         if market_cap_raw:
@@ -215,8 +217,15 @@ class Command(BaseCommand):
                 f"Screener named '{screener_name}' does not exist in the database."
             ) from exc
 
-    def _build_payload(self, filters: Iterable[Any]) -> dict[str, Any]:
-        payload: dict[str, Any] = copy.deepcopy(CUSTOM_FILTER_PAYLOAD)
+    def _should_include_custom_filters(self, screener_name: str) -> bool:
+        return screener_name == "Custom screener filter"
+
+    def _build_payload(
+        self, filters: Iterable[Any], *, include_custom_filters: bool = True
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = (
+            copy.deepcopy(CUSTOM_FILTER_PAYLOAD) if include_custom_filters else {}
+        )
         for filter_obj in filters:
             filter_payload = filter_obj.payload
             if not filter_payload:
