@@ -41,23 +41,30 @@ class Command(BaseCommand):
 
         for ticker in tickers:
             try:
-                dates = self._fetch_expiration_dates(ticker)
+                payload = self._fetch_expiration_data(ticker)
             except CommandError as exc:
                 self.stderr.write(f"{ticker}: {exc}")
                 continue
 
-            closest_dates = self._select_closest_dates(dates, today, upper_bound)
+            closest_dates = self._select_closest_dates(
+                payload["dates"], today, upper_bound
+            )
             if not closest_dates:
                 self.stdout.write(
-                    f"{ticker}: No option expiration date within the next 31 days."
+                    f"{ticker} (ticker_id {payload['ticker_id']}): No option "
+                    "expiration date within the next 31 days."
                 )
             else:
                 formatted_dates = ", ".join(date.isoformat() for date in closest_dates)
-                self.stdout.write(f"{ticker}: {formatted_dates}")
+                furthest_date = max(closest_dates)
+                self.stdout.write(
+                    f"{ticker} (ticker_id {payload['ticker_id']}): {formatted_dates}; "
+                    f"furthest: {furthest_date.isoformat()}"
+                )
 
         return None
 
-    def _fetch_expiration_dates(self, ticker: str) -> list[str]:
+    def _fetch_expiration_data(self, ticker: str) -> dict:
         try:
             response = requests.get(
                 API_URL, headers=API_HEADERS, params={"symbol": ticker}, timeout=30
@@ -76,9 +83,17 @@ class Command(BaseCommand):
             raise CommandError("Received invalid JSON from Seeking Alpha API") from exc
 
         try:
-            return payload["data"]["attributes"]["dates"]
+            attributes = payload["data"]["attributes"]
         except (TypeError, KeyError) as exc:
             raise CommandError("Missing expected data in Seeking Alpha response") from exc
+
+        try:
+            ticker_id = attributes["ticker_id"]
+            dates = attributes["dates"]
+        except (TypeError, KeyError) as exc:
+            raise CommandError("Missing expected data in Seeking Alpha response") from exc
+
+        return {"ticker_id": ticker_id, "dates": dates}
 
     def _select_closest_dates(
         self, dates: Iterable[str], today: date, upper_bound: date
