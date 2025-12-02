@@ -1,6 +1,7 @@
 from datetime import date
 from decimal import Decimal
 from io import StringIO
+import json
 
 from django.core.management import call_command
 from django.core.management.base import CommandError
@@ -460,6 +461,44 @@ class FetchScreenersCommandTests(APITestCase):
         self.assertEqual(len(custom_filters), 1)
         self.assertEqual(custom_filters[0].label, "Custom screener filter")
         self.assertEqual(custom_filters[0].payload, CUSTOM_FILTER_PAYLOAD)
+
+    @patch("api.management.commands.fetch_screeners.requests.get")
+    def test_command_removes_industry_id_from_quant_screener(
+        self, mock_get: MagicMock
+    ) -> None:
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {
+                "data": [
+                    {
+                        "attributes": {
+                            "name": "Stocks by Quant",
+                            "description": "Quant screener with industry filter.",
+                            "filters": [
+                                {
+                                    "industry_id": {"in": [123, 456], "exclude": False},
+                                    "quant_rating": {"in": ["strong_buy", "buy"]},
+                                    "field": "sample",
+                                }
+                            ],
+                        }
+                    }
+                ]
+            },
+            text="{}",
+        )
+
+        call_command("fetch_screeners")
+
+        screener = ScreenerType.objects.get(name="Stocks by Quant")
+        filters = list(screener.filters.order_by("display_order"))
+        self.assertEqual(len(filters), 1)
+        self.assertEqual(
+            filters[0].payload,
+            {"field": "sample", "quant_rating": {"in": ["strong_buy", "buy"]}},
+        )
+        self.assertNotIn("industry_id", filters[0].label)
+        self.assertNotIn("industry_id", json.dumps(filters[0].payload))
 
 
 class FetchScreenerResultsCommandTests(APITestCase):
