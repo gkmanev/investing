@@ -314,12 +314,12 @@ class FetchScreenersCommandTests(APITestCase):
 
         call_command("fetch_screeners")
 
-        self.assertEqual(ScreenerType.objects.count(), 2)
+        self.assertEqual(ScreenerType.objects.count(), 3)
         screener = ScreenerType.objects.get(name="Value Stocks")
         self.assertEqual(screener.description, "Stocks filtered by valuation metrics.")
 
         filters = list(screener.filters.order_by("display_order"))
-        self.assertEqual(len(filters), 3)
+        self.assertEqual(len(filters), 2)
         self.assertEqual(filters[0].label, "field=pe_ratio, operator=<, value=15")
         self.assertEqual(
             filters[0].payload,
@@ -334,15 +334,10 @@ class FetchScreenersCommandTests(APITestCase):
         )
         self.assertEqual(filters[1].display_order, 2)
 
-        custom_filter = filters[2]
-        self.assertEqual(custom_filter.label, "Custom screener filter")
-        self.assertEqual(custom_filter.payload, CUSTOM_FILTER_PAYLOAD)
-        self.assertEqual(custom_filter.display_order, 3)
-
         second = ScreenerType.objects.get(name="Growth Picks")
         self.assertEqual(second.description, "High growth companies.")
         filters = list(second.filters.order_by("display_order"))
-        self.assertEqual(len(filters), 3)
+        self.assertEqual(len(filters), 2)
 
         industry_filter = filters[0]
         self.assertEqual(industry_filter.label, "industry_id=999")
@@ -367,10 +362,12 @@ class FetchScreenersCommandTests(APITestCase):
 
         self.assertEqual(filters[1].display_order, 2)
 
-        custom_filter = filters[2]
-        self.assertEqual(custom_filter.label, "Custom screener filter")
-        self.assertEqual(custom_filter.payload, CUSTOM_FILTER_PAYLOAD)
-        self.assertEqual(custom_filter.display_order, 3)
+        custom_screener = ScreenerType.objects.get(name="Custom screener filter")
+        custom_filters = list(custom_screener.filters.order_by("display_order"))
+        self.assertEqual(len(custom_filters), 1)
+        self.assertEqual(custom_filters[0].label, "Custom screener filter")
+        self.assertEqual(custom_filters[0].payload, CUSTOM_FILTER_PAYLOAD)
+        self.assertEqual(custom_filters[0].display_order, 1)
 
     @patch("api.management.commands.fetch_screeners.requests.get")
     def test_command_removes_missing_filters(self, mock_get: MagicMock) -> None:
@@ -403,15 +400,17 @@ class FetchScreenersCommandTests(APITestCase):
         screener.refresh_from_db()
         self.assertEqual(screener.description, "Updated description.")
         filters = list(screener.filters.order_by("display_order"))
-        self.assertEqual(len(filters), 2)
+        self.assertEqual(len(filters), 1)
         self.assertEqual(filters[0].label, "Volume Surge")
         self.assertEqual(filters[0].payload, "Volume Surge")
         self.assertEqual(filters[0].display_order, 1)
 
-        custom_filter = filters[1]
-        self.assertEqual(custom_filter.label, "Custom screener filter")
-        self.assertEqual(custom_filter.payload, CUSTOM_FILTER_PAYLOAD)
-        self.assertEqual(custom_filter.display_order, 2)
+        custom_screener = ScreenerType.objects.get(name="Custom screener filter")
+        custom_filters = list(custom_screener.filters.order_by("display_order"))
+        self.assertEqual(len(custom_filters), 1)
+        self.assertEqual(custom_filters[0].label, "Custom screener filter")
+        self.assertEqual(custom_filters[0].payload, CUSTOM_FILTER_PAYLOAD)
+        self.assertEqual(custom_filters[0].display_order, 1)
 
     @patch("api.management.commands.fetch_screeners.requests.get")
     def test_command_trims_quant_rating_values(self, mock_get: MagicMock) -> None:
@@ -447,7 +446,7 @@ class FetchScreenersCommandTests(APITestCase):
         self.assertEqual(screener.description, "Quant focused screener.")
 
         filters = list(screener.filters.order_by("display_order"))
-        self.assertEqual(len(filters), 2)
+        self.assertEqual(len(filters), 1)
         self.assertEqual(
             filters[0].payload,
             {"field": "sample", "quant_rating": ["strong_buy", "buy"]},
@@ -456,11 +455,11 @@ class FetchScreenersCommandTests(APITestCase):
             filters[0].label,
             'field=sample, quant_rating=["strong_buy", "buy"]',
         )
-        self.assertEqual(filters[1].payload, CUSTOM_FILTER_PAYLOAD)
-
-        custom_filter = filters[1]
-        self.assertEqual(custom_filter.label, "Custom screener filter")
-        self.assertEqual(custom_filter.payload, CUSTOM_FILTER_PAYLOAD)
+        custom_screener = ScreenerType.objects.get(name="Custom screener filter")
+        custom_filters = list(custom_screener.filters.order_by("display_order"))
+        self.assertEqual(len(custom_filters), 1)
+        self.assertEqual(custom_filters[0].label, "Custom screener filter")
+        self.assertEqual(custom_filters[0].payload, CUSTOM_FILTER_PAYLOAD)
 
 
 class FetchScreenerResultsCommandTests(APITestCase):
