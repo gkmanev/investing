@@ -1,6 +1,7 @@
 from datetime import date
 from decimal import Decimal
 from io import StringIO
+import json
 
 from django.core.management import call_command
 from django.core.management.base import CommandError
@@ -461,6 +462,44 @@ class FetchScreenersCommandTests(APITestCase):
         self.assertEqual(custom_filters[0].label, "Custom screener filter")
         self.assertEqual(custom_filters[0].payload, CUSTOM_FILTER_PAYLOAD)
 
+    @patch("api.management.commands.fetch_screeners.requests.get")
+    def test_command_removes_industry_id_from_quant_screener(
+        self, mock_get: MagicMock
+    ) -> None:
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {
+                "data": [
+                    {
+                        "attributes": {
+                            "name": "Stocks by Quant",
+                            "description": "Quant screener with industry filter.",
+                            "filters": [
+                                {
+                                    "industry_id": {"in": [123, 456], "exclude": False},
+                                    "quant_rating": {"in": ["strong_buy", "buy"]},
+                                    "field": "sample",
+                                }
+                            ],
+                        }
+                    }
+                ]
+            },
+            text="{}",
+        )
+
+        call_command("fetch_screeners")
+
+        screener = ScreenerType.objects.get(name="Stocks by Quant")
+        filters = list(screener.filters.order_by("display_order"))
+        self.assertEqual(len(filters), 1)
+        self.assertEqual(
+            filters[0].payload,
+            {"field": "sample", "quant_rating": {"in": ["strong_buy", "buy"]}},
+        )
+        self.assertNotIn("industry_id", filters[0].label)
+        self.assertNotIn("industry_id", json.dumps(filters[0].payload))
+
 
 class FetchScreenerResultsCommandTests(APITestCase):
     def setUp(self) -> None:
@@ -713,6 +752,42 @@ class FetchScreenerResultsCommandTests(APITestCase):
         self.assertEqual(payload["close"].get("lte"), 50)
         self.assertEqual(payload["close"].get("gte"), 15.0)
         self.assertEqual(payload["marketcap_display"].get("gte"), 7_000_000_000)
+
+    @patch("api.management.commands.fetch_screener_results.requests.post")
+    def test_command_removes_industry_id_for_quant_screener(
+        self, mock_post: MagicMock
+    ) -> None:
+        quant_screener = ScreenerType.objects.create(
+            name="Stocks by Quant", description="Quant focused filters."
+        )
+        ScreenerFilter.objects.create(
+            screener_type=quant_screener,
+            label="Quant filters",
+            payload={
+                "quant_rating": {"in": ["strong_buy", "buy"]},
+                "industry_id": {"in": [1, 2], "exclude": False},
+                "close": {"gte": 30.0, "lte": 160.0},
+            },
+            display_order=1,
+        )
+
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {"data": [{"attributes": {"name": "Sample"}}]},
+            text="{}",
+        )
+
+        call_command(
+            "fetch_screener_results",
+            screener_name=quant_screener.name,
+            market_cap="5B",
+        )
+
+        _, kwargs = mock_post.call_args
+        payload = kwargs["json"]
+        self.assertNotIn("industry_id", payload)
+        self.assertIn("quant_rating", payload)
+        self.assertEqual(payload.get("close"), {"gte": 30.0, "lte": 160.0})
 
     @patch("api.management.commands.fetch_screener_results.requests.post")
     def test_command_updates_nested_filter_section(self, mock_post: MagicMock) -> None:

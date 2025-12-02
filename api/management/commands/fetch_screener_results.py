@@ -101,6 +101,8 @@ class Command(BaseCommand):
             screener.filters.all(),
             include_custom_filters=self._should_include_custom_filters(screener_name),
         )
+        if screener_name.strip().lower() == "stocks by quant":
+            payload = self._remove_industry_id(payload)
         if only_filter_keys:
             payload = self._limit_payload_to_keys(payload, only_filter_keys)
         if market_cap_raw:
@@ -524,6 +526,22 @@ class Command(BaseCommand):
 
     def _canonical_quant_rating_value(self, value: str) -> str:
         return self._normalise_quant_rating_value(value).replace(" ", "_")
+
+    def _remove_industry_id(self, payload: Any) -> Any:
+        if isinstance(payload, dict):
+            updated_dict: dict[str, Any] = {}
+            for key, value in payload.items():
+                if key == "industry_id":
+                    continue
+
+                updated_dict[key] = self._remove_industry_id(value)
+
+            return updated_dict
+
+        if isinstance(payload, list):
+            return [self._remove_industry_id(item) for item in payload]
+
+        return payload
 
     def _extract_ticker_names(self, payload: Any) -> List[str]:
         if not isinstance(payload, dict):
