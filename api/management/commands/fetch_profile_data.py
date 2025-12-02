@@ -26,7 +26,7 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser) -> None:  # pragma: no cover - argparse wiring
         parser.add_argument(
-            "screener_name",
+            "--screener_name",
             help="Name of the screener whose investments should be processed.",
         )
         parser.add_argument(
@@ -195,4 +195,4 @@ class Command(BaseCommand):
             if expiration.year == target_year and expiration.month == target_month:
                 expirations_next_month += 1
 
-        return 1 if expirations_next_month >= 4 else 0
+        return 1 if expirations_next_month >= 3 else 0
