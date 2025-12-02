@@ -653,7 +653,7 @@ class FetchScreenerResultsCommandTests(APITestCase):
         self.assertEqual(payload["close"].get("lte"), 25.5)
 
     @patch("api.management.commands.fetch_screener_results.requests.post")
-    def test_command_includes_custom_filter_with_overrides(
+    def test_command_does_not_merge_custom_filter_for_standard_screeners(
         self, mock_post: MagicMock
     ) -> None:
         mock_post.return_value = MagicMock(
@@ -665,6 +665,41 @@ class FetchScreenerResultsCommandTests(APITestCase):
         call_command(
             "fetch_screener_results",
             screener_name=self.screener.name,
+        )
+
+        _, kwargs = mock_post.call_args
+        payload = kwargs["json"]
+
+        self.assertEqual(
+            payload,
+            {"field": "market_cap", "operator": ">=", "value": 500_000_000},
+        )
+        self.assertNotIn("value_category", payload)
+        self.assertNotIn("exchange", payload)
+
+    @patch("api.management.commands.fetch_screener_results.requests.post")
+    def test_command_includes_custom_filter_with_overrides_for_custom_screener(
+        self, mock_post: MagicMock
+    ) -> None:
+        custom_screener = ScreenerType.objects.create(
+            name="Custom screener filter", description="Custom filter payload only."
+        )
+        ScreenerFilter.objects.create(
+            screener_type=custom_screener,
+            label="Base filters",
+            payload={"close": {"lte": 50}},
+            display_order=1,
+        )
+
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {"data": [{"attributes": {"name": "Sample"}}]},
+            text="{}",
+        )
+
+        call_command(
+            "fetch_screener_results",
+            screener_name=custom_screener.name,
             market_cap="7B",
             min_price="15",
         )
@@ -675,6 +710,7 @@ class FetchScreenerResultsCommandTests(APITestCase):
         self.assertEqual(payload.get("exchange"), CUSTOM_FILTER_PAYLOAD["exchange"])
         self.assertEqual(payload.get("altman_z_score"), CUSTOM_FILTER_PAYLOAD["altman_z_score"])
         self.assertIn("close", payload)
+        self.assertEqual(payload["close"].get("lte"), 50)
         self.assertEqual(payload["close"].get("gte"), 15.0)
         self.assertEqual(payload["marketcap_display"].get("gte"), 7_000_000_000)
 
@@ -790,6 +826,15 @@ class FetchScreenerResultsCommandTests(APITestCase):
     def test_command_overrides_quant_rating_from_custom_filter(
         self, mock_post: MagicMock
     ) -> None:
+        custom_screener = ScreenerType.objects.create(
+            name="Custom screener filter", description="Custom filter payload only."
+        )
+        ScreenerFilter.objects.create(
+            screener_type=custom_screener,
+            label="Base filters",
+            payload={},
+            display_order=1,
+        )
         mock_post.return_value = MagicMock(
             status_code=200,
             json=lambda: {"data": [{"attributes": {"name": "Sample"}}]},
@@ -798,7 +843,7 @@ class FetchScreenerResultsCommandTests(APITestCase):
 
         call_command(
             "fetch_screener_results",
-            screener_name=self.screener.name,
+            screener_name=custom_screener.name,
             quant_rating="strong_buy",
         )
 
