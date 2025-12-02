@@ -51,7 +51,7 @@ class Command(BaseCommand):
                 name = attributes["name"]
                 description = _extract_description(attributes)
                 filter_specs = _extract_filters(attributes, index)
-                filter_specs.append(_build_custom_filter(index, len(filter_specs)))
+                filter_specs.append(_build_custom_filter())
 
                 screener_type, _ = ScreenerType.objects.update_or_create(
                     name=name,
@@ -72,6 +72,15 @@ class Command(BaseCommand):
 class FilterSpec:
     label: str
     payload: Any
+
+
+def _build_custom_filter() -> FilterSpec:
+    """Build a filter spec representing the shared custom filter payload."""
+
+    return FilterSpec(
+        label="Custom screener filter",
+        payload=copy.deepcopy(CUSTOM_FILTER_PAYLOAD),
+    )
 
 def _extract_attributes(item: Any, index: int) -> dict[str, Any]:
     attributes = item.get("attributes") if isinstance(item, dict) else None
