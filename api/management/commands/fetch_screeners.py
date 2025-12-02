@@ -274,7 +274,15 @@ def _apply_payload_rules(
         return payload, False
 
     if screener_type.name.strip().lower() == "stocks by quant":
-        return _trim_quant_rating_values(payload)
+        payload_without_industry, industry_changed = _remove_industry_id(payload)
+        trimmed_payload, quant_changed = _trim_quant_rating_values(
+            payload_without_industry
+        )
+
+        if quant_changed or trimmed_payload != payload_without_industry:
+            return trimmed_payload, True
+
+        return payload_without_industry, industry_changed
 
     return payload, False
 
@@ -343,4 +351,34 @@ def _filter_quant_rating_entries(
 
 def _normalise_quant_rating_value(value: str) -> str:
     return value.strip().lower().replace("_", " ")
+
+
+def _remove_industry_id(payload: Any) -> Tuple[Any, bool]:
+    if isinstance(payload, dict):
+        changed = False
+        updated_dict: dict[str, Any] = {}
+        for key, value in payload.items():
+            if key == "industry_id":
+                changed = True
+                continue
+
+            new_value, value_changed = _remove_industry_id(value)
+            updated_dict[key] = new_value
+            if value_changed or new_value != value:
+                changed = True
+
+        return updated_dict, changed
+
+    if isinstance(payload, list):
+        changed = False
+        updated_list: list[Any] = []
+        for item in payload:
+            new_item, item_changed = _remove_industry_id(item)
+            updated_list.append(new_item)
+            if item_changed or new_item != item:
+                changed = True
+
+        return updated_list, changed
+
+    return payload, False
 
