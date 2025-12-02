@@ -21,7 +21,8 @@ class Command(BaseCommand):
 
     help = (
         "Query Stocks by Quant tickers with options suitability set to 1 and "
-        "print the two closest option expiration dates within the next 30 days."
+        "print the two closest option expiration dates nearest to the 30-day "
+        "cutoff."
     )
 
     def handle(self, *args, **options) -> str | None:  # pragma: no cover - CLI entry
@@ -82,7 +83,13 @@ class Command(BaseCommand):
     def _select_closest_dates(
         self, dates: Iterable[str], today: date, upper_bound: date
     ) -> list[date]:
-        """Return up to two soonest expiration dates between today and the upper bound."""
+        """
+        Return up to two expiration dates that are closest to the 30-day cutoff.
+
+        Dates are filtered to the window [today, upper_bound] and then ordered by
+        proximity to the upper bound so the nearest eligible expirations are
+        returned first.
+        """
 
         valid_dates: list[date] = []
         for date_string in dates:
@@ -93,5 +100,6 @@ class Command(BaseCommand):
 
             if today <= parsed_date <= upper_bound:
                 valid_dates.append(parsed_date)
-
-        return sorted(valid_dates)[:2]
+        return sorted(valid_dates, key=lambda candidate: (upper_bound - candidate).days)[
+            :2
+        ]
