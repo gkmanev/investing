@@ -51,7 +51,6 @@ class Command(BaseCommand):
                 name = attributes["name"]
                 description = _extract_description(attributes)
                 filter_specs = _extract_filters(attributes, index)
-                filter_specs.append(_build_custom_filter())
 
                 screener_type, _ = ScreenerType.objects.update_or_create(
                     name=name,
@@ -62,6 +61,9 @@ class Command(BaseCommand):
                 formatted_entries.append(
                     _format_entry(name, [spec.label for spec in filter_specs])
                 )
+
+            custom_entry = _ensure_custom_filter()
+            formatted_entries.append(custom_entry)
 
         formatted_payload = "\n".join(formatted_entries)
         self.stdout.write(formatted_payload)
@@ -81,6 +83,22 @@ def _build_custom_filter() -> FilterSpec:
         label="Custom screener filter",
         payload=copy.deepcopy(CUSTOM_FILTER_PAYLOAD),
     )
+
+
+def _ensure_custom_filter() -> str:
+    """Persist the shared custom filter as its own screener entry."""
+
+    screener_type, _ = ScreenerType.objects.update_or_create(
+        name="Custom screener filter",
+        defaults={
+            "description": "Shared filter applied to all screeners.",
+        },
+    )
+
+    filter_spec = _build_custom_filter()
+    _synchronise_filters(screener_type, [filter_spec])
+
+    return _format_entry(screener_type.name, [filter_spec.label])
 
 def _extract_attributes(item: Any, index: int) -> dict[str, Any]:
     attributes = item.get("attributes") if isinstance(item, dict) else None
