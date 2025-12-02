@@ -21,7 +21,7 @@ class Command(BaseCommand):
 
     help = (
         "Query Stocks by Quant tickers with options suitability set to 1 and "
-        "print the two closest option expiration dates nearest to the 30-day "
+        "print the two closest option expiration dates nearest to the 31-day "
         "cutoff."
     )
 
@@ -37,7 +37,7 @@ class Command(BaseCommand):
             return None
 
         today = timezone.now().date()
-        upper_bound = today + timedelta(days=30)
+        upper_bound = today + timedelta(days=31)
 
         for ticker in tickers:
             try:
@@ -49,7 +49,7 @@ class Command(BaseCommand):
             closest_dates = self._select_closest_dates(dates, today, upper_bound)
             if not closest_dates:
                 self.stdout.write(
-                    f"{ticker}: No option expiration date within the next 30 days."
+                    f"{ticker}: No option expiration date within the next 31 days."
                 )
             else:
                 formatted_dates = ", ".join(date.isoformat() for date in closest_dates)
@@ -84,7 +84,7 @@ class Command(BaseCommand):
         self, dates: Iterable[str], today: date, upper_bound: date
     ) -> list[date]:
         """
-        Return up to two expiration dates that are closest to the 30-day cutoff.
+        Return up to two expiration dates that are closest to the 31-day cutoff.
 
         Dates are filtered to the window [today, upper_bound] and then ordered by
         proximity to the upper bound so the nearest eligible expirations are
