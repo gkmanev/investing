@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 from typing import Any, Iterable, List
+import copy
 
 import requests
 from django.core.management.base import BaseCommand, CommandError
 
+from api.custom_filters import CUSTOM_FILTER_PAYLOAD
 from api.models import Investment, ScreenerType
 
 API_URL = "https://seeking-alpha.p.rapidapi.com/screeners/get-results"
@@ -214,7 +216,7 @@ class Command(BaseCommand):
             ) from exc
 
     def _build_payload(self, filters: Iterable[Any]) -> dict[str, Any]:
-        payload: dict[str, Any] = {}
+        payload: dict[str, Any] = copy.deepcopy(CUSTOM_FILTER_PAYLOAD)
         for filter_obj in filters:
             filter_payload = filter_obj.payload
             if not filter_payload:

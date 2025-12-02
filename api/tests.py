@@ -9,6 +9,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 from unittest.mock import MagicMock, call, patch
 
+from api.custom_filters import CUSTOM_FILTER_PAYLOAD
 from api.management.commands.fetch_profile_data import (
     API_HEADERS,
     OPTION_EXPIRATIONS_ENDPOINT,
@@ -359,6 +360,8 @@ class FetchScreenersCommandTests(APITestCase):
         )
         self.assertIn("industry_id", growth_filter.payload)
 
+        self.assertEqual(filters[1].display_order, 2)
+
     @patch("api.management.commands.fetch_screeners.requests.get")
     def test_command_removes_missing_filters(self, mock_get: MagicMock) -> None:
         screener = ScreenerType.objects.create(name="Momentum", description="")
@@ -389,7 +392,7 @@ class FetchScreenersCommandTests(APITestCase):
 
         screener.refresh_from_db()
         self.assertEqual(screener.description, "Updated description.")
-        filters = list(screener.filters.all())
+        filters = list(screener.filters.order_by("display_order"))
         self.assertEqual(len(filters), 1)
         self.assertEqual(filters[0].label, "Volume Surge")
         self.assertEqual(filters[0].payload, "Volume Surge")
@@ -427,13 +430,14 @@ class FetchScreenersCommandTests(APITestCase):
         screener = ScreenerType.objects.get(name="Stocks by Quant")
         self.assertEqual(screener.description, "Quant focused screener.")
 
-        filter_obj = screener.filters.get()
+        filters = list(screener.filters.order_by("display_order"))
+        self.assertEqual(len(filters), 1)
         self.assertEqual(
-            filter_obj.payload,
+            filters[0].payload,
             {"field": "sample", "quant_rating": ["strong_buy", "buy"]},
         )
         self.assertEqual(
-            filter_obj.label,
+            filters[0].label,
             'field=sample, quant_rating=["strong_buy", "buy"]',
         )
 
@@ -629,6 +633,32 @@ class FetchScreenerResultsCommandTests(APITestCase):
         self.assertEqual(payload["close"].get("lte"), 25.5)
 
     @patch("api.management.commands.fetch_screener_results.requests.post")
+    def test_command_includes_custom_filter_with_overrides(
+        self, mock_post: MagicMock
+    ) -> None:
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {"data": [{"attributes": {"name": "Sample"}}]},
+            text="{}",
+        )
+
+        call_command(
+            "fetch_screener_results",
+            screener_name=self.screener.name,
+            market_cap="7B",
+            min_price="15",
+        )
+
+        _, kwargs = mock_post.call_args
+        payload = kwargs["json"]
+
+        self.assertEqual(payload.get("exchange"), CUSTOM_FILTER_PAYLOAD["exchange"])
+        self.assertEqual(payload.get("altman_z_score"), CUSTOM_FILTER_PAYLOAD["altman_z_score"])
+        self.assertIn("close", payload)
+        self.assertEqual(payload["close"].get("gte"), 15.0)
+        self.assertEqual(payload["marketcap_display"].get("gte"), 7_000_000_000)
+
+    @patch("api.management.commands.fetch_screener_results.requests.post")
     def test_command_updates_nested_filter_section(self, mock_post: MagicMock) -> None:
         nested_screener = ScreenerType.objects.create(
             name="Energy Focus", description="Composite filter payload."
@@ -736,16 +766,27 @@ class FetchScreenerResultsCommandTests(APITestCase):
             payload["filter"].get("quant_rating"), {"in": ["strong_buy"]}
         )
 
-    def test_command_errors_when_quant_rating_missing(self) -> None:
-        with self.assertRaisesMessage(
-            CommandError,
-            "Screener filters do not include a quant_rating entry to override.",
-        ):
-            call_command(
-                "fetch_screener_results",
-                screener_name=self.screener.name,
-                quant_rating="strong_buy",
-            )
+    @patch("api.management.commands.fetch_screener_results.requests.post")
+    def test_command_overrides_quant_rating_from_custom_filter(
+        self, mock_post: MagicMock
+    ) -> None:
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {"data": [{"attributes": {"name": "Sample"}}]},
+            text="{}",
+        )
+
+        call_command(
+            "fetch_screener_results",
+            screener_name=self.screener.name,
+            quant_rating="strong_buy",
+        )
+
+        _, kwargs = mock_post.call_args
+        payload = kwargs["json"]
+
+        self.assertIn("quant_rating", payload)
+        self.assertEqual(payload["quant_rating"], {"in": ["strong_buy"]})
 
     def test_command_rejects_invalid_market_cap_argument(self) -> None:
         with self.assertRaisesMessage(CommandError, "Market cap value must be a number optionally followed by K, M, B, or T."):

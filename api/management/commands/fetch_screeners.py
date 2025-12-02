@@ -70,7 +70,6 @@ class FilterSpec:
     label: str
     payload: Any
 
-
 def _extract_attributes(item: Any, index: int) -> dict[str, Any]:
     attributes = item.get("attributes") if isinstance(item, dict) else None
     if not isinstance(attributes, dict) or "name" not in attributes:
