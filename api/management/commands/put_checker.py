@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, DivisionByZero, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 
 import requests
@@ -61,20 +61,25 @@ class Command(BaseCommand):
                 continue
 
             put_options = self._filter_put_options(options_payload, investment.price)
-            top_puts = put_options[:5]
-            if not top_puts:
+
+            target_strike = self._target_strike(investment.price)
+            matching_option = self._find_option_by_strike(put_options, target_strike)
+
+            if matching_option is None:
                 self.stdout.write(
-                    f"{investment.ticker}: no put options below price {investment.price}."
+                    f"{investment.ticker}: no put option at strike {target_strike} "
+                    f"below price {investment.price}."
                 )
                 continue
 
-            formatted_options = ", ".join(
-                f"{opt['symbol']} (strike {opt['strike_price']}, last {opt.get('last', 'N/A')})"
-                for opt in top_puts
+            formatted_option = (
+                f"{matching_option['symbol']} (strike {matching_option['strike_price']}, "
+                f"last {matching_option.get('last', 'N/A')}, "
+                f"opt_val {matching_option.get('opt_val', 'N/A')}%)"
             )
             summary = (
-                f"{investment.ticker}: top put options below {investment.price}: "
-                f"{formatted_options}"
+                f"{investment.ticker}: put option at strike {target_strike} below "
+                f"{investment.price}: {formatted_option}"
             )
             self.stdout.write(summary)
             summaries.append(summary)
@@ -105,7 +110,15 @@ class Command(BaseCommand):
         except ValueError as exc:
             raise CommandError("Invalid JSON received from options API.") from exc
 
-    def _filter_put_options(self, payload: Any, max_price: Decimal) -> list[dict[str, Any]]:
+    def _filter_put_options(
+        self, payload: Any, max_price: Decimal, *args: Any
+    ) -> list[dict[str, Any]]:
+        """Return put options below the max price.
+
+        Accepts extra positional arguments for backward compatibility with
+        older call sites that passed additional parameters, ensuring the
+        command does not fail with a positional argument error.
+        """
         options = self._extract_options(payload)
         filtered: list[tuple[Decimal, dict[str, Any]]] = []
 
@@ -123,10 +136,63 @@ class Command(BaseCommand):
             if strike_price > max_price:
                 continue
 
-            filtered.append((strike_price, option))
+            option_with_value = dict(option)
+            option_with_value["opt_val"] = self._calculate_option_value(
+                last_price=option.get("last"), strike_price=strike_price
+            )
+            filtered.append((strike_price, option_with_value))
 
         filtered.sort(key=lambda item: item[0], reverse=True)
         return [option for _, option in filtered]
+
+    @staticmethod
+    def _target_strike(max_price: Decimal) -> Decimal:
+        """Round the current price to the nearest integer and subtract two."""
+
+        max_price_decimal = Decimal(str(max_price))
+        rounded_price = max_price_decimal.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        return rounded_price - Decimal(2)
+
+    @staticmethod
+    def _find_option_by_strike(
+        options: list[dict[str, Any]], target_strike: Decimal
+    ) -> dict[str, Any] | None:
+        """Return the first option whose strike matches the target value."""
+
+        for option in options:
+            try:
+                strike_price = Decimal(str(option.get("strike_price")))
+            except (InvalidOperation, TypeError):
+                continue
+
+            if strike_price == target_strike:
+                return option
+
+        return None
+
+    @staticmethod
+    def _calculate_option_value(
+        *, last_price: Any, strike_price: Decimal
+    ) -> str:
+        """Return (last / strike) * 100 as a percentage string.
+
+        Returns "N/A" when prices are missing or invalid.
+        """
+
+        try:
+            last_decimal = Decimal(str(last_price))
+        except (InvalidOperation, TypeError):
+            return "N/A"
+
+        if strike_price == 0:
+            return "N/A"
+
+        try:
+            opt_value = (last_decimal / strike_price) * Decimal("100")
+        except (InvalidOperation, DivisionByZero):
+            return "N/A"
+
+        return f"{opt_value.quantize(Decimal('0.01'))}"
 
     def _extract_options(self, payload: Any) -> list[dict[str, Any]]:
         if isinstance(payload, list):
