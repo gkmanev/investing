@@ -5,6 +5,7 @@ from typing import Any
 
 import requests
 from django.core.management.base import BaseCommand, CommandError
+from math import erf, log, sqrt
 
 from api.models import Investment
 
