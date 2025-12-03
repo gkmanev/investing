@@ -113,8 +113,14 @@ class Command(BaseCommand):
             raise CommandError("Invalid JSON received from options API.") from exc
 
     def _filter_put_options(
-        self, payload: Any, max_price: Decimal
+        self, payload: Any, max_price: Decimal, *args: Any
     ) -> list[dict[str, Any]]:
+        """Return put options below the max price.
+
+        Accepts extra positional arguments for backward compatibility with
+        older call sites that passed additional parameters, ensuring the
+        command does not fail with a positional argument error.
+        """
         options = self._extract_options(payload)
         filtered: list[tuple[Decimal, dict[str, Any]]] = []
 
