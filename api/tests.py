@@ -1017,6 +1017,33 @@ class FetchProfileDataCommandTests(APITestCase):
 
     @patch("api.management.commands.fetch_profile_data.Command._fetch_option_expirations")
     @patch("api.management.commands.fetch_profile_data.requests.get")
+    def test_command_updates_price_from_profile_when_suitability_is_true(
+        self, mock_get: MagicMock, mock_expirations: MagicMock
+    ) -> None:
+        Investment.objects.filter(ticker="AAA").update(price=Decimal("5.00"))
+        mock_expirations.return_value = {
+            "dates": self._build_next_month_dates([5, 12, 19, 26]),
+            "ticker_id": "AAA",
+        }
+        mock_get.side_effect = [
+            MagicMock(
+                status_code=200, json=lambda: [{"ticker": "AAA"}], text="{}"
+            ),
+            MagicMock(
+                status_code=200,
+                json=lambda: {"data": {"attributes": {"last": 42.15}}},
+                text="{}",
+            ),
+        ]
+
+        call_command("fetch_profile_data", screener_name=self.screener_name)
+
+        investment = Investment.objects.get(ticker="AAA")
+        self.assertEqual(investment.options_suitability, 1)
+        self.assertEqual(investment.price, Decimal("42.15"))
+
+    @patch("api.management.commands.fetch_profile_data.Command._fetch_option_expirations")
+    @patch("api.management.commands.fetch_profile_data.requests.get")
     def test_command_sets_options_suitability_false_with_fewer_than_four_expirations(
         self, mock_get: MagicMock, mock_expirations: MagicMock
     ) -> None:
