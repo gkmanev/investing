@@ -106,7 +106,7 @@ class Command(BaseCommand):
 
     def _filter_put_options(self, payload: Any, max_price: Decimal) -> list[dict[str, Any]]:
         options = self._extract_options(payload)
-        filtered: list[dict[str, Any]] = []
+        filtered: list[tuple[Decimal, dict[str, Any]]] = []
 
         for option in options:
             option_type = str(option.get("option_type", "")).lower()
@@ -119,13 +119,13 @@ class Command(BaseCommand):
             except (InvalidOperation, TypeError):
                 continue
 
-            if strike_price >= max_price:
+            if strike_price > max_price:
                 continue
 
-            filtered.append(option)
+            filtered.append((strike_price, option))
 
-        filtered.sort(key=lambda opt: Decimal(str(opt.get("strike_price"))))
-        return filtered
+        filtered.sort(key=lambda item: item[0], reverse=True)
+        return [option for _, option in filtered]
 
     def _extract_options(self, payload: Any) -> list[dict[str, Any]]:
         if isinstance(payload, list):
