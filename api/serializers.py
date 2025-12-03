@@ -15,6 +15,7 @@ class InvestmentSerializer(serializers.ModelSerializer):
             "volume",
             "market_cap",
             "options_suitability",
+            "option_exp",
             "description",
             "created_at",
             "updated_at",
