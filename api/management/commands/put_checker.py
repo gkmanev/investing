@@ -5,6 +5,7 @@ from typing import Any
 
 import requests
 from django.core.management.base import BaseCommand, CommandError
+from math import erf, log, sqrt
 
 from api.models import Investment
 
@@ -60,7 +61,9 @@ class Command(BaseCommand):
                 self.stderr.write(f"{investment.ticker}: {exc}")
                 continue
 
-            put_options = self._filter_put_options(options_payload, investment.price)
+            put_options = self._filter_put_options(
+                options_payload, investment.price, investment.option_exp
+            )
             top_puts = put_options[:5]
             if not top_puts:
                 self.stdout.write(
