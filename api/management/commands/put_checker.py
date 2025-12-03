@@ -69,7 +69,8 @@ class Command(BaseCommand):
                 continue
 
             formatted_options = ", ".join(
-                f"{opt['symbol']} (strike {opt['strike_price']})" for opt in top_puts
+                f"{opt['symbol']} (strike {opt['strike_price']}, last {opt.get('last', 'N/A')})"
+                for opt in top_puts
             )
             summary = (
                 f"{investment.ticker}: top put options below {investment.price}: "
