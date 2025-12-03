@@ -205,7 +205,7 @@ class Command(BaseCommand):
         return {"ticker_id": ticker_id, "dates": dates}
 
     def _fetch_last_price(self, ticker: str) -> Decimal | None:
-        params = {"symbols": f"'{ticker}'"}
+        params = {"symbols": ticker}
         prepared = requests.Request(
             "GET", PROFILE_ENDPOINT, params=params
         ).prepare()
