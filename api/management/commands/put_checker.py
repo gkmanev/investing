@@ -181,8 +181,6 @@ class Command(BaseCommand):
         if ask_decimal is None:
             return "N/A"
 
-        midpoint = (bid_decimal + ask_decimal) / Decimal(2)
-
         if strike_price == 0:
             return "N/A"
 
@@ -192,15 +190,6 @@ class Command(BaseCommand):
             return "N/A"
 
         return f"{percentage.quantize(Decimal('0.01'))}"
-
-    @staticmethod
-    def _to_decimal(value: Any) -> Decimal | None:
-        """Convert a value to Decimal, returning None when conversion fails."""
-
-        try:
-            return Decimal(str(value))
-        except (InvalidOperation, TypeError):
-            return None
 
     @staticmethod
     def _to_decimal(value: Any) -> Decimal | None:
