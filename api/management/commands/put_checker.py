@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from decimal import Decimal, DivisionByZero, InvalidOperation
+from decimal import Decimal, DivisionByZero, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 
 import requests
@@ -62,21 +62,25 @@ class Command(BaseCommand):
                 continue
 
             put_options = self._filter_put_options(options_payload, investment.price)
-            if len(put_options) < 2:
+
+            target_strike = self._target_strike(investment.price)
+            matching_option = self._find_option_by_strike(put_options, target_strike)
+
+            if matching_option is None:
                 self.stdout.write(
-                    f"{investment.ticker}: fewer than two put options below price {investment.price}."
+                    f"{investment.ticker}: no put option at strike {target_strike} "
+                    f"below price {investment.price}."
                 )
                 continue
 
-            second_put = put_options[1]
             formatted_option = (
-                f"{second_put['symbol']} (strike {second_put['strike_price']}, "
-                f"last {second_put.get('last', 'N/A')}, "
-                f"opt_val {second_put.get('opt_val', 'N/A')}%)"
+                f"{matching_option['symbol']} (strike {matching_option['strike_price']}, "
+                f"last {matching_option.get('last', 'N/A')}, "
+                f"opt_val {matching_option.get('opt_val', 'N/A')}%)"
             )
             summary = (
-                f"{investment.ticker}: second nearest put option below {investment.price}: "
-                f"{formatted_option}"
+                f"{investment.ticker}: put option at strike {target_strike} below "
+                f"{investment.price}: {formatted_option}"
             )
             self.stdout.write(summary)
             summaries.append(summary)
@@ -141,6 +145,31 @@ class Command(BaseCommand):
 
         filtered.sort(key=lambda item: item[0], reverse=True)
         return [option for _, option in filtered]
+
+    @staticmethod
+    def _target_strike(max_price: Decimal) -> Decimal:
+        """Round the current price to the nearest integer and subtract two."""
+
+        max_price_decimal = Decimal(str(max_price))
+        rounded_price = max_price_decimal.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        return rounded_price - Decimal(2)
+
+    @staticmethod
+    def _find_option_by_strike(
+        options: list[dict[str, Any]], target_strike: Decimal
+    ) -> dict[str, Any] | None:
+        """Return the first option whose strike matches the target value."""
+
+        for option in options:
+            try:
+                strike_price = Decimal(str(option.get("strike_price")))
+            except (InvalidOperation, TypeError):
+                continue
+
+            if strike_price == target_strike:
+                return option
+
+        return None
 
     @staticmethod
     def _calculate_option_value(
