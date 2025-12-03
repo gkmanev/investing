@@ -1220,3 +1220,12 @@ class FetchProfileDataCommandTests(APITestCase):
         self.assertEqual(request.kwargs.get("headers"), API_HEADERS)
         self.assertEqual(price, Decimal("10.50"))
 
+    def test_extract_last_price_accepts_nested_price_block(self) -> None:
+        command = Command()
+
+        price = command._extract_last_price(
+            {"data": {"attributes": {"price": {"last": "77.01"}}}}
+        )
+
+        self.assertEqual(price, Decimal("77.01"))
+

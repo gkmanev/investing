@@ -307,6 +307,9 @@ class Command(BaseCommand):
                 return None
             attributes = section.get("attributes")
             source = attributes if isinstance(attributes, dict) else section
+            price_block = source.get("price") if isinstance(source, dict) else None
+            if isinstance(price_block, dict) and "last" in price_block:
+                return price_block.get("last")
             return source.get("last")
 
         last_value = None
