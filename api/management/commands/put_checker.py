@@ -75,7 +75,7 @@ class Command(BaseCommand):
 
             formatted_option = (
                 f"{matching_option['symbol']} (strike {matching_option['strike_price']}, "
-                f"last {matching_option.get('last', 'N/A')}, "
+                f"ask {matching_option.get('ask', 'N/A')}, "
                 f"opt_val {matching_option.get('opt_val', 'N/A')}%)"
             )
             summary = (
@@ -139,9 +139,7 @@ class Command(BaseCommand):
 
             option_with_value = dict(option)
             option_with_value["opt_val"] = self._calculate_option_value(
-                bid_price=option.get("bid"),
-                ask_price=option.get("ask"),
-                strike_price=strike_price,
+                ask_price=option.get("ask"), strike_price=strike_price
             )
             filtered.append((strike_price, option_with_value))
 
@@ -174,16 +172,13 @@ class Command(BaseCommand):
         return None
 
     @staticmethod
-    def _calculate_option_value(
-        *, bid_price: Any, ask_price: Any, strike_price: Decimal
-    ) -> str:
-        """Return (midpoint / strike) * 100 as a percentage string.
+    def _calculate_option_value(*, ask_price: Any, strike_price: Decimal) -> str:
+        """Return (ask / strike) * 100 as a percentage string.
 
         Returns "N/A" when prices are missing or invalid.
         """
 
         try:
-            bid_decimal = Decimal(str(bid_price))
             ask_decimal = Decimal(str(ask_price))
         except (InvalidOperation, TypeError):
             return "N/A"
@@ -194,7 +189,7 @@ class Command(BaseCommand):
             return "N/A"
 
         try:
-            opt_value = (midpoint / strike_price) * Decimal("100")
+            opt_value = (ask_decimal / strike_price) * Decimal("100")
         except (InvalidOperation, DivisionByZero):
             return "N/A"
 
