@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import requests
 from django.core.management.base import BaseCommand, CommandError
+from math import erf, log, sqrt
 
 from api.models import Investment
 
@@ -60,7 +62,9 @@ class Command(BaseCommand):
                 self.stderr.write(f"{investment.ticker}: {exc}")
                 continue
 
-            put_options = self._filter_put_options(options_payload, investment.price)
+            put_options = self._filter_put_options(
+                options_payload, investment.price, investment.option_exp
+            )
             top_puts = put_options[:5]
             if not top_puts:
                 self.stdout.write(
@@ -69,7 +73,11 @@ class Command(BaseCommand):
                 continue
 
             formatted_options = ", ".join(
-                f"{opt['symbol']} (strike {opt['strike_price']}, last {opt.get('last', 'N/A')})"
+                (
+                    f"{opt['symbol']} (strike {opt['strike_price']}, "
+                    f"last {opt.get('last', 'N/A')}, "
+                    f"delta {opt.get('option_delta', 'N/A')})"
+                )
                 for opt in top_puts
             )
             summary = (
@@ -105,7 +113,9 @@ class Command(BaseCommand):
         except ValueError as exc:
             raise CommandError("Invalid JSON received from options API.") from exc
 
-    def _filter_put_options(self, payload: Any, max_price: Decimal) -> list[dict[str, Any]]:
+    def _filter_put_options(
+        self, payload: Any, max_price: Decimal, expiration_date: date
+    ) -> list[dict[str, Any]]:
         options = self._extract_options(payload)
         filtered: list[tuple[Decimal, dict[str, Any]]] = []
 
@@ -123,10 +133,82 @@ class Command(BaseCommand):
             if strike_price > max_price:
                 continue
 
-            filtered.append((strike_price, option))
+            option_with_delta = dict(option)
+            option_with_delta["option_delta"] = self._calculate_put_delta(
+                underlying_price=float(max_price),
+                strike_price=float(strike_price),
+                expiration_date=expiration_date,
+                implied_volatility=self._parse_implied_volatility(option.get("implied_volatility")),
+                risk_free_rate=self._parse_risk_free_rate(option.get("risk_free_rate")),
+            )
+            filtered.append((strike_price, option_with_delta))
 
         filtered.sort(key=lambda item: item[0], reverse=True)
         return [option for _, option in filtered]
+
+    def _calculate_put_delta(
+        self,
+        *,
+        underlying_price: float,
+        strike_price: float,
+        expiration_date: date,
+        implied_volatility: float | None,
+        risk_free_rate: float,
+    ) -> str:
+        """Calculate Black-Scholes delta for a European put option.
+
+        Returns "N/A" when inputs are insufficient for computation.
+        """
+
+        time_to_expiry_days = (expiration_date - date.today()).days
+        time_to_expiry = time_to_expiry_days / 365.25
+
+        if (
+            implied_volatility is None
+            or implied_volatility <= 0
+            or time_to_expiry <= 0
+            or underlying_price <= 0
+            or strike_price <= 0
+        ):
+            return "N/A"
+
+        sigma = implied_volatility
+        try:
+            d1 = (
+                log(underlying_price / strike_price)
+                + (risk_free_rate + 0.5 * sigma**2) * time_to_expiry
+            ) / (sigma * sqrt(time_to_expiry))
+        except (ValueError, ZeroDivisionError):
+            return "N/A"
+
+        delta = -self._standard_normal_cdf(-d1)
+        return f"{delta:.4f}"
+
+    @staticmethod
+    def _standard_normal_cdf(x: float) -> float:
+        return 0.5 * (1 + erf(x / sqrt(2)))
+
+    @staticmethod
+    def _parse_implied_volatility(raw_value: Any) -> float | None:
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError):
+            return None
+
+        if value > 1:
+            value /= 100
+        return value if value > 0 else None
+
+    @staticmethod
+    def _parse_risk_free_rate(raw_value: Any) -> float:
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError):
+            return 0.0
+
+        if value > 1:
+            value /= 100
+        return value
 
     def _extract_options(self, payload: Any) -> list[dict[str, Any]]:
         if isinstance(payload, list):
