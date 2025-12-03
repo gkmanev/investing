@@ -14,6 +14,7 @@ from api.custom_filters import CUSTOM_FILTER_PAYLOAD
 from api.management.commands.fetch_profile_data import (
     API_HEADERS,
     OPTION_EXPIRATIONS_ENDPOINT,
+    PROFILE_ENDPOINT,
     Command,
 )
 
@@ -994,26 +995,67 @@ class FetchProfileDataCommandTests(APITestCase):
     def test_command_sets_options_suitability_true_with_four_expirations(
         self, mock_get: MagicMock, mock_expirations: MagicMock
     ) -> None:
-        mock_expirations.return_value = self._build_next_month_dates([5, 12, 19, 26])
-        mock_get.return_value = MagicMock(
-            status_code=200, json=lambda: [{"ticker": "AAA"}], text="{}"
-        )
+        mock_expirations.return_value = {
+            "dates": self._build_next_month_dates([5, 12, 19, 26]),
+            "ticker_id": "AAA",
+        }
+        mock_get.side_effect = [
+            MagicMock(
+                status_code=200, json=lambda: [{"ticker": "AAA"}], text="{}"
+            ),
+            MagicMock(
+                status_code=200,
+                json=lambda: {"data": {"attributes": {"last": 123.45}}},
+                text="{}",
+            ),
+        ]
 
-        call_command("fetch_profile_data", self.screener_name)
+        call_command("fetch_profile_data", screener_name=self.screener_name)
         investment = Investment.objects.get(ticker="AAA")
         self.assertEqual(investment.options_suitability, 1)
+        self.assertEqual(investment.price, Decimal("123.45"))
+
+    @patch("api.management.commands.fetch_profile_data.Command._fetch_option_expirations")
+    @patch("api.management.commands.fetch_profile_data.requests.get")
+    def test_command_updates_price_from_profile_when_suitability_is_true(
+        self, mock_get: MagicMock, mock_expirations: MagicMock
+    ) -> None:
+        Investment.objects.filter(ticker="AAA").update(price=Decimal("5.00"))
+        mock_expirations.return_value = {
+            "dates": self._build_next_month_dates([5, 12, 19, 26]),
+            "ticker_id": "AAA",
+        }
+        mock_get.side_effect = [
+            MagicMock(
+                status_code=200, json=lambda: [{"ticker": "AAA"}], text="{}"
+            ),
+            MagicMock(
+                status_code=200,
+                json=lambda: {"data": {"attributes": {"last": 42.15}}},
+                text="{}",
+            ),
+        ]
+
+        call_command("fetch_profile_data", screener_name=self.screener_name)
+
+        investment = Investment.objects.get(ticker="AAA")
+        self.assertEqual(investment.options_suitability, 1)
+        self.assertEqual(investment.price, Decimal("42.15"))
 
     @patch("api.management.commands.fetch_profile_data.Command._fetch_option_expirations")
     @patch("api.management.commands.fetch_profile_data.requests.get")
     def test_command_sets_options_suitability_false_with_fewer_than_four_expirations(
         self, mock_get: MagicMock, mock_expirations: MagicMock
     ) -> None:
-        mock_expirations.return_value = self._build_next_month_dates([5, 12, 19])
+        mock_expirations.return_value = {
+            "dates": self._build_next_month_dates([5, 12, 19]),
+            "ticker_id": "AAA",
+        }
         mock_get.return_value = MagicMock(
             status_code=200, json=lambda: [{"ticker": "AAA"}], text="{}"
         )
 
-        call_command("fetch_profile_data", self.screener_name)
+        call_command("fetch_profile_data", screener_name=self.screener_name)
         investment = Investment.objects.get(ticker="AAA")
         self.assertEqual(investment.options_suitability, 0)
 
@@ -1022,12 +1064,12 @@ class FetchProfileDataCommandTests(APITestCase):
     def test_command_sets_options_suitability_unknown_with_no_expirations(
         self, mock_get: MagicMock, mock_expirations: MagicMock
     ) -> None:
-        mock_expirations.return_value = []
+        mock_expirations.return_value = {"dates": [], "ticker_id": "AAA"}
         mock_get.return_value = MagicMock(
             status_code=200, json=lambda: [{"ticker": "AAA"}], text="{}"
         )
 
-        call_command("fetch_profile_data", self.screener_name)
+        call_command("fetch_profile_data", screener_name=self.screener_name)
         investment = Investment.objects.get(ticker="AAA")
         self.assertEqual(investment.options_suitability, -1)
 
@@ -1044,10 +1086,10 @@ class FetchProfileDataCommandTests(APITestCase):
             ],
             text="{}",
         )
-        mock_expirations.return_value = []
+        mock_expirations.return_value = {"dates": [], "ticker_id": "NEW"}
 
         buffer = StringIO()
-        call_command("fetch_profile_data", self.screener_name, stdout=buffer)
+        call_command("fetch_profile_data", screener_name=self.screener_name, stdout=buffer)
 
         for ticker in ("NEW1", "NEW2"):
             investment = Investment.objects.get(ticker=ticker)
@@ -1065,7 +1107,7 @@ class FetchProfileDataCommandTests(APITestCase):
         mock_get.return_value = MagicMock(status_code=500, text="error")
 
         with self.assertRaises(CommandError):
-            call_command("fetch_profile_data", self.screener_name)
+            call_command("fetch_profile_data", screener_name=self.screener_name)
 
     @patch("api.management.commands.fetch_profile_data.requests.get")
     def test_command_can_skip_investments_with_price(self, mock_get: MagicMock) -> None:
@@ -1081,11 +1123,14 @@ class FetchProfileDataCommandTests(APITestCase):
 
         with patch(
             "api.management.commands.fetch_profile_data.Command._fetch_option_expirations",
-            return_value=[],
+            return_value={"dates": [], "ticker_id": "BBB"},
         ) as mock_expirations:
             buffer = StringIO()
             call_command(
-                "fetch_profile_data", self.screener_name, "--skip-priced", stdout=buffer
+                "fetch_profile_data",
+                "--skip-priced",
+                screener_name=self.screener_name,
+                stdout=buffer,
             )
 
         self.assertEqual(mock_expirations.call_args_list, [call("BBB")])
@@ -1114,7 +1159,9 @@ class FetchProfileDataCommandTests(APITestCase):
         with self.assertRaisesMessage(
             CommandError, "No tickers remain to update after skipping priced investments."
         ):
-            call_command("fetch_profile_data", self.screener_name, "--skip-priced")
+            call_command(
+                "fetch_profile_data", "--skip-priced", screener_name=self.screener_name
+            )
 
     @patch("api.management.commands.fetch_profile_data.Command._fetch_option_expirations")
     @patch("api.management.commands.fetch_profile_data.requests.get")
@@ -1124,9 +1171,9 @@ class FetchProfileDataCommandTests(APITestCase):
         mock_get.return_value = MagicMock(
             status_code=200, json=lambda: [{"ticker": "AAA"}], text="{}"
         )
-        mock_expirations.return_value = []
+        mock_expirations.return_value = {"dates": [], "ticker_id": "AAA"}
 
-        call_command("fetch_profile_data", self.screener_name)
+        call_command("fetch_profile_data", screener_name=self.screener_name)
 
         mock_get.assert_called_once()
         self.assertEqual(
@@ -1139,7 +1186,9 @@ class FetchProfileDataCommandTests(APITestCase):
         self, mock_get: MagicMock
     ) -> None:
         mock_get.return_value = MagicMock(
-            status_code=200, json=lambda: {"data": {"dates": []}}, text="{}"
+            status_code=200,
+            json=lambda: {"data": {"attributes": {"dates": [], "ticker_id": 1}}},
+            text="{}",
         )
 
         command = Command()
@@ -1150,4 +1199,24 @@ class FetchProfileDataCommandTests(APITestCase):
         self.assertEqual(request.args[0], OPTION_EXPIRATIONS_ENDPOINT)
         self.assertEqual(request.kwargs.get("params"), {"symbol": "XYZ"})
         self.assertEqual(request.kwargs.get("headers"), API_HEADERS)
+
+    @patch("api.management.commands.fetch_profile_data.requests.get")
+    def test_fetch_last_price_uses_expected_headers_and_params(
+        self, mock_get: MagicMock
+    ) -> None:
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {"data": {"attributes": {"last": "10.50"}}},
+            text="{}",
+        )
+
+        command = Command()
+        price = command._fetch_last_price("XYZ")
+
+        mock_get.assert_called_once()
+        request = mock_get.call_args
+        self.assertEqual(request.args[0], PROFILE_ENDPOINT)
+        self.assertEqual(request.kwargs.get("params"), {"symbols": "XYZ"})
+        self.assertEqual(request.kwargs.get("headers"), API_HEADERS)
+        self.assertEqual(price, Decimal("10.50"))
 
