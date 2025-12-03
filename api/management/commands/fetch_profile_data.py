@@ -103,6 +103,16 @@ class Command(BaseCommand):
                         f"Failed to fetch profile for {ticker}: {exc}. "
                         "Continuing without price data."
                     )
+                else:
+                    if last_price is None:
+                        self.stdout.write(
+                            f"{ticker}: suitability met but profile returned no price; "
+                            "leaving price unchanged."
+                        )
+                    else:
+                        self.stdout.write(
+                            f"{ticker}: suitability met with last price {last_price}."
+                        )
             investment, created = Investment.objects.get_or_create(
                 ticker=ticker, defaults={"category": "stock"}
             )

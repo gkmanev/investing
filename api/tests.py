@@ -1015,6 +1015,31 @@ class FetchProfileDataCommandTests(APITestCase):
         self.assertEqual(investment.options_suitability, 1)
         self.assertEqual(investment.price, Decimal("123.45"))
 
+    @patch("api.management.commands.fetch_profile_data.Command._fetch_last_price", return_value=None)
+    @patch("api.management.commands.fetch_profile_data.Command._fetch_option_expirations")
+    @patch("api.management.commands.fetch_profile_data.requests.get")
+    def test_command_reports_when_price_missing(
+        self, mock_get: MagicMock, mock_expirations: MagicMock, mock_last_price: MagicMock
+    ) -> None:
+        mock_expirations.return_value = {
+            "dates": self._build_next_month_dates([5, 12, 19, 26]),
+            "ticker_id": "AAA",
+        }
+        mock_get.return_value = MagicMock(
+            status_code=200, json=lambda: [{"ticker": "AAA"}], text="{}"
+        )
+
+        buffer = StringIO()
+        call_command("fetch_profile_data", screener_name=self.screener_name, stdout=buffer)
+
+        investment = Investment.objects.get(ticker="AAA")
+        self.assertEqual(investment.options_suitability, 1)
+        self.assertIsNone(investment.price)
+        self.assertIn(
+            "AAA: suitability met but profile returned no price; leaving price unchanged.",
+            buffer.getvalue(),
+        )
+
     @patch("api.management.commands.fetch_profile_data.Command._fetch_option_expirations")
     @patch("api.management.commands.fetch_profile_data.requests.get")
     def test_command_updates_price_from_profile_when_suitability_is_true(
