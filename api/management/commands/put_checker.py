@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, DivisionByZero, InvalidOperation
 from typing import Any
 
 import requests
@@ -61,20 +61,21 @@ class Command(BaseCommand):
                 continue
 
             put_options = self._filter_put_options(options_payload, investment.price)
-            top_puts = put_options[:5]
-            if not top_puts:
+            if len(put_options) < 2:
                 self.stdout.write(
-                    f"{investment.ticker}: no put options below price {investment.price}."
+                    f"{investment.ticker}: fewer than two put options below price {investment.price}."
                 )
                 continue
 
-            formatted_options = ", ".join(
-                f"{opt['symbol']} (strike {opt['strike_price']}, last {opt.get('last', 'N/A')})"
-                for opt in top_puts
+            second_put = put_options[1]
+            formatted_option = (
+                f"{second_put['symbol']} (strike {second_put['strike_price']}, "
+                f"last {second_put.get('last', 'N/A')}, "
+                f"opt_val {second_put.get('opt_val', 'N/A')}%)"
             )
             summary = (
-                f"{investment.ticker}: top put options below {investment.price}: "
-                f"{formatted_options}"
+                f"{investment.ticker}: second nearest put option below {investment.price}: "
+                f"{formatted_option}"
             )
             self.stdout.write(summary)
             summaries.append(summary)
@@ -105,7 +106,15 @@ class Command(BaseCommand):
         except ValueError as exc:
             raise CommandError("Invalid JSON received from options API.") from exc
 
-    def _filter_put_options(self, payload: Any, max_price: Decimal) -> list[dict[str, Any]]:
+    def _filter_put_options(
+        self, payload: Any, max_price: Decimal, *args: Any
+    ) -> list[dict[str, Any]]:
+        """Return put options below the max price.
+
+        Accepts extra positional arguments for backward compatibility with
+        older call sites that passed additional parameters, ensuring the
+        command does not fail with a positional argument error.
+        """
         options = self._extract_options(payload)
         filtered: list[tuple[Decimal, dict[str, Any]]] = []
 
@@ -123,10 +132,38 @@ class Command(BaseCommand):
             if strike_price > max_price:
                 continue
 
-            filtered.append((strike_price, option))
+            option_with_value = dict(option)
+            option_with_value["opt_val"] = self._calculate_option_value(
+                last_price=option.get("last"), strike_price=strike_price
+            )
+            filtered.append((strike_price, option_with_value))
 
         filtered.sort(key=lambda item: item[0], reverse=True)
         return [option for _, option in filtered]
+
+    @staticmethod
+    def _calculate_option_value(
+        *, last_price: Any, strike_price: Decimal
+    ) -> str:
+        """Return (last / strike) * 100 as a percentage string.
+
+        Returns "N/A" when prices are missing or invalid.
+        """
+
+        try:
+            last_decimal = Decimal(str(last_price))
+        except (InvalidOperation, TypeError):
+            return "N/A"
+
+        if strike_price == 0:
+            return "N/A"
+
+        try:
+            opt_value = (last_decimal / strike_price) * Decimal("100")
+        except (InvalidOperation, DivisionByZero):
+            return "N/A"
+
+        return f"{opt_value.quantize(Decimal('0.01'))}"
 
     def _extract_options(self, payload: Any) -> list[dict[str, Any]]:
         if isinstance(payload, list):
