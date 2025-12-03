@@ -6,6 +6,7 @@ from typing import Any, Iterable
 
 import requests
 from django.core.management.base import BaseCommand, CommandError
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from api.models import Investment
@@ -113,9 +114,27 @@ class Command(BaseCommand):
                         self.stdout.write(
                             f"{ticker}: suitability met with last price {last_price}."
                         )
+            ticker_id_value = self._coerce_ticker_id(expiration_data.get("ticker_id"))
+            defaults: dict[str, Any] = {"category": "stock"}
+            if ticker_id_value is not None:
+                defaults["id"] = ticker_id_value
+
             investment, created = Investment.objects.get_or_create(
-                ticker=ticker, defaults={"category": "stock"}
+                ticker=ticker, defaults=defaults
             )
+
+            if not created and ticker_id_value is not None and investment.id != ticker_id_value:
+                try:
+                    with transaction.atomic():
+                        Investment.objects.filter(pk=investment.pk).update(
+                            id=ticker_id_value
+                        )
+                        investment.id = ticker_id_value
+                except IntegrityError:
+                    self.stderr.write(
+                        f"Unable to update id for {ticker} to {ticker_id_value}: "
+                        "value already in use."
+                    )
 
             investment.options_suitability = options_suitability
             if last_price is not None:
@@ -205,7 +224,7 @@ class Command(BaseCommand):
         return {"ticker_id": ticker_id, "dates": dates}
 
     def _fetch_last_price(self, ticker: str) -> Decimal | None:
-        params = {"symbols": f"'{ticker}'"}
+        params = {"symbols": ticker}
         prepared = requests.Request(
             "GET", PROFILE_ENDPOINT, params=params
         ).prepare()
@@ -346,4 +365,10 @@ class Command(BaseCommand):
         try:
             return Decimal(str(last_value))
         except (InvalidOperation, ValueError):
+            return None
+
+    def _coerce_ticker_id(self, ticker_id: Any) -> int | None:
+        try:
+            return int(ticker_id)
+        except (TypeError, ValueError):
             return None

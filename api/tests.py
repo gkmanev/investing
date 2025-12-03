@@ -1019,7 +1019,7 @@ class FetchProfileDataCommandTests(APITestCase):
         expected_url = requests.Request(
             "GET",
             PROFILE_ENDPOINT,
-            params={"symbols": "'AAA'"},
+            params={"symbols": "AAA"},
         ).prepare().url
         self.assertIn(f"Fetching profile data from {expected_url}", buffer.getvalue())
 
@@ -1135,6 +1135,40 @@ class FetchProfileDataCommandTests(APITestCase):
         self.assertIn("Created investment NEW1", output)
         self.assertIn("Created investment NEW2", output)
 
+    @patch("api.management.commands.fetch_profile_data.Command._fetch_option_expirations")
+    @patch("api.management.commands.fetch_profile_data.requests.get")
+    def test_command_sets_investment_id_to_ticker_id_on_create(
+        self, mock_get: MagicMock, mock_expirations: MagicMock
+    ) -> None:
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=lambda: [
+                {"ticker": "NEW1"},
+            ],
+            text="{}",
+        )
+        mock_expirations.return_value = {"dates": [], "ticker_id": "1105"}
+
+        call_command("fetch_profile_data", screener_name=self.screener_name)
+
+        investment = Investment.objects.get(ticker="NEW1")
+        self.assertEqual(investment.id, 1105)
+
+    @patch("api.management.commands.fetch_profile_data.Command._fetch_option_expirations")
+    @patch("api.management.commands.fetch_profile_data.requests.get")
+    def test_command_updates_investment_id_when_missing(
+        self, mock_get: MagicMock, mock_expirations: MagicMock
+    ) -> None:
+        mock_get.return_value = MagicMock(
+            status_code=200, json=lambda: [{"ticker": "AAA"}], text="{}"
+        )
+        mock_expirations.return_value = {"dates": [], "ticker_id": "9999"}
+
+        call_command("fetch_profile_data", screener_name=self.screener_name)
+
+        investment = Investment.objects.get(ticker="AAA")
+        self.assertEqual(investment.id, 9999)
+
     @patch("api.management.commands.fetch_profile_data.requests.get")
     def test_command_errors_on_unsuccessful_response(self, mock_get: MagicMock) -> None:
         mock_get.return_value = MagicMock(status_code=500, text="error")
@@ -1249,7 +1283,7 @@ class FetchProfileDataCommandTests(APITestCase):
         mock_get.assert_called_once()
         request = mock_get.call_args
         self.assertEqual(request.args[0], PROFILE_ENDPOINT)
-        self.assertEqual(request.kwargs.get("params"), {"symbols": "'XYZ'"})
+        self.assertEqual(request.kwargs.get("params"), {"symbols": "XYZ"})
         self.assertEqual(request.kwargs.get("headers"), API_HEADERS)
         self.assertEqual(price, Decimal("10.50"))
 
