@@ -139,7 +139,9 @@ class Command(BaseCommand):
 
             option_with_value = dict(option)
             option_with_value["opt_val"] = self._calculate_option_value(
-                last_price=option.get("last"), strike_price=strike_price
+                bid_price=option.get("bid"),
+                ask_price=option.get("ask"),
+                strike_price=strike_price,
             )
             filtered.append((strike_price, option_with_value))
 
@@ -173,23 +175,26 @@ class Command(BaseCommand):
 
     @staticmethod
     def _calculate_option_value(
-        *, last_price: Any, strike_price: Decimal
+        *, bid_price: Any, ask_price: Any, strike_price: Decimal
     ) -> str:
-        """Return (last / strike) * 100 as a percentage string.
+        """Return (midpoint / strike) * 100 as a percentage string.
 
         Returns "N/A" when prices are missing or invalid.
         """
 
         try:
-            last_decimal = Decimal(str(last_price))
+            bid_decimal = Decimal(str(bid_price))
+            ask_decimal = Decimal(str(ask_price))
         except (InvalidOperation, TypeError):
             return "N/A"
+
+        midpoint = (bid_decimal + ask_decimal) / Decimal(2)
 
         if strike_price == 0:
             return "N/A"
 
         try:
-            opt_value = (last_decimal / strike_price) * Decimal("100")
+            opt_value = (midpoint / strike_price) * Decimal("100")
         except (InvalidOperation, DivisionByZero):
             return "N/A"
 
