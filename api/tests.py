@@ -1019,7 +1019,7 @@ class FetchProfileDataCommandTests(APITestCase):
         expected_url = requests.Request(
             "GET",
             PROFILE_ENDPOINT,
-            params={"symbols": "'AAA'"},
+            params={"symbols": "AAA"},
         ).prepare().url
         self.assertIn(f"Fetching profile data from {expected_url}", buffer.getvalue())
 
@@ -1249,7 +1249,7 @@ class FetchProfileDataCommandTests(APITestCase):
         mock_get.assert_called_once()
         request = mock_get.call_args
         self.assertEqual(request.args[0], PROFILE_ENDPOINT)
-        self.assertEqual(request.kwargs.get("params"), {"symbols": "'XYZ'"})
+        self.assertEqual(request.kwargs.get("params"), {"symbols": "XYZ"})
         self.assertEqual(request.kwargs.get("headers"), API_HEADERS)
         self.assertEqual(price, Decimal("10.50"))
 
