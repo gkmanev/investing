@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Iterable
 
 import requests
 from django.core.management.base import BaseCommand, CommandError
+from django.utils import timezone
 
 from api.models import Investment
 
@@ -60,9 +61,11 @@ class Command(BaseCommand):
                 )
 
         updated_tickers: list[str] = []
+        today = timezone.now().date()
+        upper_bound = today + timedelta(days=31)
         for ticker in tickers:
             try:
-                expirations = self._fetch_option_expirations(ticker)
+                expiration_data = self._fetch_option_expiration_data(ticker)
             except CommandError as exc:
                 self.stderr.write(
                     f"Failed to fetch option expirations for {ticker}: {exc}. "
@@ -70,7 +73,25 @@ class Command(BaseCommand):
                 )
                 continue
 
-            options_suitability = self._calculate_options_suitability(expirations)
+            closest_dates = self._select_closest_dates(
+                expiration_data["dates"], today, upper_bound
+            )
+            if not closest_dates:
+                self.stdout.write(
+                    f"{ticker} (ticker_id {expiration_data['ticker_id']}): No option "
+                    "expiration date within the next 31 days."
+                )
+            else:
+                formatted_dates = ", ".join(date.isoformat() for date in closest_dates)
+                furthest_date = max(closest_dates)
+                self.stdout.write(
+                    f"{ticker} (ticker_id {expiration_data['ticker_id']}): {formatted_dates}; "
+                    f"furthest: {furthest_date.isoformat()}"
+                )
+
+            options_suitability = self._calculate_options_suitability(
+                expiration_data["dates"]
+            )
             investment, created = Investment.objects.get_or_create(
                 ticker=ticker, defaults={"category": "stock"}
             )
@@ -142,13 +163,20 @@ class Command(BaseCommand):
 
         return tickers
 
-    def _fetch_option_expirations(self, ticker: str) -> list[str]:
+    def _fetch_option_expiration_data(self, ticker: str) -> dict:
         payload = self._fetch_json(
             OPTION_EXPIRATIONS_ENDPOINT,
             params={"symbol": ticker},
             headers=API_HEADERS,
         )
-        return self._extract_option_dates(payload)
+
+        ticker_id = self._extract_ticker_id(payload)
+        dates = self._extract_option_dates(payload)
+
+        if ticker_id is None:
+            raise CommandError("Missing expected data in Seeking Alpha response")
+
+        return {"ticker_id": ticker_id, "dates": dates}
 
     def _extract_option_dates(self, payload: Any) -> list[str]:
         data_section = payload
@@ -172,6 +200,53 @@ class Command(BaseCommand):
                     return [str(value) for value in dates if value is not None]
 
         return []
+
+    def _extract_ticker_id(self, payload: Any) -> str | None:
+        data_section = payload
+        if isinstance(payload, dict) and "data" in payload:
+            data_section = payload.get("data")
+
+        if isinstance(data_section, dict):
+            attributes = data_section.get("attributes")
+            source = attributes if isinstance(attributes, dict) else data_section
+            ticker_id = source.get("ticker_id")
+            if ticker_id is not None:
+                return str(ticker_id)
+        elif isinstance(data_section, list):
+            for entry in data_section:
+                if not isinstance(entry, dict):
+                    continue
+                attributes = entry.get("attributes")
+                source = attributes if isinstance(attributes, dict) else entry
+                ticker_id = source.get("ticker_id")
+                if ticker_id is not None:
+                    return str(ticker_id)
+
+        return None
+
+    def _select_closest_dates(
+        self, dates: Iterable[str], today: date, upper_bound: date
+    ) -> list[date]:
+        """
+        Return up to two expiration dates that are closest to the 31-day cutoff.
+
+        Dates are filtered to the window [today, upper_bound] and then ordered by
+        proximity to the upper bound so the nearest eligible expirations are
+        returned first.
+        """
+
+        valid_dates: list[date] = []
+        for date_string in dates:
+            try:
+                parsed_date = datetime.strptime(date_string, "%m/%d/%Y").date()
+            except ValueError:  # pragma: no cover - malformed upstream data
+                continue
+
+            if today <= parsed_date <= upper_bound:
+                valid_dates.append(parsed_date)
+        return sorted(valid_dates, key=lambda candidate: (upper_bound - candidate).days)[
+            :2
+        ]
 
     def _calculate_options_suitability(self, dates: list[str]) -> int:
         if not dates:
