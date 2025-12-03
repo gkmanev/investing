@@ -76,6 +76,9 @@ class Command(BaseCommand):
                 )
                 continue
 
+            furthest_option_date = self._select_furthest_date(
+                expiration_data["dates"]
+            )
             closest_dates = self._select_closest_dates(
                 expiration_data["dates"], today, upper_bound
             )
@@ -137,12 +140,15 @@ class Command(BaseCommand):
                     )
 
             investment.options_suitability = options_suitability
+            investment.option_exp = (
+                furthest_option_date if options_suitability == 1 else None
+            )
             if last_price is not None:
                 investment.price = last_price
             if created:
                 investment.save()
             else:
-                update_fields = ["options_suitability", "updated_at"]
+                update_fields = ["options_suitability", "option_exp", "updated_at"]
                 if last_price is not None:
                     update_fields.append("price")
                 investment.save(update_fields=update_fields)
@@ -307,6 +313,19 @@ class Command(BaseCommand):
         return sorted(valid_dates, key=lambda candidate: (upper_bound - candidate).days)[
             :2
         ]
+
+    def _select_furthest_date(self, dates: Iterable[str]) -> date | None:
+        furthest: date | None = None
+        for date_string in dates:
+            try:
+                parsed_date = datetime.strptime(str(date_string), "%m/%d/%Y").date()
+            except ValueError:  # pragma: no cover - malformed upstream data
+                continue
+
+            if furthest is None or parsed_date > furthest:
+                furthest = parsed_date
+
+        return furthest
 
     def _calculate_options_suitability(self, dates: list[str]) -> int:
         if not dates:
