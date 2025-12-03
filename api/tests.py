@@ -1031,6 +1031,47 @@ class FetchProfileDataCommandTests(APITestCase):
         ).prepare().url
         self.assertIn(f"Fetching profile data from {expected_url}", buffer.getvalue())
 
+    @patch(
+        "api.management.commands.fetch_profile_data.Command._calculate_options_suitability",
+        return_value=1,
+    )
+    @patch("api.management.commands.fetch_profile_data.Command._select_closest_dates")
+    @patch("api.management.commands.fetch_profile_data.Command._fetch_option_expirations")
+    @patch("api.management.commands.fetch_profile_data.requests.get")
+    def test_command_prefers_closest_expirations_for_option_exp(
+        self,
+        mock_get: MagicMock,
+        mock_expirations: MagicMock,
+        mock_select_closest: MagicMock,
+        _mock_options_suitability: MagicMock,
+    ) -> None:
+        mock_get.side_effect = [
+            MagicMock(
+                status_code=200, json=lambda: [{"ticker": "AAA"}], text="{}"
+            ),
+            MagicMock(
+                status_code=200,
+                json=lambda: {"data": {"attributes": {"last": 41.45}}},
+                text="{}",
+            ),
+        ]
+        close_dates = [date(2026, 1, 2), date(2025, 12, 26)]
+        mock_select_closest.return_value = close_dates
+        mock_expirations.return_value = {
+            "dates": ["01/02/2026", "12/26/2025", "01/21/2028"],
+            "ticker_id": "1105",
+        }
+
+        buffer = StringIO()
+        call_command(
+            "fetch_profile_data", screener_name=self.screener_name, stdout=buffer
+        )
+
+        investment = Investment.objects.get(ticker="AAA")
+        self.assertEqual(investment.option_exp, max(close_dates))
+        mock_select_closest.assert_called_once()
+        self.assertIn("furthest: 2026-01-02", buffer.getvalue())
+
     @patch("api.management.commands.fetch_profile_data.Command._fetch_last_price", return_value=None)
     @patch("api.management.commands.fetch_profile_data.Command._fetch_option_expirations")
     @patch("api.management.commands.fetch_profile_data.requests.get")

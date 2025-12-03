@@ -76,11 +76,13 @@ class Command(BaseCommand):
                 )
                 continue
 
-            furthest_option_date = self._select_furthest_date(
-                expiration_data["dates"]
-            )
             closest_dates = self._select_closest_dates(
                 expiration_data["dates"], today, upper_bound
+            )
+            furthest_option_date = (
+                max(closest_dates)
+                if closest_dates
+                else self._select_furthest_date(expiration_data["dates"])
             )
             if not closest_dates:
                 self.stdout.write(
@@ -89,10 +91,9 @@ class Command(BaseCommand):
                 )
             else:
                 formatted_dates = ", ".join(date.isoformat() for date in closest_dates)
-                furthest_date = max(closest_dates)
                 self.stdout.write(
                     f"{ticker} (ticker_id {expiration_data['ticker_id']}): {formatted_dates}; "
-                    f"furthest: {furthest_date.isoformat()}"
+                    f"furthest: {furthest_option_date.isoformat()}"
                 )
 
             options_suitability = self._calculate_options_suitability(
