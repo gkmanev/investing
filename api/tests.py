@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from io import StringIO
 import json
@@ -991,6 +991,9 @@ class FetchProfileDataCommandTests(APITestCase):
 
         return [f"{month:02d}/{day:02d}/{year}" for day in days]
 
+    def _parse_date(self, value: str) -> date:
+        return datetime.strptime(value, "%m/%d/%Y").date()
+
     @patch("api.management.commands.fetch_profile_data.Command._fetch_option_expirations")
     @patch("api.management.commands.fetch_profile_data.requests.get")
     def test_command_sets_options_suitability_true_with_three_expirations(
@@ -1016,6 +1019,11 @@ class FetchProfileDataCommandTests(APITestCase):
         investment = Investment.objects.get(ticker="AAA")
         self.assertEqual(investment.options_suitability, 1)
         self.assertEqual(investment.price, Decimal("123.45"))
+        expected_expiration = max(
+            self._parse_date(value)
+            for value in mock_expirations.return_value["dates"]
+        )
+        self.assertEqual(investment.option_exp, expected_expiration)
         expected_url = requests.Request(
             "GET",
             PROFILE_ENDPOINT,
@@ -1043,6 +1051,11 @@ class FetchProfileDataCommandTests(APITestCase):
         investment = Investment.objects.get(ticker="AAA")
         self.assertEqual(investment.options_suitability, 1)
         self.assertIsNone(investment.price)
+        expected_expiration = max(
+            self._parse_date(value)
+            for value in mock_expirations.return_value["dates"]
+        )
+        self.assertEqual(investment.option_exp, expected_expiration)
         self.assertIn(
             "AAA: suitability met but profile returned no price; leaving price unchanged.",
             buffer.getvalue(),
@@ -1074,6 +1087,11 @@ class FetchProfileDataCommandTests(APITestCase):
         investment = Investment.objects.get(ticker="AAA")
         self.assertEqual(investment.options_suitability, 1)
         self.assertEqual(investment.price, Decimal("42.15"))
+        expected_expiration = max(
+            self._parse_date(value)
+            for value in mock_expirations.return_value["dates"]
+        )
+        self.assertEqual(investment.option_exp, expected_expiration)
 
     @patch("api.management.commands.fetch_profile_data.Command._fetch_option_expirations")
     @patch("api.management.commands.fetch_profile_data.requests.get")
@@ -1091,6 +1109,7 @@ class FetchProfileDataCommandTests(APITestCase):
         call_command("fetch_profile_data", screener_name=self.screener_name)
         investment = Investment.objects.get(ticker="AAA")
         self.assertEqual(investment.options_suitability, 0)
+        self.assertIsNone(investment.option_exp)
 
     @patch("api.management.commands.fetch_profile_data.Command._fetch_option_expirations")
     @patch("api.management.commands.fetch_profile_data.requests.get")
@@ -1105,6 +1124,7 @@ class FetchProfileDataCommandTests(APITestCase):
         call_command("fetch_profile_data", screener_name=self.screener_name)
         investment = Investment.objects.get(ticker="AAA")
         self.assertEqual(investment.options_suitability, -1)
+        self.assertIsNone(investment.option_exp)
 
     @patch("api.management.commands.fetch_profile_data.Command._fetch_option_expirations")
     @patch("api.management.commands.fetch_profile_data.requests.get")
