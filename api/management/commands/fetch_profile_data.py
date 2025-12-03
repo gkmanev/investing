@@ -326,6 +326,9 @@ class Command(BaseCommand):
             price_block = source.get("price") if isinstance(source, dict) else None
             if isinstance(price_block, dict) and "last" in price_block:
                 return price_block.get("last")
+            last_daily = source.get("lastDaily") if isinstance(source, dict) else None
+            if isinstance(last_daily, dict) and "last" in last_daily:
+                return last_daily.get("last")
             return source.get("last")
 
         last_value = None
