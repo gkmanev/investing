@@ -103,6 +103,16 @@ class Command(BaseCommand):
                         f"Failed to fetch profile for {ticker}: {exc}. "
                         "Continuing without price data."
                     )
+                else:
+                    if last_price is None:
+                        self.stdout.write(
+                            f"{ticker}: suitability met but profile returned no price; "
+                            "leaving price unchanged."
+                        )
+                    else:
+                        self.stdout.write(
+                            f"{ticker}: suitability met with last price {last_price}."
+                        )
             investment, created = Investment.objects.get_or_create(
                 ticker=ticker, defaults={"category": "stock"}
             )
@@ -195,9 +205,15 @@ class Command(BaseCommand):
         return {"ticker_id": ticker_id, "dates": dates}
 
     def _fetch_last_price(self, ticker: str) -> Decimal | None:
+        params = {"symbols": f"'{ticker}'"}
+        prepared = requests.Request(
+            "GET", PROFILE_ENDPOINT, params=params
+        ).prepare()
+        self.stdout.write(f"Fetching profile data from {prepared.url}")
+
         payload = self._fetch_json(
             PROFILE_ENDPOINT,
-            params={"symbols": f"'{ticker}'"},
+            params=params,
             headers=API_HEADERS,
         )
 
@@ -295,7 +311,7 @@ class Command(BaseCommand):
             if expiration.year == target_year and expiration.month == target_month:
                 expirations_next_month += 1
 
-        return 1 if expirations_next_month >= 4 else 0
+        return 1 if expirations_next_month >= 3 else 0
 
     def _extract_last_price(self, payload: Any) -> Decimal | None:
         data_section = payload
