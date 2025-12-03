@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
-from typing import Iterable
+from typing import Any, Iterable
 
 import requests
 from django.core.management.base import BaseCommand, CommandError
@@ -65,35 +65,84 @@ class Command(BaseCommand):
         return None
 
     def _fetch_expiration_data(self, ticker: str) -> dict:
+        payload = self._fetch_json(
+            API_URL, params={"symbol": ticker}, headers=API_HEADERS
+        )
+
+        ticker_id = self._extract_ticker_id(payload)
+        dates = self._extract_option_dates(payload)
+
+        if ticker_id is None:
+            raise CommandError("Missing expected data in Seeking Alpha response")
+
+        return {"ticker_id": ticker_id, "dates": dates}
+
+    def _fetch_json(
+        self,
+        url: str,
+        params: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> Any:
         try:
-            response = requests.get(
-                API_URL, headers=API_HEADERS, params={"symbol": ticker}, timeout=30
-            )
+            response = requests.get(url, params=params, headers=headers, timeout=30)
         except requests.RequestException as exc:  # pragma: no cover - network failure
-            raise CommandError(f"Failed to call Seeking Alpha API: {exc}") from exc
+            raise CommandError(f"Failed to call '{url}': {exc}") from exc
 
         if response.status_code != 200:
             raise CommandError(
-                f"Received unexpected status code {response.status_code}: {response.text}"
+                f"Received unexpected status code {response.status_code} from '{url}': {response.text}"
             )
 
         try:
-            payload = response.json()
+            return response.json()
         except ValueError as exc:
-            raise CommandError("Received invalid JSON from Seeking Alpha API") from exc
+            raise CommandError(f"Response from '{url}' did not contain valid JSON.") from exc
 
-        try:
-            attributes = payload["data"]["attributes"]
-        except (TypeError, KeyError) as exc:
-            raise CommandError("Missing expected data in Seeking Alpha response") from exc
+    def _extract_option_dates(self, payload: Any) -> list[str]:
+        data_section = payload
+        if isinstance(payload, dict) and "data" in payload:
+            data_section = payload.get("data")
 
-        try:
-            ticker_id = attributes["ticker_id"]
-            dates = attributes["dates"]
-        except (TypeError, KeyError) as exc:
-            raise CommandError("Missing expected data in Seeking Alpha response") from exc
+        if isinstance(data_section, dict):
+            attributes = data_section.get("attributes")
+            source = attributes if isinstance(attributes, dict) else data_section
+            dates = source.get("dates")
+            if isinstance(dates, list):
+                return [str(value) for value in dates if value is not None]
+        elif isinstance(data_section, list):
+            for entry in data_section:
+                if not isinstance(entry, dict):
+                    continue
+                attributes = entry.get("attributes")
+                source = attributes if isinstance(attributes, dict) else entry
+                dates = source.get("dates")
+                if isinstance(dates, list):
+                    return [str(value) for value in dates if value is not None]
 
-        return {"ticker_id": ticker_id, "dates": dates}
+        return []
+
+    def _extract_ticker_id(self, payload: Any) -> str | None:
+        data_section = payload
+        if isinstance(payload, dict) and "data" in payload:
+            data_section = payload.get("data")
+
+        if isinstance(data_section, dict):
+            attributes = data_section.get("attributes")
+            source = attributes if isinstance(attributes, dict) else data_section
+            ticker_id = source.get("ticker_id")
+            if ticker_id is not None:
+                return str(ticker_id)
+        elif isinstance(data_section, list):
+            for entry in data_section:
+                if not isinstance(entry, dict):
+                    continue
+                attributes = entry.get("attributes")
+                source = attributes if isinstance(attributes, dict) else entry
+                ticker_id = source.get("ticker_id")
+                if ticker_id is not None:
+                    return str(ticker_id)
+
+        return None
 
     def _select_closest_dates(
         self, dates: Iterable[str], today: date, upper_bound: date
