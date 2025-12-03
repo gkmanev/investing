@@ -5,7 +5,6 @@ from typing import Any
 
 import requests
 from django.core.management.base import BaseCommand, CommandError
-from math import erf, log, sqrt
 
 from api.models import Investment
 
@@ -178,9 +177,8 @@ class Command(BaseCommand):
         Returns "N/A" when prices are missing or invalid.
         """
 
-        try:
-            ask_decimal = Decimal(str(ask_price))
-        except (InvalidOperation, TypeError):
+        ask_decimal = Command._to_decimal(ask_price)
+        if ask_decimal is None:
             return "N/A"
 
         midpoint = (bid_decimal + ask_decimal) / Decimal(2)
@@ -194,6 +192,15 @@ class Command(BaseCommand):
             return "N/A"
 
         return f"{opt_value.quantize(Decimal('0.01'))}"
+
+    @staticmethod
+    def _to_decimal(value: Any) -> Decimal | None:
+        """Convert a value to Decimal, returning None when conversion fails."""
+
+        try:
+            return Decimal(str(value))
+        except (InvalidOperation, TypeError):
+            return None
 
     def _extract_options(self, payload: Any) -> list[dict[str, Any]]:
         if isinstance(payload, list):
