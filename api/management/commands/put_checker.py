@@ -61,27 +61,22 @@ class Command(BaseCommand):
                 self.stderr.write(f"{investment.ticker}: {exc}")
                 continue
 
-            put_options = self._filter_put_options(
-                options_payload, investment.price, investment.option_exp
-            )
-            top_puts = put_options[:5]
-            if not top_puts:
+            put_options = self._filter_put_options(options_payload, investment.price)
+            if len(put_options) < 2:
                 self.stdout.write(
-                    f"{investment.ticker}: no put options below price {investment.price}."
+                    f"{investment.ticker}: fewer than two put options below price {investment.price}."
                 )
                 continue
 
-            formatted_options = ", ".join(
-                (
-                    f"{opt['symbol']} (strike {opt['strike_price']}, "
-                    f"last {opt.get('last', 'N/A')}, "
-                    f"opt_val {opt.get('opt_val', 'N/A')}%)"
-                )
-                for opt in top_puts
+            second_put = put_options[1]
+            formatted_option = (
+                f"{second_put['symbol']} (strike {second_put['strike_price']}, "
+                f"last {second_put.get('last', 'N/A')}, "
+                f"opt_val {second_put.get('opt_val', 'N/A')}%)"
             )
             summary = (
-                f"{investment.ticker}: top put options below {investment.price}: "
-                f"{formatted_options}"
+                f"{investment.ticker}: second nearest put option below {investment.price}: "
+                f"{formatted_option}"
             )
             self.stdout.write(summary)
             summaries.append(summary)
