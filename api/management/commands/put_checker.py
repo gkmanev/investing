@@ -74,7 +74,7 @@ class Command(BaseCommand):
 
             formatted_option = (
                 f"{matching_option['symbol']} (strike {matching_option['strike_price']}, "
-                f"ask {matching_option.get('ask', 'N/A')}, "
+                f"bid {matching_option.get('bid', 'N/A')}, "
                 f"opt_val {matching_option.get('opt_val', 'N/A')}%)"
             )
             summary = (
@@ -138,7 +138,7 @@ class Command(BaseCommand):
 
             option_with_value = dict(option)
             option_with_value["opt_val"] = self._calculate_option_value(
-                ask_price=option.get("ask"), strike_price=strike_price
+                bid_price=option.get("bid"), strike_price=strike_price
             )
             filtered.append((strike_price, option_with_value))
 
@@ -171,21 +171,21 @@ class Command(BaseCommand):
         return None
 
     @staticmethod
-    def _calculate_option_value(*, ask_price: Any, strike_price: Decimal) -> str:
-        """Return (ask / strike) * 100 as a percentage string.
+    def _calculate_option_value(*, bid_price: Any, strike_price: Decimal) -> str:
+        """Return (bid / strike) * 100 as a percentage string.
 
         Returns "N/A" when prices are missing or invalid.
         """
 
-        ask_decimal = Command._to_decimal(ask_price)
-        if ask_decimal is None:
+        bid_decimal = Command._to_decimal(bid_price)
+        if bid_decimal is None:
             return "N/A"
 
         if strike_price == 0:
             return "N/A"
 
         try:
-            percentage = (ask_decimal / strike_price) * Decimal("100")
+            percentage = (bid_decimal / strike_price) * Decimal("100")
         except (InvalidOperation, DivisionByZero):
             return "N/A"
 
