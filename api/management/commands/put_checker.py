@@ -181,6 +181,8 @@ class Command(BaseCommand):
         if ask_decimal is None:
             return "N/A"
 
+        midpoint = (bid_decimal + ask_decimal) / Decimal(2)
+
         if strike_price == 0:
             return "N/A"
 
