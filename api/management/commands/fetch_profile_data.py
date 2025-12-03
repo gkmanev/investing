@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable
 
 import requests
@@ -14,6 +15,7 @@ INVESTMENTS_ENDPOINT = f"{BASE_URL}/api/investments/"
 OPTION_EXPIRATIONS_ENDPOINT = (
     "https://seeking-alpha.p.rapidapi.com/symbols/get-option-expirations"
 )
+PROFILE_ENDPOINT = "https://seeking-alpha.p.rapidapi.com/symbols/get-profile"
 API_HEADERS = {
     "x-rapidapi-key": "66dcbafb75msha536f3086b06788p1f5e7ajsnac1315877f0f",
     "x-rapidapi-host": "seeking-alpha.p.rapidapi.com",
@@ -65,7 +67,7 @@ class Command(BaseCommand):
         upper_bound = today + timedelta(days=31)
         for ticker in tickers:
             try:
-                expiration_data = self._fetch_option_expiration_data(ticker)
+                expiration_data = self._fetch_option_expirations(ticker)
             except CommandError as exc:
                 self.stderr.write(
                     f"Failed to fetch option expirations for {ticker}: {exc}. "
@@ -92,15 +94,29 @@ class Command(BaseCommand):
             options_suitability = self._calculate_options_suitability(
                 expiration_data["dates"]
             )
+            last_price = None
+            if options_suitability == 1:
+                try:
+                    last_price = self._fetch_last_price(ticker)
+                except CommandError as exc:
+                    self.stderr.write(
+                        f"Failed to fetch profile for {ticker}: {exc}. "
+                        "Continuing without price data."
+                    )
             investment, created = Investment.objects.get_or_create(
                 ticker=ticker, defaults={"category": "stock"}
             )
 
             investment.options_suitability = options_suitability
+            if last_price is not None:
+                investment.price = last_price
             if created:
                 investment.save()
             else:
-                investment.save(update_fields=["options_suitability", "updated_at"])
+                update_fields = ["options_suitability", "updated_at"]
+                if last_price is not None:
+                    update_fields.append("price")
+                investment.save(update_fields=update_fields)
 
             action = "Created" if created else "Updated"
             self.stdout.write(
@@ -163,7 +179,7 @@ class Command(BaseCommand):
 
         return tickers
 
-    def _fetch_option_expiration_data(self, ticker: str) -> dict:
+    def _fetch_option_expirations(self, ticker: str) -> dict:
         payload = self._fetch_json(
             OPTION_EXPIRATIONS_ENDPOINT,
             params={"symbol": ticker},
@@ -177,6 +193,15 @@ class Command(BaseCommand):
             raise CommandError("Missing expected data in Seeking Alpha response")
 
         return {"ticker_id": ticker_id, "dates": dates}
+
+    def _fetch_last_price(self, ticker: str) -> Decimal | None:
+        payload = self._fetch_json(
+            PROFILE_ENDPOINT,
+            params={"symbols": f"'{ticker}'"},
+            headers=API_HEADERS,
+        )
+
+        return self._extract_last_price(payload)
 
     def _extract_option_dates(self, payload: Any) -> list[str]:
         data_section = payload
@@ -270,4 +295,36 @@ class Command(BaseCommand):
             if expiration.year == target_year and expiration.month == target_month:
                 expirations_next_month += 1
 
-        return 1 if expirations_next_month >= 3 else 0
+        return 1 if expirations_next_month >= 4 else 0
+
+    def _extract_last_price(self, payload: Any) -> Decimal | None:
+        data_section = payload
+        if isinstance(payload, dict) and "data" in payload:
+            data_section = payload.get("data")
+
+        def _pluck_last(section: Any) -> Any | None:
+            if not isinstance(section, dict):
+                return None
+            attributes = section.get("attributes")
+            source = attributes if isinstance(attributes, dict) else section
+            price_block = source.get("price") if isinstance(source, dict) else None
+            if isinstance(price_block, dict) and "last" in price_block:
+                return price_block.get("last")
+            return source.get("last")
+
+        last_value = None
+        if isinstance(data_section, list):
+            for entry in data_section:
+                last_value = _pluck_last(entry)
+                if last_value is not None:
+                    break
+        else:
+            last_value = _pluck_last(data_section)
+
+        if last_value is None:
+            return None
+
+        try:
+            return Decimal(str(last_value))
+        except (InvalidOperation, ValueError):
+            return None
