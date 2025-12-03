@@ -187,11 +187,20 @@ class Command(BaseCommand):
             return "N/A"
 
         try:
-            opt_value = (ask_decimal / strike_price) * Decimal("100")
+            percentage = (ask_decimal / strike_price) * Decimal("100")
         except (InvalidOperation, DivisionByZero):
             return "N/A"
 
-        return f"{opt_value.quantize(Decimal('0.01'))}"
+        return f"{percentage.quantize(Decimal('0.01'))}"
+
+    @staticmethod
+    def _to_decimal(value: Any) -> Decimal | None:
+        """Convert a value to Decimal, returning None when conversion fails."""
+
+        try:
+            return Decimal(str(value))
+        except (InvalidOperation, TypeError):
+            return None
 
     @staticmethod
     def _to_decimal(value: Any) -> Decimal | None:
