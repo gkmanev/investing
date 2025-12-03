@@ -197,7 +197,7 @@ class Command(BaseCommand):
     def _fetch_last_price(self, ticker: str) -> Decimal | None:
         payload = self._fetch_json(
             PROFILE_ENDPOINT,
-            params={"symbols": ticker},
+            params={"symbols": f"'{ticker}'"},
             headers=API_HEADERS,
         )
 
