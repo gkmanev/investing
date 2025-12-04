@@ -36,10 +36,23 @@ class InvestmentViewSet(viewsets.ModelViewSet):
         if ticker_query:
             queryset = queryset.filter(ticker__icontains=ticker_query)
 
-        queryset = self._apply_decimal_range_filter(
-            queryset, params, field_name="price", min_param="min_price", max_param="max_price"
+        queryset = self._apply_decimal_filter(
+            queryset,
+            params,
+            field_name="price",
+            exact_param="price",
+            min_param="min_price",
+            max_param="max_price",
         )
-        queryset = self._apply_decimal_range_filter(
+        queryset = self._apply_decimal_filter(
+            queryset,
+            params,
+            field_name="opt_val",
+            exact_param="opt_val",
+            min_param="min_opt_val",
+            max_param="max_opt_val",
+        )
+        queryset = self._apply_decimal_filter(
             queryset,
             params,
             field_name="market_cap",
@@ -61,23 +74,29 @@ class InvestmentViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer: InvestmentSerializer) -> None:
         serializer.save()
 
-    def _apply_decimal_range_filter(
+    def _apply_decimal_filter(
         self,
         queryset,
         params: Mapping[str, str],
         *,
         field_name: str,
-        min_param: str,
-        max_param: str,
+        exact_param: str | None = None,
+        min_param: str | None = None,
+        max_param: str | None = None,
     ):
-        min_value = self._parse_decimal(params.get(min_param), min_param)
-        max_value = self._parse_decimal(params.get(max_param), max_param)
+        exact_value = (
+            self._parse_decimal(params.get(exact_param), exact_param) if exact_param else None
+        )
+        min_value = self._parse_decimal(params.get(min_param), min_param) if min_param else None
+        max_value = self._parse_decimal(params.get(max_param), max_param) if max_param else None
 
         if min_value is not None and max_value is not None and min_value > max_value:
             raise ValidationError(
                 {max_param: "Maximum value must be greater than or equal to minimum value."}
             )
 
+        if exact_value is not None:
+            queryset = queryset.filter(**{field_name: exact_value})
         if min_value is not None:
             queryset = queryset.filter(**{f"{field_name}__gte": min_value})
         if max_value is not None:
