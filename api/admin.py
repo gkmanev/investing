@@ -17,6 +17,9 @@ class InvestmentAdmin(admin.ModelAdmin):
     search_fields = ("ticker", "category", "screener_type")
     list_filter = ("category", "screener_type")
 
+    class Media:
+        css = {"all": ("css/price_badges.css",)}
+
 
 @admin.register(ScreenerType)
 class ScreenerTypeAdmin(admin.ModelAdmin):

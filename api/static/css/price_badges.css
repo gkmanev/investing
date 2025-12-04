@@ -1,0 +1,25 @@
+/* Center price badges on map overlays so they align with country positions. */
+.price-badge {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  pointer-events: none;
+}
+
+/* Keep inner content centered even when badges include arrows or shadows. */
+.price-badge__content {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* If badges are used as Leaflet div icons, ensure the anchor is centered. */
+.leaflet-pane .price-badge {
+  transform: translate(-50%, -50%);
+  transform-origin: center;
+}
