@@ -72,10 +72,15 @@ class Command(BaseCommand):
                 )
                 continue
 
+            self._update_investment_opt_val(
+                investment, matching_option.get("opt_val")
+            )
+
+            opt_val_display = self._format_opt_val(matching_option.get("opt_val"))
             formatted_option = (
                 f"{matching_option['symbol']} (strike {matching_option['strike_price']}, "
                 f"bid {matching_option.get('bid', 'N/A')}, "
-                f"opt_val {matching_option.get('opt_val', 'N/A')}%)"
+                f"opt_val {opt_val_display}%)"
             )
             summary = (
                 f"{investment.ticker}: put option at strike {target_strike} below "
@@ -171,25 +176,25 @@ class Command(BaseCommand):
         return None
 
     @staticmethod
-    def _calculate_option_value(*, bid_price: Any, strike_price: Decimal) -> str:
-        """Return (bid / strike) * 100 as a percentage string.
+    def _calculate_option_value(*, bid_price: Any, strike_price: Decimal) -> Decimal | None:
+        """Return (bid / strike) * 100 as a Decimal.
 
-        Returns "N/A" when prices are missing or invalid.
+        Returns ``None`` when prices are missing or invalid.
         """
 
         bid_decimal = Command._to_decimal(bid_price)
         if bid_decimal is None:
-            return "N/A"
+            return None
 
         if strike_price == 0:
-            return "N/A"
+            return None
 
         try:
             percentage = (bid_decimal / strike_price) * Decimal("100")
         except (InvalidOperation, DivisionByZero):
-            return "N/A"
+            return None
 
-        return f"{percentage.quantize(Decimal('0.01'))}"
+        return percentage.quantize(Decimal("0.01"))
 
     @staticmethod
     def _to_decimal(value: Any) -> Decimal | None:
@@ -199,6 +204,26 @@ class Command(BaseCommand):
             return Decimal(str(value))
         except (InvalidOperation, TypeError):
             return None
+
+    @staticmethod
+    def _format_opt_val(opt_val: Decimal | None) -> str:
+        """Convert an optional opt_val to a printable string."""
+
+        if opt_val is None:
+            return "N/A"
+
+        return f"{opt_val}"
+
+    def _update_investment_opt_val(
+        self, investment: Investment, opt_val: Decimal | None
+    ) -> None:
+        """Persist the calculated opt_val on the investment if it changed."""
+
+        if opt_val == investment.opt_val:
+            return
+
+        investment.opt_val = opt_val
+        investment.save(update_fields=["opt_val"])
 
     def _extract_options(self, payload: Any) -> list[dict[str, Any]]:
         if isinstance(payload, list):

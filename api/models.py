@@ -42,6 +42,7 @@ class Investment(models.Model):
     category = models.CharField(max_length=100)
     screener_type = models.CharField(max_length=255, blank=True, null=True)
     price = models.DecimalField(max_digits=20, decimal_places=4, null=True, blank=True)
+    opt_val = models.DecimalField(max_digits=7, decimal_places=2, null=True, blank=True)
     volume = models.BigIntegerField(null=True, blank=True)
     market_cap = models.DecimalField(max_digits=24, decimal_places=2, null=True, blank=True)
     options_suitability = models.SmallIntegerField(null=True, blank=True)
