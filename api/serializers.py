@@ -17,6 +17,7 @@ class InvestmentSerializer(serializers.ModelSerializer):
             "options_suitability",
             "option_exp",
             "description",
+            "opt_val",
             "created_at",
             "updated_at",
         ]
