@@ -503,6 +503,39 @@ class FetchScreenersCommandTests(APITestCase):
         self.assertNotIn("industry_id", json.dumps(filters[0].payload))
 
 
+class FetchTickerNamesCommandTests(APITestCase):
+    @patch("api.management.commands.fetch_ticker_names.requests.get")
+    def test_command_returns_tickers_from_endpoint(self, mock_get: MagicMock) -> None:
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=lambda: [
+                {"ticker": "AAA"},
+                {"ticker": "BBB"},
+            ],
+            text="{}",
+        )
+
+        buffer = StringIO()
+        result = call_command("fetch_ticker_names", stdout=buffer)
+
+        mock_get.assert_called_once_with(
+            "http://127.0.0.1:8000/api/investments/",
+            params={"options_suitability": 1, "screener_type": "Stocks by Quant"},
+            timeout=30,
+        )
+        self.assertEqual(result, "AAA\nBBB")
+        self.assertEqual(buffer.getvalue(), "AAA\nBBB\n")
+
+    @patch("api.management.commands.fetch_ticker_names.requests.get")
+    def test_command_errors_when_no_tickers_found(self, mock_get: MagicMock) -> None:
+        mock_get.return_value = MagicMock(status_code=200, json=lambda: [], text="[]")
+
+        with self.assertRaisesMessage(
+            CommandError, "No ticker names were found in the response payload."
+        ):
+            call_command("fetch_ticker_names")
+
+
 class FetchScreenerResultsCommandTests(APITestCase):
     def setUp(self) -> None:
         self.screener = ScreenerType.objects.create(
