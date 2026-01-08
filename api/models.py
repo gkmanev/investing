@@ -56,3 +56,30 @@ class Investment(models.Model):
 
     def __str__(self) -> str:  # pragma: no cover - simple data representation
         return self.ticker
+
+
+class FinancialStatement(models.Model):
+    """Stores a raw financial statement payload for a symbol."""
+
+    symbol = models.CharField(max_length=25)
+    target_currency = models.CharField(max_length=10, default="USD")
+    period_type = models.CharField(max_length=20, default="annual")
+    statement_type = models.CharField(max_length=50, default="income-statement")
+    payload = models.JSONField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["symbol", "period_type", "statement_type", "target_currency"]
+        unique_together = (
+            "symbol",
+            "period_type",
+            "statement_type",
+            "target_currency",
+        )
+
+    def __str__(self) -> str:  # pragma: no cover - simple data representation
+        return (
+            f"{self.symbol} {self.statement_type} ({self.period_type}, "
+            f"{self.target_currency})"
+        )

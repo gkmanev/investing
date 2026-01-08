@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import Investment, ScreenerFilter, ScreenerType
+from .models import FinancialStatement, Investment, ScreenerFilter, ScreenerType
 
 
 class InvestmentSerializer(serializers.ModelSerializer):
@@ -68,3 +68,25 @@ class ScreenerTypeSerializer(serializers.ModelSerializer):
         if not value.strip():
             raise serializers.ValidationError("Name cannot be empty.")
         return value
+
+
+class FinancialStatementSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = FinancialStatement
+        fields = [
+            "id",
+            "symbol",
+            "target_currency",
+            "period_type",
+            "statement_type",
+            "payload",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+    def validate_symbol(self, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise serializers.ValidationError("Symbol cannot be empty.")
+        return cleaned.upper()

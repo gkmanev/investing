@@ -6,8 +6,9 @@ from typing import Mapping
 from rest_framework import viewsets
 from rest_framework.exceptions import ValidationError
 
-from .models import Investment, ScreenerFilter, ScreenerType
+from .models import FinancialStatement, Investment, ScreenerFilter, ScreenerType
 from .serializers import (
+    FinancialStatementSerializer,
     InvestmentSerializer,
     ScreenerFilterSerializer,
     ScreenerTypeSerializer,
@@ -148,3 +149,30 @@ class ScreenerTypeViewSet(viewsets.ModelViewSet):
 class ScreenerFilterViewSet(viewsets.ModelViewSet):
     queryset = ScreenerFilter.objects.select_related("screener_type").all()
     serializer_class = ScreenerFilterSerializer
+
+
+class FinancialStatementViewSet(viewsets.ModelViewSet):
+    queryset = FinancialStatement.objects.all()
+    serializer_class = FinancialStatementSerializer
+
+    def get_queryset(self):  # type: ignore[override]
+        queryset = super().get_queryset()
+        params = self.request.query_params
+
+        symbol = params.get("symbol")
+        if symbol:
+            queryset = queryset.filter(symbol__iexact=symbol)
+
+        target_currency = params.get("target_currency")
+        if target_currency:
+            queryset = queryset.filter(target_currency__iexact=target_currency)
+
+        period_type = params.get("period_type")
+        if period_type:
+            queryset = queryset.filter(period_type__iexact=period_type)
+
+        statement_type = params.get("statement_type")
+        if statement_type:
+            queryset = queryset.filter(statement_type__iexact=statement_type)
+
+        return queryset
