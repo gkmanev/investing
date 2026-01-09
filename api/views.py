@@ -6,8 +6,15 @@ from typing import Mapping
 from rest_framework import viewsets
 from rest_framework.exceptions import ValidationError
 
-from .models import FinancialStatement, Investment, ScreenerFilter, ScreenerType
+from .models import (
+    DueDiligenceReport,
+    FinancialStatement,
+    Investment,
+    ScreenerFilter,
+    ScreenerType,
+)
 from .serializers import (
+    DueDiligenceReportSerializer,
     FinancialStatementSerializer,
     InvestmentSerializer,
     ScreenerFilterSerializer,
@@ -174,5 +181,28 @@ class FinancialStatementViewSet(viewsets.ModelViewSet):
         statement_type = params.get("statement_type")
         if statement_type:
             queryset = queryset.filter(statement_type__iexact=statement_type)
+
+        return queryset
+
+
+class DueDiligenceReportViewSet(viewsets.ModelViewSet):
+    queryset = DueDiligenceReport.objects.all()
+    serializer_class = DueDiligenceReportSerializer
+
+    def get_queryset(self):  # type: ignore[override]
+        queryset = super().get_queryset()
+        params = self.request.query_params
+
+        symbol = params.get("symbol")
+        if symbol:
+            queryset = queryset.filter(symbol__iexact=symbol)
+
+        rating = params.get("rating")
+        if rating:
+            queryset = queryset.filter(rating__iexact=rating)
+
+        model_name = params.get("model_name")
+        if model_name:
+            queryset = queryset.filter(model_name__iexact=model_name)
 
         return queryset
