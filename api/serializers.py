@@ -1,6 +1,12 @@
 from rest_framework import serializers
 
-from .models import FinancialStatement, Investment, ScreenerFilter, ScreenerType
+from .models import (
+    DueDiligenceReport,
+    FinancialStatement,
+    Investment,
+    ScreenerFilter,
+    ScreenerType,
+)
 
 
 class InvestmentSerializer(serializers.ModelSerializer):
@@ -84,6 +90,28 @@ class FinancialStatementSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
+
+    def validate_symbol(self, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise serializers.ValidationError("Symbol cannot be empty.")
+        return cleaned.upper()
+
+
+class DueDiligenceReportSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DueDiligenceReport
+        fields = [
+            "id",
+            "symbol",
+            "rating",
+            "confidence",
+            "model_name",
+            "report",
+            "financial_data",
+            "created_at",
+        ]
+        read_only_fields = ["id", "created_at"]
 
     def validate_symbol(self, value: str) -> str:
         cleaned = value.strip()
