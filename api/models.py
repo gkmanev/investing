@@ -83,3 +83,21 @@ class FinancialStatement(models.Model):
             f"{self.symbol} {self.statement_type} ({self.period_type}, "
             f"{self.target_currency})"
         )
+
+
+class DueDiligenceReport(models.Model):
+    """Stores structured AI due diligence reports for a symbol."""
+
+    symbol = models.CharField(max_length=16, db_index=True)
+    rating = models.CharField(max_length=16, db_index=True)
+    confidence = models.FloatField(null=True, blank=True)
+    model_name = models.CharField(max_length=64, blank=True, default="")
+    report = models.JSONField()
+    financial_data = models.JSONField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "symbol"]
+
+    def __str__(self) -> str:  # pragma: no cover - simple data representation
+        return f"{self.symbol} {self.rating} ({self.created_at:%Y-%m-%d})"
