@@ -267,7 +267,6 @@ Final Justification
                 'symbol': symbol.upper(),
                 'rating': rating,
                 'report': report,
-                'financial_data': financial_data,
                 'formatted_output': formatted_output,
                 'success': True
             }
@@ -353,7 +352,6 @@ class Command(BaseCommand):
                     confidence=result["report"].get("confidence"),
                     model_name=agent.model,
                     report=result["report"],
-                    financial_data=result["financial_data"],
                 )
                 
             except Exception as e:
