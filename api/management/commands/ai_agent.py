@@ -4,7 +4,6 @@ Django management command for AI-powered Financial Due Diligence Analysis
 Usage:
     python manage.py analyze_stock BSX
     python manage.py analyze_stock AAPL --save
-    python manage.py analyze_stock TSLA --save --output-dir reports/
 """
 
 from django.core.management.base import BaseCommand, CommandError
@@ -12,7 +11,6 @@ from django.conf import settings
 import requests
 import json
 from typing import Dict, Any, Tuple
-from pathlib import Path
 from openai import OpenAI
 
 
@@ -70,7 +68,7 @@ class FinancialDDAgent:
         
         return financial_data
     
-    def analyze_with_model(self, symbol: str, financial_data: Dict[str, Any]) -> Tuple[str, str]:
+    def analyze_with_model(self, symbol: str, financial_data: Dict[str, Any]) -> Tuple[Dict[str, Any], str]:
         """
         Analyze financial data using AI model
         
@@ -79,84 +77,120 @@ class FinancialDDAgent:
             financial_data: Complete financial statements data
             
         Returns:
-            Tuple of (analysis_text, rating)
+            Tuple of (report, rating)
         """
-        prompt = f"""You are a financial analyst performing due diligence on {symbol}. Analyze the following financial statements and provide:
+        schema = {
+            "name": "financial_due_diligence_report",
+            "schema": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "symbol": {"type": "string"},
+                    "rating": {
+                        "type": "string",
+                        "enum": ["STRONG BUY", "BUY", "HOLD", "SELL", "STRONG SELL"],
+                    },
+                    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                    "periods": {"type": "array", "items": {"type": "string"}},
+                    "key_metrics": {"$ref": "#/$defs/section"},
+                    "growth": {"$ref": "#/$defs/section"},
+                    "financial_health": {"$ref": "#/$defs/section"},
+                    "red_flags": {"$ref": "#/$defs/section"},
+                    "growth_potential": {"$ref": "#/$defs/section"},
+                    "final_justification": {"type": "string"},
+                },
+                "required": [
+                    "symbol",
+                    "rating",
+                    "confidence",
+                    "periods",
+                    "key_metrics",
+                    "growth",
+                    "financial_health",
+                    "red_flags",
+                    "growth_potential",
+                    "final_justification",
+                ],
+                "$defs": {
+                    "calculation": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "name": {"type": "string"},
+                            "formula": {"type": "string"},
+                            "period": {"type": "string"},
+                            "inputs": {"type": "object"},
+                            "result": {"type": ["number", "string"]},
+                            "units": {"type": "string"},
+                            "source_paths": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                        },
+                        "required": [
+                            "name",
+                            "formula",
+                            "period",
+                            "inputs",
+                            "result",
+                            "units",
+                            "source_paths",
+                        ],
+                    },
+                    "section": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "summary": {"type": "string"},
+                            "details": {"type": "array", "items": {"type": "string"}},
+                            "calculations": {
+                                "type": "array",
+                                "items": {"$ref": "#/$defs/calculation"},
+                            },
+                            "justification": {"type": "string"},
+                        },
+                        "required": ["summary", "details", "calculations", "justification"],
+                    },
+                },
+            },
+        }
 
-1. **Key Metrics Analysis**: Calculate and interpret important ratios:
-   - Liquidity: Current Ratio, Quick Ratio
-   - Profitability: Gross Margin, Operating Margin, Net Margin, ROE, ROA
-   - Leverage: Debt-to-Equity, Interest Coverage
-   - Efficiency: Asset Turnover, Inventory Turnover
-
-2. **Growth Analysis**: Evaluate trends over the periods provided:
-   - Revenue growth (YoY and multi-year CAGR)
-   - Earnings growth
-   - Cash flow trends
-   - Consistency and sustainability of growth
-
-3. **Financial Health Assessment**:
-   - Liquidity position and working capital
-   - Debt levels and capital structure
-   - Cash generation and free cash flow
-   - Operational efficiency
-
-4. **Red Flags & Risks**: Identify concerning patterns:
-   - Deteriorating margins
-   - Rising debt levels
-   - Negative cash flows
-   - Revenue quality issues
-   - Any accounting concerns
-
-5. **Growth Potential**: Based on the financial data:
-   - Cash available for expansion
-   - Profitability trends suggesting competitive advantage
-   - Operational leverage opportunities
-
-6. **Final Rating**: Assign ONE of these ratings with justification:
-   - STRONG BUY: Exceptional fundamentals and strong growth
-   - BUY: Good fundamentals with growth potential
-   - HOLD: Stable but limited upside
-   - SELL: Weakening fundamentals
-   - STRONG SELL: Serious financial concerns
-
-Financial Data:
-{json.dumps(financial_data, indent=2)}
-
-Provide your analysis in clear sections with specific numbers and calculations. You must end with ### JUSTIFICTION ###."""
+        prompt = (
+            f"You are a financial analyst performing due diligence on {symbol}.\n"
+            "Return ONLY valid JSON that matches the provided schema.\n"
+            "Rules:\n"
+            "- Every section must include a justification tied to specific statement line-items and periods.\n"
+            "- Put numeric calculations in calculations[].\n"
+            "- Use source_paths to reference where inputs came from in the provided financial_data JSON.\n"
+            "- If a metric cannot be computed, include a detail explaining why and omit that calculation.\n\n"
+            f"Financial Data:\n{json.dumps(financial_data, indent=2)}"
+        )
 
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=4000
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_schema", "json_schema": schema},
+                max_tokens=4000,
             )
-            
-            analysis_text = response.choices[0].message.content
-            
-            # Extract rating
-            rating_keywords = ['STRONG BUY', 'STRONG SELL', 'BUY', 'SELL', 'HOLD']
-            rating = 'HOLD'  # default
-            for keyword in rating_keywords:
-                if keyword in analysis_text.upper():
-                    rating = keyword
-                    break
-            
-            return analysis_text, rating
+
+            report_text = response.choices[0].message.content
+            report = json.loads(report_text)
+            rating = report.get("rating", "HOLD")
+
+            return report, rating
             
         except Exception as e:
             raise Exception(f"Analysis failed: {str(e)}")
     
-    def format_output(self, symbol: str, rating: str, analysis: str) -> str:
+    def format_output(self, symbol: str, rating: str, report: Dict[str, Any]) -> str:
         """
         Format the analysis output for display
         
         Args:
             symbol: Stock symbol
             rating: Investment rating
-            analysis: Analysis text
+            report: Structured report data
             
         Returns:
             Formatted string for output
@@ -171,6 +205,26 @@ Provide your analysis in clear sections with specific numbers and calculations. 
         
         emoji = rating_emojis.get(rating, '⚪')
         
+        sections = [
+            ("Key Metrics", "key_metrics"),
+            ("Growth", "growth"),
+            ("Financial Health", "financial_health"),
+            ("Red Flags", "red_flags"),
+            ("Growth Potential", "growth_potential"),
+        ]
+        section_blocks = []
+        for title, key in sections:
+            section = report.get(key, {})
+            summary = section.get("summary", "No summary provided.")
+            details = section.get("details", [])
+            details_block = "\n".join(f"- {detail}" for detail in details)
+            if details_block:
+                section_body = f"{summary}\n{details_block}"
+            else:
+                section_body = summary
+            section_blocks.append(f"{title}\n{section_body}")
+        final_justification = report.get("final_justification", "")
+
         output = f"""
 {'='*80}
                     FINANCIAL DUE DILIGENCE REPORT
@@ -181,7 +235,10 @@ Investment Rating: {emoji} {rating} {emoji}
 
 {'='*80}
 
-{analysis}
+{chr(10).join(section_blocks)}
+
+Final Justification
+{final_justification}
 
 {'='*80}
 
@@ -208,15 +265,15 @@ Investment Rating: {emoji} {rating} {emoji}
             financial_data = self.fetch_financial_data(symbol)
             
             # Analyze with AI model
-            analysis_text, rating = self.analyze_with_model(symbol.upper(), financial_data)
+            report, rating = self.analyze_with_model(symbol.upper(), financial_data)
             
             # Format output
-            formatted_output = self.format_output(symbol.upper(), rating, analysis_text)
+            formatted_output = self.format_output(symbol.upper(), rating, report)
             
             return {
                 'symbol': symbol.upper(),
                 'rating': rating,
-                'analysis': analysis_text,
+                'report': report,
                 'financial_data': financial_data,
                 'formatted_output': formatted_output,
                 'success': True
@@ -245,14 +302,7 @@ class Command(BaseCommand):
         parser.add_argument(
             '--save',
             action='store_true',
-            help='Save the report to a file'
-        )
-        
-        parser.add_argument(
-            '--output-dir',
-            type=str,
-            default='financial_reports',
-            help='Directory to save reports (default: financial_reports/)'
+            help='Save the report to the database'
         )
         
         parser.add_argument(
@@ -264,7 +314,6 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         symbol = options['symbol'].upper()
         save_report = options['save']
-        output_dir = options['output_dir']
         base_url = options.get('base_url')
         
         # Display header
@@ -303,19 +352,16 @@ class Command(BaseCommand):
         # Save report if requested
         if save_report:
             try:
-                # Create output directory if it doesn't exist
-                output_path = Path(output_dir)
-                output_path.mkdir(parents=True, exist_ok=True)
-                
-                # Generate filename
-                filename = output_path / f"{symbol}_DD_Report.txt"
-                
-                # Write report
-                with open(filename, 'w', encoding='utf-8') as f:
-                    f.write(result['formatted_output'])
-                
-                self.stdout.write('')
-                self.stdout.write(self.style.SUCCESS(f'✅ Report saved to {filename}'))
+                from api.models import DueDiligenceReport
+
+                DueDiligenceReport.objects.create(
+                    symbol=result["symbol"],
+                    rating=result["rating"],
+                    confidence=result["report"].get("confidence"),
+                    model_name=agent.model,
+                    report=result["report"],
+                    financial_data=result["financial_data"],
+                )
                 
             except Exception as e:
                 self.stdout.write(self.style.ERROR(f'❌ Failed to save report: {str(e)}'))
