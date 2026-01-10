@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal, DivisionByZero, InvalidOperation, ROUND_HALF_UP
+import math
 from typing import Any
 
 import requests
@@ -38,6 +40,12 @@ class Command(BaseCommand):
                 "No investments found with options_suitability=1 for the provided screener type."
             )
 
+        risk_free_rate = self._fetch_risk_free_rate()
+        if risk_free_rate is None:
+            self.stderr.write(
+                "Risk-free rate unavailable; implied volatility will be skipped."
+            )
+
         summaries: list[str] = []
         for investment in investments:
             if investment.option_exp is None:
@@ -60,7 +68,14 @@ class Command(BaseCommand):
                 self.stderr.write(f"{investment.ticker}: {exc}")
                 continue
 
-            put_options = self._filter_put_options(options_payload, investment.price)
+            time_to_expiration = self._time_to_expiration_years(investment.option_exp)
+            put_options = self._filter_put_options(
+                options_payload,
+                investment.price,
+                spot_price=investment.price,
+                time_to_expiration=time_to_expiration,
+                risk_free_rate=risk_free_rate,
+            )
             recent_puts = self._format_recent_puts(put_options, investment.price)
 
             target_strike = self._target_strike(investment.price)
@@ -78,10 +93,14 @@ class Command(BaseCommand):
             )
 
             opt_val_display = self._format_opt_val(matching_option.get("opt_val"))
+            implied_vol_display = self._format_implied_volatility(
+                matching_option.get("implied_volatility")
+            )
             formatted_option = (
                 f"{matching_option['symbol']} (strike {matching_option['strike_price']}, "
                 f"bid {matching_option.get('bid', 'N/A')}, "
-                f"opt_val {opt_val_display}%)"
+                f"opt_val {opt_val_display}%, "
+                f"iv {implied_vol_display}%)"
             )
             summary = (
                 f"{investment.ticker}: put option at strike {target_strike} below "
@@ -117,7 +136,13 @@ class Command(BaseCommand):
             raise CommandError("Invalid JSON received from options API.") from exc
 
     def _filter_put_options(
-        self, payload: Any, max_price: Decimal, *args: Any
+        self,
+        payload: Any,
+        max_price: Decimal,
+        *args: Any,
+        spot_price: Decimal | None = None,
+        time_to_expiration: Decimal | None = None,
+        risk_free_rate: Decimal | None = None,
     ) -> list[dict[str, Any]]:
         """Return put options below the max price.
 
@@ -145,6 +170,13 @@ class Command(BaseCommand):
             option_with_value = dict(option)
             option_with_value["opt_val"] = self._calculate_option_value(
                 bid_price=option.get("bid"), strike_price=strike_price
+            )
+            option_with_value["implied_volatility"] = self._calculate_implied_volatility(
+                option_price=option.get("bid"),
+                spot_price=spot_price,
+                strike_price=strike_price,
+                time_to_expiration=time_to_expiration,
+                risk_free_rate=risk_free_rate,
             )
             filtered.append((strike_price, option_with_value))
 
@@ -198,6 +230,80 @@ class Command(BaseCommand):
         return percentage.quantize(Decimal("0.01"))
 
     @staticmethod
+    def _calculate_implied_volatility(
+        *,
+        option_price: Any,
+        spot_price: Decimal | None,
+        strike_price: Decimal,
+        time_to_expiration: Decimal | None,
+        risk_free_rate: Decimal | None,
+    ) -> Decimal | None:
+        """Calculate implied volatility using a bisection method.
+
+        Returns the implied volatility as a percentage, or ``None`` if inputs are
+        missing or invalid.
+        """
+
+        option_decimal = Command._to_decimal(option_price)
+        if (
+            option_decimal is None
+            or spot_price is None
+            or time_to_expiration is None
+            or risk_free_rate is None
+        ):
+            return None
+
+        if option_decimal <= 0 or spot_price <= 0 or strike_price <= 0:
+            return None
+
+        if time_to_expiration <= 0:
+            return None
+
+        try:
+            spot = float(spot_price)
+            strike = float(strike_price)
+            time_years = float(time_to_expiration)
+            rate = float(risk_free_rate)
+            target_price = float(option_decimal)
+        except (TypeError, ValueError):
+            return None
+
+        def cdf(value: float) -> float:
+            return 0.5 * (1.0 + math.erf(value / math.sqrt(2.0)))
+
+        def put_price(volatility: float) -> float:
+            if volatility <= 0:
+                return 0.0
+            sqrt_time = math.sqrt(time_years)
+            d1 = (
+                math.log(spot / strike)
+                + (rate + 0.5 * volatility**2) * time_years
+            ) / (volatility * sqrt_time)
+            d2 = d1 - volatility * sqrt_time
+            return strike * math.exp(-rate * time_years) * cdf(-d2) - spot * cdf(-d1)
+
+        low = 1e-6
+        high = 5.0
+        low_price = put_price(low)
+        high_price = put_price(high)
+
+        if target_price < low_price or target_price > high_price:
+            return None
+
+        for _ in range(100):
+            mid = (low + high) / 2.0
+            mid_price = put_price(mid)
+            if abs(mid_price - target_price) < 1e-6:
+                low = mid
+                break
+            if mid_price > target_price:
+                high = mid
+            else:
+                low = mid
+
+        return Decimal(str(low * 100)).quantize(Decimal("0.01"))
+
+    @staticmethod
     def _to_decimal(value: Any) -> Decimal | None:
         """Convert a value to Decimal, returning None when conversion fails."""
 
@@ -214,6 +320,15 @@ class Command(BaseCommand):
             return "N/A"
 
         return f"{opt_val}"
+
+    @staticmethod
+    def _format_implied_volatility(implied_volatility: Decimal | None) -> str:
+        """Convert an optional implied volatility to a printable string."""
+
+        if implied_volatility is None:
+            return "N/A"
+
+        return f"{implied_volatility}"
 
     def _update_investment_opt_val(
         self, investment: Investment, opt_val: Decimal | None
@@ -254,3 +369,65 @@ class Command(BaseCommand):
                 return [item for item in options if isinstance(item, dict)]
 
         raise CommandError("Options data was not found in the API response.")
+
+    def _fetch_risk_free_rate(self) -> Decimal | None:
+        """Fetch the latest risk-free rate from the U.S. Treasury API."""
+
+        url = (
+            "https://api.fiscaldata.treasury.gov/services/api/"
+            "fiscal_service/v2/accounting/od/avg_interest_rates"
+        )
+        params = {
+            "filter": "security_desc:eq:Treasury Bills",
+            "sort": "-record_date",
+            "page[size]": "1",
+        }
+        try:
+            response = requests.get(url, params=params, timeout=30)
+        except requests.RequestException as exc:  # pragma: no cover - network failure
+            self.stderr.write(f"Failed to fetch risk-free rate: {exc}")
+            return None
+
+        if response.status_code != 200:
+            self.stderr.write(
+                "Risk-free rate request failed with status "
+                f"{response.status_code}: {response.text}"
+            )
+            return None
+
+        try:
+            payload = response.json()
+        except ValueError:
+            self.stderr.write("Risk-free rate response was not valid JSON.")
+            return None
+
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, list) or not data:
+            self.stderr.write("Risk-free rate data was missing in the response.")
+            return None
+
+        entry = data[0] if isinstance(data[0], dict) else None
+        if not entry:
+            self.stderr.write("Risk-free rate entry was missing.")
+            return None
+
+        rate_raw = entry.get("avg_interest_rate_amt")
+        rate_decimal = self._to_decimal(rate_raw)
+        if rate_decimal is None:
+            self.stderr.write("Risk-free rate value was invalid.")
+            return None
+
+        return (rate_decimal / Decimal("100")).quantize(Decimal("0.0001"))
+
+    @staticmethod
+    def _time_to_expiration_years(expiration_date: date | None) -> Decimal | None:
+        """Return time to expiration in years."""
+
+        if expiration_date is None:
+            return None
+
+        days = (expiration_date - date.today()).days
+        if days <= 0:
+            return None
+
+        return (Decimal(days) / Decimal("365")).quantize(Decimal("0.0001"))
