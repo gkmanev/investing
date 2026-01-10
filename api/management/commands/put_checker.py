@@ -414,7 +414,7 @@ class Command(BaseCommand):
         for option in recent:
             strike = option.get("strike_price", "N/A")
             bid = option.get("bid", "N/A")
-            delta_display = self._format_delta(option.get("delta"))
+            delta_display = Command._format_delta(option.get("delta"))
             formatted.append(f"strike {strike} bid {bid} delta {delta_display}")
 
         return f"Last three strikes below {price}: {', '.join(formatted)}."
