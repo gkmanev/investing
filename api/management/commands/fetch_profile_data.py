@@ -28,7 +28,7 @@ class Command(BaseCommand):
 
     help = "Fetches local investments and updates their options suitability."
 
-    def add_arguments(self, parser) -> None:  # pragma: no cover - argparse wiring
+    def add_arguments(self, parser) -> None:  # pragma: no cover
         parser.add_argument(
             "--screener_name",
             help="Name of the screener whose investments should be processed.",
@@ -37,6 +37,11 @@ class Command(BaseCommand):
             "--skip-priced",
             action="store_true",
             help="Skip investments that already have a stored price.",
+        )
+        parser.add_argument(
+            "--debug-suitability",
+            action="store_true",
+            help="Print debug information explaining suitability calculations.",
         )
 
     def handle(self, *args: Any, **options: Any) -> str:
@@ -57,7 +62,7 @@ class Command(BaseCommand):
                     ticker__in=tickers, price__isnull=False
                 ).values_list("ticker", flat=True)
             }
-            tickers = [ticker for ticker in tickers if ticker.upper() not in priced_tickers]
+            tickers = [t for t in tickers if t.upper() not in priced_tickers]
             if not tickers:
                 raise CommandError(
                     "No tickers remain to update after skipping priced investments."
@@ -66,6 +71,8 @@ class Command(BaseCommand):
         updated_tickers: list[str] = []
         today = timezone.now().date()
         upper_bound = today + timedelta(days=31)
+        debug_suitability: bool = bool(options.get("debug_suitability"))
+
         for ticker in tickers:
             try:
                 expiration_data = self._fetch_option_expirations(ticker)
@@ -76,6 +83,7 @@ class Command(BaseCommand):
                 )
                 continue
 
+            # This is just informational printing (your existing 31-day window)
             closest_dates = self._select_closest_dates(
                 expiration_data["dates"], today, upper_bound
             )
@@ -84,21 +92,33 @@ class Command(BaseCommand):
                 if closest_dates
                 else self._select_furthest_date(expiration_data["dates"])
             )
+
             if not closest_dates:
                 self.stdout.write(
                     f"{ticker} (ticker_id {expiration_data['ticker_id']}): No option "
                     "expiration date within the next 31 days."
                 )
             else:
-                formatted_dates = ", ".join(date.isoformat() for date in closest_dates)
+                formatted = ", ".join(d.isoformat() for d in closest_dates)
                 self.stdout.write(
-                    f"{ticker} (ticker_id {expiration_data['ticker_id']}): {formatted_dates}; "
-                    f"furthest: {furthest_option_date.isoformat()}"
+                    f"{ticker} (ticker_id {expiration_data['ticker_id']}): {formatted}; "
+                    f"furthest: {furthest_option_date.isoformat() if furthest_option_date else 'N/A'}"
                 )
 
-            options_suitability = self._calculate_options_suitability(
-                expiration_data["dates"]
-            )
+            # NEW robust suitability: next 3 upcoming expirations must be weekly spaced
+            (
+                options_suitability,
+                reason,
+                next_three,
+                chosen_option_exp,
+            ) = self._weekly_suitability_details(expiration_data["dates"], today)
+
+            if debug_suitability:
+                shown = ", ".join(d.isoformat() for d in next_three) if next_three else "(none)"
+                self.stdout.write(
+                    f"{ticker}: suitability={options_suitability} | next_three={shown} | {reason}"
+                )
+
             last_price = None
             if options_suitability == 1:
                 try:
@@ -118,6 +138,7 @@ class Command(BaseCommand):
                         self.stdout.write(
                             f"{ticker}: suitability met with last price {last_price}."
                         )
+
             ticker_id_value = self._coerce_ticker_id(expiration_data.get("ticker_id"))
             defaults: dict[str, Any] = {"category": "stock"}
             if ticker_id_value is not None:
@@ -130,22 +151,21 @@ class Command(BaseCommand):
             if not created and ticker_id_value is not None and investment.id != ticker_id_value:
                 try:
                     with transaction.atomic():
-                        Investment.objects.filter(pk=investment.pk).update(
-                            id=ticker_id_value
-                        )
+                        Investment.objects.filter(pk=investment.pk).update(id=ticker_id_value)
                         investment.id = ticker_id_value
                 except IntegrityError:
                     self.stderr.write(
-                        f"Unable to update id for {ticker} to {ticker_id_value}: "
-                        "value already in use."
+                        f"Unable to update id for {ticker} to {ticker_id_value}: value already in use."
                     )
 
             investment.options_suitability = options_suitability
-            investment.option_exp = (
-                furthest_option_date if options_suitability == 1 else None
-            )
+
+            # NEW: if suitable, store the 3rd upcoming expiration (the last of the weekly chain)
+            investment.option_exp = chosen_option_exp if options_suitability == 1 else None
+
             if last_price is not None:
                 investment.price = last_price
+
             if created:
                 investment.save()
             else:
@@ -161,11 +181,13 @@ class Command(BaseCommand):
             updated_tickers.append(ticker)
 
         if not updated_tickers:
-            raise CommandError(
-                "No investments were updated with options suitability data."
-            )
+            raise CommandError("No investments were updated with options suitability data.")
 
         return ", ".join(updated_tickers)
+
+    # -------------------------
+    # Networking + extraction
+    # -------------------------
 
     def _fetch_json(
         self,
@@ -175,7 +197,7 @@ class Command(BaseCommand):
     ) -> Any:
         try:
             response = requests.get(url, params=params, headers=headers, timeout=30)
-        except requests.RequestException as exc:  # pragma: no cover - network failure
+        except requests.RequestException as exc:  # pragma: no cover
             raise CommandError(f"Failed to call '{url}': {exc}") from exc
 
         if response.status_code != 200:
@@ -200,7 +222,7 @@ class Command(BaseCommand):
                     break
             else:
                 raise CommandError(
-                    "Investments payload did not contain a list of results under 'results' or 'data'."
+                    "Investments payload did not contain a list under 'results' or 'data'."
                 )
         else:
             raise CommandError("Investments payload had an unexpected structure.")
@@ -212,7 +234,6 @@ class Command(BaseCommand):
             ticker = entry.get("ticker")
             if ticker:
                 tickers.append(str(ticker))
-
         return tickers
 
     def _fetch_option_expirations(self, ticker: str) -> dict:
@@ -221,29 +242,21 @@ class Command(BaseCommand):
             params={"symbol": ticker},
             headers=API_HEADERS,
         )
-
         ticker_id = self._extract_ticker_id(payload)
         dates = self._extract_option_dates(payload)
-
         if ticker_id is None:
             raise CommandError("Missing expected data in Seeking Alpha response")
-
         return {"ticker_id": ticker_id, "dates": dates}
 
     def _fetch_last_price(self, ticker: str) -> Decimal | None:
         params = {"symbols": ticker}
-        prepared = requests.Request(
-            "GET", PROFILE_ENDPOINT, params=params
-        ).prepare()
+        prepared = requests.Request("GET", PROFILE_ENDPOINT, params=params).prepare()
         self.stdout.write(f"Fetching profile data from {prepared.url}")
 
-        payload = self._fetch_json(
-            PROFILE_ENDPOINT,
-            params=params,
-            headers=API_HEADERS,
-        )
-
-        return self._extract_last_price(payload)
+        payload = self._fetch_json(PROFILE_ENDPOINT, params=params, headers=API_HEADERS)
+        l_price = self._extract_last_price(payload)
+        print(f"Last Price for {ticker}:{l_price}")
+        return l_price
 
     def _extract_option_dates(self, payload: Any) -> list[str]:
         data_section = payload
@@ -255,7 +268,7 @@ class Command(BaseCommand):
             source = attributes if isinstance(attributes, dict) else data_section
             dates = source.get("dates")
             if isinstance(dates, list):
-                return [str(value) for value in dates if value is not None]
+                return [str(v) for v in dates if v is not None]
         elif isinstance(data_section, list):
             for entry in data_section:
                 if not isinstance(entry, dict):
@@ -264,8 +277,7 @@ class Command(BaseCommand):
                 source = attributes if isinstance(attributes, dict) else entry
                 dates = source.get("dates")
                 if isinstance(dates, list):
-                    return [str(value) for value in dates if value is not None]
-
+                    return [str(v) for v in dates if v is not None]
         return []
 
     def _extract_ticker_id(self, payload: Any) -> str | None:
@@ -288,69 +300,75 @@ class Command(BaseCommand):
                 ticker_id = source.get("ticker_id")
                 if ticker_id is not None:
                     return str(ticker_id)
-
         return None
+
+    # -------------------------
+    # Date logic
+    # -------------------------
+
+    def _parse_expiration_dates(self, dates: Iterable[str]) -> list[date]:
+        """Parse dates, drop malformed, de-duplicate, return sorted ascending."""
+        parsed: set[date] = set()
+        for s in dates:
+            try:
+                parsed.add(datetime.strptime(str(s), "%m/%d/%Y").date())
+            except ValueError:
+                continue
+        return sorted(parsed)
 
     def _select_closest_dates(
         self, dates: Iterable[str], today: date, upper_bound: date
     ) -> list[date]:
-        """
-        Return up to two expiration dates that are closest to the 31-day cutoff.
-
-        Dates are filtered to the window [today, upper_bound] and then ordered by
-        proximity to the upper bound so the nearest eligible expirations are
-        returned first.
-        """
-
         valid_dates: list[date] = []
         for date_string in dates:
             try:
                 parsed_date = datetime.strptime(date_string, "%m/%d/%Y").date()
-            except ValueError:  # pragma: no cover - malformed upstream data
+            except ValueError:  # pragma: no cover
                 continue
-
             if today <= parsed_date <= upper_bound:
                 valid_dates.append(parsed_date)
-        return sorted(valid_dates, key=lambda candidate: (upper_bound - candidate).days)[
-            :2
-        ]
+
+        return sorted(valid_dates, key=lambda d: (upper_bound - d).days)[:2]
 
     def _select_furthest_date(self, dates: Iterable[str]) -> date | None:
         furthest: date | None = None
         for date_string in dates:
             try:
                 parsed_date = datetime.strptime(str(date_string), "%m/%d/%Y").date()
-            except ValueError:  # pragma: no cover - malformed upstream data
+            except ValueError:  # pragma: no cover
                 continue
-
             if furthest is None or parsed_date > furthest:
                 furthest = parsed_date
-
         return furthest
 
-    def _calculate_options_suitability(self, dates: list[str]) -> int:
-        if not dates:
-            return -1
+    def _weekly_suitability_details(
+        self, dates: list[str], today: date
+    ) -> tuple[int, str, list[date], date | None]:
+        """
+        Rule:
+          - take the next 3 expiration dates from today (>= today)
+          - suitability = 1 if they are exactly 7 days apart consecutively
+            (d2-d1 == 7 and d3-d2 == 7)
+          - return chosen_option_exp = d3 when suitable else None
+        """
+        parsed = self._parse_expiration_dates(dates)
+        upcoming = [d for d in parsed if d >= today]
 
-        today = date.today()
-        if today.month == 12:
-            target_month = 1
-            target_year = today.year + 1
-        else:
-            target_month = today.month + 1
-            target_year = today.year
+        if len(upcoming) < 3:
+            return 0, f"Not enough upcoming expirations (have {len(upcoming)}, need 3).", upcoming[:3], None
 
-        expirations_next_month = 0
-        for value in dates:
-            try:
-                expiration = datetime.strptime(str(value), "%m/%d/%Y").date()
-            except ValueError:
-                continue
+        next_three = upcoming[:3]
+        gap1 = (next_three[1] - next_three[0]).days
+        gap2 = (next_three[2] - next_three[1]).days
 
-            if expiration.year == target_year and expiration.month == target_month:
-                expirations_next_month += 1
+        if gap1 == 7 and gap2 == 7:
+            return 1, f"Weekly chain OK (gaps: {gap1}, {gap2}).", next_three, next_three[2]
 
-        return 1 if expirations_next_month >= 3 else 0
+        return 0, f"Weekly chain FAIL (gaps: {gap1}, {gap2}; need 7,7).", next_three, None
+
+    # -------------------------
+    # Price parsing / id coercion
+    # -------------------------
 
     def _extract_last_price(self, payload: Any) -> Decimal | None:
         data_section = payload
