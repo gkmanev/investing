@@ -96,11 +96,13 @@ class Command(BaseCommand):
             implied_vol_display = self._format_implied_volatility(
                 matching_option.get("implied_volatility")
             )
+            delta_display = self._format_delta(matching_option.get("delta"))
             formatted_option = (
                 f"{matching_option['symbol']} (strike {matching_option['strike_price']}, "
                 f"bid {matching_option.get('bid', 'N/A')}, "
                 f"opt_val {opt_val_display}%, "
-                f"iv {implied_vol_display}%)"
+                f"iv {implied_vol_display}%, "
+                f"delta {delta_display})"
             )
             summary = (
                 f"{investment.ticker}: put option at strike {target_strike} below "
@@ -177,6 +179,13 @@ class Command(BaseCommand):
                 strike_price=strike_price,
                 time_to_expiration=time_to_expiration,
                 risk_free_rate=risk_free_rate,
+            )
+            option_with_value["delta"] = self._calculate_delta(
+                spot_price=spot_price,
+                strike_price=strike_price,
+                time_to_expiration=time_to_expiration,
+                risk_free_rate=risk_free_rate,
+                implied_volatility=option_with_value["implied_volatility"],
             )
             filtered.append((strike_price, option_with_value))
 
@@ -304,6 +313,47 @@ class Command(BaseCommand):
         return Decimal(str(low * 100)).quantize(Decimal("0.01"))
 
     @staticmethod
+    def _calculate_delta(
+        *,
+        spot_price: Decimal | None,
+        strike_price: Decimal,
+        time_to_expiration: Decimal | None,
+        risk_free_rate: Decimal | None,
+        implied_volatility: Decimal | None,
+    ) -> Decimal | None:
+        """Calculate the Black-Scholes delta for a put option."""
+
+        if (
+            spot_price is None
+            or time_to_expiration is None
+            or risk_free_rate is None
+            or implied_volatility is None
+        ):
+            return None
+
+        if spot_price <= 0 or strike_price <= 0 or time_to_expiration <= 0:
+            return None
+
+        try:
+            spot = float(spot_price)
+            strike = float(strike_price)
+            time_years = float(time_to_expiration)
+            rate = float(risk_free_rate)
+            volatility = float(implied_volatility) / 100.0
+        except (TypeError, ValueError):
+            return None
+
+        if volatility <= 0:
+            return None
+
+        sqrt_time = math.sqrt(time_years)
+        d1 = (
+            math.log(spot / strike) + (rate + 0.5 * volatility**2) * time_years
+        ) / (volatility * sqrt_time)
+        delta = 0.5 * (1.0 + math.erf(d1 / math.sqrt(2.0))) - 1.0
+        return Decimal(str(delta)).quantize(Decimal("0.01"))
+
+    @staticmethod
     def _to_decimal(value: Any) -> Decimal | None:
         """Convert a value to Decimal, returning None when conversion fails."""
 
@@ -329,6 +379,15 @@ class Command(BaseCommand):
             return "N/A"
 
         return f"{implied_volatility}"
+
+    @staticmethod
+    def _format_delta(delta: Decimal | None) -> str:
+        """Convert an optional delta to a printable string."""
+
+        if delta is None:
+            return "N/A"
+
+        return f"{delta}"
 
     def _update_investment_opt_val(
         self, investment: Investment, opt_val: Decimal | None
