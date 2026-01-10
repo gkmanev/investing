@@ -76,10 +76,25 @@ class Command(BaseCommand):
                 time_to_expiration=time_to_expiration,
                 risk_free_rate=risk_free_rate,
             )
+            roi_candidates = self._filter_roi_candidates(
+                put_options,
+                roi_threshold=Decimal("2.5"),
+                delta_lower=Decimal("-0.34"),
+                delta_upper=Decimal("-0.25"),
+            )
             recent_puts = self._format_recent_puts(put_options, investment.price)
 
             target_strike = self._target_strike(investment.price)
             matching_option = self._find_option_by_strike(put_options, target_strike)
+
+            for option in roi_candidates:
+                roi_display = self._format_opt_val(option.get("roi"))
+                delta_display = self._format_delta(option.get("delta"))
+                self.stdout.write(
+                    f"{investment.ticker}: ROI {roi_display}% at strike "
+                    f"{option.get('strike_price', 'N/A')} bid {option.get('bid', 'N/A')} "
+                    f"delta {delta_display}"
+                )
 
             if matching_option is None:
                 self.stdout.write(
@@ -191,6 +206,46 @@ class Command(BaseCommand):
 
         filtered.sort(key=lambda item: item[0], reverse=True)
         return [option for _, option in filtered]
+
+    def _filter_roi_candidates(
+        self,
+        options: list[dict[str, Any]],
+        *,
+        roi_threshold: Decimal,
+        delta_lower: Decimal,
+        delta_upper: Decimal,
+    ) -> list[dict[str, Any]]:
+        """Return options whose delta range and ROI exceed the threshold."""
+
+        candidates: list[dict[str, Any]] = []
+        for option in options:
+            delta_raw = option.get("delta")
+            if delta_raw is None:
+                continue
+
+            delta_decimal = self._to_decimal(delta_raw)
+            if delta_decimal is None:
+                continue
+
+            if not (delta_lower <= delta_decimal <= delta_upper):
+                continue
+
+            try:
+                strike_price = Decimal(str(option.get("strike_price")))
+            except (InvalidOperation, TypeError):
+                continue
+
+            roi = self._calculate_option_value(
+                bid_price=option.get("bid"), strike_price=strike_price
+            )
+            if roi is None or roi <= roi_threshold:
+                continue
+
+            option_with_roi = dict(option)
+            option_with_roi["roi"] = roi
+            candidates.append(option_with_roi)
+
+        return candidates
 
     @staticmethod
     def _target_strike(max_price: Decimal) -> Decimal:
