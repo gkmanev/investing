@@ -61,6 +61,7 @@ class Command(BaseCommand):
                 continue
 
             put_options = self._filter_put_options(options_payload, investment.price)
+            recent_puts = self._format_recent_puts(put_options, investment.price)
 
             target_strike = self._target_strike(investment.price)
             matching_option = self._find_option_by_strike(put_options, target_strike)
@@ -68,7 +69,7 @@ class Command(BaseCommand):
             if matching_option is None:
                 self.stdout.write(
                     f"{investment.ticker}: no put option at strike {target_strike} "
-                    f"below price {investment.price}."
+                    f"below price {investment.price}. {recent_puts}"
                 )
                 continue
 
@@ -84,7 +85,7 @@ class Command(BaseCommand):
             )
             summary = (
                 f"{investment.ticker}: put option at strike {target_strike} below "
-                f"{investment.price}: {formatted_option}"
+                f"{investment.price}: {formatted_option}. {recent_puts}"
             )
             self.stdout.write(summary)
             summaries.append(summary)
@@ -224,6 +225,24 @@ class Command(BaseCommand):
 
         investment.opt_val = opt_val
         investment.save(update_fields=["opt_val"])
+
+    @staticmethod
+    def _format_recent_puts(
+        put_options: list[dict[str, Any]], price: Decimal
+    ) -> str:
+        """Return a summary of the last three strike/bid values below price."""
+
+        if not put_options:
+            return f"No puts found below {price}."
+
+        recent = put_options[:3]
+        formatted = []
+        for option in recent:
+            strike = option.get("strike_price", "N/A")
+            bid = option.get("bid", "N/A")
+            formatted.append(f"strike {strike} bid {bid}")
+
+        return f"Last three strikes below {price}: {', '.join(formatted)}."
 
     def _extract_options(self, payload: Any) -> list[dict[str, Any]]:
         if isinstance(payload, list):
