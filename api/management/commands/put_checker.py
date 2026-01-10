@@ -15,6 +15,9 @@ API_HEADERS = {
     "x-rapidapi-key": "66dcbafb75msha536f3086b06788p1f5e7ajsnac1315877f0f",
     "x-rapidapi-host": "seeking-alpha.p.rapidapi.com",
 }
+ROI_THRESHOLD = Decimal("2.5")
+DELTA_LOWER = Decimal("-0.34")
+DELTA_UPPER = Decimal("-0.25")
 
 
 class Command(BaseCommand):
@@ -78,57 +81,35 @@ class Command(BaseCommand):
             )
             roi_candidates = self._filter_roi_candidates(
                 put_options,
-                roi_threshold=Decimal("2.5"),
-                delta_lower=Decimal("-0.34"),
-                delta_upper=Decimal("-0.25"),
+                roi_threshold=ROI_THRESHOLD,
+                delta_lower=DELTA_LOWER,
+                delta_upper=DELTA_UPPER,
             )
-            recent_puts = self._format_recent_puts(put_options, investment.price)
 
             target_strike = self._target_strike(investment.price)
             matching_option = self._find_option_by_strike(put_options, target_strike)
+            if matching_option is not None:
+                self._update_investment_opt_val(
+                    investment, matching_option.get("opt_val")
+                )
+
+            if not roi_candidates:
+                continue
 
             for option in roi_candidates:
                 roi_display = self._format_opt_val(option.get("roi"))
                 delta_display = self._format_delta(option.get("delta"))
-                self.stdout.write(
+                summary = (
                     f"{investment.ticker}: ROI {roi_display}% at strike "
                     f"{option.get('strike_price', 'N/A')} bid {option.get('bid', 'N/A')} "
                     f"delta {delta_display}"
                 )
-
-            if matching_option is None:
-                self.stdout.write(
-                    f"{investment.ticker}: no put option at strike {target_strike} "
-                    f"below price {investment.price}. {recent_puts}"
-                )
-                continue
-
-            self._update_investment_opt_val(
-                investment, matching_option.get("opt_val")
-            )
-
-            opt_val_display = self._format_opt_val(matching_option.get("opt_val"))
-            implied_vol_display = self._format_implied_volatility(
-                matching_option.get("implied_volatility")
-            )
-            delta_display = self._format_delta(matching_option.get("delta"))
-            formatted_option = (
-                f"{matching_option['symbol']} (strike {matching_option['strike_price']}, "
-                f"bid {matching_option.get('bid', 'N/A')}, "
-                f"opt_val {opt_val_display}%, "
-                f"iv {implied_vol_display}%, "
-                f"delta {delta_display})"
-            )
-            summary = (
-                f"{investment.ticker}: put option at strike {target_strike} below "
-                f"{investment.price}: {formatted_option}. {recent_puts}"
-            )
-            self.stdout.write(summary)
-            summaries.append(summary)
+                self.stdout.write(summary)
+                summaries.append(summary)
 
         if not summaries:
             raise CommandError(
-                "No put options found below stored prices for the selected investments."
+                "No put options met the ROI and delta thresholds for the selected investments."
             )
 
         return "\n".join(summaries)
