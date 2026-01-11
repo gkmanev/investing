@@ -216,8 +216,10 @@ class Command(BaseCommand):
             except (InvalidOperation, TypeError):
                 continue
 
-            roi = self._calculate_option_value(
-                bid_price=option.get("bid"), strike_price=strike_price
+            roi = self._calculate_roi_value(
+                bid_price=option.get("bid"),
+                ask_price=option.get("ask"),
+                strike_price=strike_price,
             )
             if roi is None or roi <= roi_threshold:
                 continue
@@ -254,7 +256,9 @@ class Command(BaseCommand):
         return None
 
     @staticmethod
-    def _calculate_option_value(*, bid_price: Any, strike_price: Decimal) -> Decimal | None:
+    def _calculate_option_value(
+        *, bid_price: Any, strike_price: Decimal
+    ) -> Decimal | None:
         """Return (bid / strike) * 100 as a Decimal.
 
         Returns ``None`` when prices are missing or invalid.
@@ -269,6 +273,31 @@ class Command(BaseCommand):
 
         try:
             percentage = (bid_decimal / strike_price) * Decimal("100")
+        except (InvalidOperation, DivisionByZero):
+            return None
+
+        return percentage.quantize(Decimal("0.01"))
+
+    @staticmethod
+    def _calculate_roi_value(
+        *, bid_price: Any, ask_price: Any, strike_price: Decimal
+    ) -> Decimal | None:
+        """Return ((bid + ask) / 2 / strike) * 100 as a Decimal.
+
+        Returns ``None`` when prices are missing or invalid.
+        """
+
+        bid_decimal = Command._to_decimal(bid_price)
+        ask_decimal = Command._to_decimal(ask_price)
+        if bid_decimal is None or ask_decimal is None:
+            return None
+
+        if strike_price == 0:
+            return None
+
+        try:
+            mid_price = (bid_decimal + ask_decimal) / Decimal("2")
+            percentage = (mid_price / strike_price) * Decimal("100")
         except (InvalidOperation, DivisionByZero):
             return None
 
