@@ -98,10 +98,12 @@ class Command(BaseCommand):
 
             for option in roi_candidates:
                 roi_display = self._format_opt_val(option.get("roi"))
+                mid_display = self._format_opt_val(option.get("mid"))
                 delta_display = self._format_delta(option.get("delta"))
                 summary = (
                     f"{investment.ticker}: ROI {roi_display}% at strike "
                     f"{option.get('strike_price', 'N/A')} bid {option.get('bid', 'N/A')} "
+                    f"ask {option.get('ask', 'N/A')} mid {mid_display} "
                     f"delta {delta_display}"
                 )
                 self.stdout.write(summary)
@@ -226,6 +228,10 @@ class Command(BaseCommand):
 
             option_with_roi = dict(option)
             option_with_roi["roi"] = roi
+            option_with_roi["mid"] = self._calculate_mid_price(
+                bid_price=option.get("bid"),
+                ask_price=option.get("ask"),
+            )
             candidates.append(option_with_roi)
 
         return candidates
@@ -302,6 +308,22 @@ class Command(BaseCommand):
             return None
 
         return percentage.quantize(Decimal("0.01"))
+
+    @staticmethod
+    def _calculate_mid_price(*, bid_price: Any, ask_price: Any) -> Decimal | None:
+        """Return (bid + ask) / 2 as a Decimal."""
+
+        bid_decimal = Command._to_decimal(bid_price)
+        ask_decimal = Command._to_decimal(ask_price)
+        if bid_decimal is None or ask_decimal is None:
+            return None
+
+        try:
+            mid_price = (bid_decimal + ask_decimal) / Decimal("2")
+        except (InvalidOperation, DivisionByZero):
+            return None
+
+        return mid_price.quantize(Decimal("0.01"))
 
     @staticmethod
     def _calculate_implied_volatility(
