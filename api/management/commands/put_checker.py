@@ -112,7 +112,7 @@ class Command(BaseCommand):
                 "No put options met the ROI and delta thresholds for the selected investments."
             )
 
-        return "\n".join(summaries)
+        return ""
 
     def _fetch_options(self, ticker_id: int, expiration_date: str) -> Any:
         params = {"ticker_id": str(ticker_id), "expiration_date": expiration_date}
