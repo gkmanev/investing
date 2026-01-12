@@ -2,3 +2,5 @@ Django>=4.2,<5.0
 djangorestframework>=3.14,<4.0
 
 requests>=2.31,<3.0
+yfinance>=0.2,<0.3
+pandas_ta>=0.3,<0.4
