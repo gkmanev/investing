@@ -76,6 +76,12 @@ class InvestmentViewSet(viewsets.ModelViewSet):
             field_name="options_suitability",
             param_name="options_suitability",
         )
+        queryset = self._apply_boolean_filter(
+            queryset,
+            params,
+            field_name="weekly_options",
+            param_name="weekly_options",
+        )
 
         return queryset
 
@@ -129,6 +135,15 @@ class InvestmentViewSet(viewsets.ModelViewSet):
 
         return queryset.filter(**{field_name: value})
 
+    def _apply_boolean_filter(
+        self, queryset, params: Mapping[str, str], *, field_name: str, param_name: str
+    ):
+        value = self._parse_boolean(params.get(param_name), param_name)
+        if value is None:
+            return queryset
+
+        return queryset.filter(**{field_name: value})
+
     def _parse_decimal(self, raw_value: str | None, field: str) -> Decimal | None:
         if raw_value is None:
             return None
@@ -146,6 +161,18 @@ class InvestmentViewSet(viewsets.ModelViewSet):
             return int(raw_value)
         except (TypeError, ValueError):
             raise ValidationError({field: "Enter a valid integer."})
+
+    def _parse_boolean(self, raw_value: str | None, field: str) -> bool | None:
+        if raw_value is None:
+            return None
+
+        normalized_value = raw_value.strip().lower()
+        if normalized_value in {"true", "1", "yes", "y"}:
+            return True
+        if normalized_value in {"false", "0", "no", "n"}:
+            return False
+
+        raise ValidationError({field: "Enter a valid boolean."})
 
 
 class ScreenerTypeViewSet(viewsets.ModelViewSet):
