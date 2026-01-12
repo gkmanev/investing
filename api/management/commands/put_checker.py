@@ -33,7 +33,6 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args: Any, **options: Any) -> str:
-        rapidapi_calls = 0
         screener_type: str = options["screener_type"]
         investments = Investment.objects.filter(
             options_suitability=1, screener_type=screener_type
@@ -71,7 +70,6 @@ class Command(BaseCommand):
             except CommandError as exc:
                 self.stderr.write(f"{investment.ticker}: {exc}")
                 continue
-            rapidapi_calls += 1
 
             time_to_expiration = self._time_to_expiration_years(investment.option_exp)
             put_options = self._filter_put_options(
@@ -117,7 +115,6 @@ class Command(BaseCommand):
                 "No put options met the ROI and delta thresholds for the selected investments."
             )
 
-        self.stdout.write(f"RapidAPI calls: {rapidapi_calls}")
         return ""
 
     def _fetch_options(self, ticker_id: int, expiration_date: str) -> Any:

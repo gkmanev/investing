@@ -85,7 +85,6 @@ class Command(BaseCommand):
             ),
         )
     def handle(self, *args: Any, **options: Any) -> str:
-        rapidapi_calls = 0
         screener_name: str = options["screener_name"]
         page: int = options["page"]
         per_page: int = options["per_page"]
@@ -164,7 +163,6 @@ class Command(BaseCommand):
                     "Received unexpected status code "
                     f"{response.status_code}: {response.text}"
                 )
-            rapidapi_calls += 1
 
             try:
                 response_payload = response.json()
@@ -188,7 +186,6 @@ class Command(BaseCommand):
             )
 
         self._sync_investments(all_ticker_names, asset_type, screener_name)
-        self.stdout.write(f"RapidAPI calls: {rapidapi_calls}")
 
         formatted_payload = "\n".join(all_ticker_names)
         return formatted_payload
@@ -597,3 +594,4 @@ class Command(BaseCommand):
                     )
 
         return names
+
