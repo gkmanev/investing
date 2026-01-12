@@ -61,6 +61,21 @@ class Investment(models.Model):
         return self.ticker
 
 
+class CboeSecurity(models.Model):
+    """Tracks tickers with weekly options availability from CBOE."""
+
+    symbol = models.CharField(max_length=25, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["symbol"]
+        db_table = "cboe_securities"
+
+    def __str__(self) -> str:  # pragma: no cover - simple data representation
+        return self.symbol
+
+
 class FinancialStatement(models.Model):
     """Stores a raw financial statement payload for a symbol."""
 
