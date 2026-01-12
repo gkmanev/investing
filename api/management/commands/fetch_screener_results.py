@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import copy
 import csv
 import io
 import json
+from pathlib import Path
 from typing import Any, Iterable, List
-import copy
 
 import requests
 from django.core.management.base import BaseCommand, CommandError
@@ -14,21 +15,14 @@ from api.management.commands.rapidapi_counter import log_rapidapi_fetch
 from api.models import CboeSecurity, Investment, ScreenerType
 
 API_URL = "https://seeking-alpha.p.rapidapi.com/screeners/get-results"
-CBOE_WEEKLY_OPTIONS_URL = "https://www.cboe.com/available_weeklys/get_csv_download/"
+CBOE_WEEKLY_OPTIONS_PATH = (
+    Path(__file__).resolve().parent / "CBOE" / "cboe_weeklys.csv"
+)
 API_HEADERS = {
     "x-rapidapi-key": "66dcbafb75msha536f3086b06788p1f5e7ajsnac1315877f0f",
     "x-rapidapi-host": "seeking-alpha.p.rapidapi.com",
     "Content-Type": "application/json",
 }
-CBOE_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-    ),
-    "Accept": "text/csv,text/plain,application/csv,*/*",
-    "Accept-Language": "en-US,en;q=0.9",
-}
-
 
 class Command(BaseCommand):
     """Fetch screener results using previously stored filters."""
@@ -626,28 +620,27 @@ class Command(BaseCommand):
         return names
 
     def _fetch_weekly_option_tickers(self) -> set[str] | None:
-        try:
-            response = requests.get(
-                CBOE_WEEKLY_OPTIONS_URL, headers=CBOE_HEADERS, timeout=30
-            )
-        except requests.RequestException as exc:  # pragma: no cover - network failure
+        if not CBOE_WEEKLY_OPTIONS_PATH.exists():
             self.stderr.write(
-                f"Failed to fetch CBOE weekly options list: {exc}. "
+                "CBOE weekly options list was not found at "
+                f"{CBOE_WEEKLY_OPTIONS_PATH}. Continuing without weekly options data."
+            )
+            return None
+
+        try:
+            csv_text = CBOE_WEEKLY_OPTIONS_PATH.read_text(
+                encoding="utf-8-sig", errors="replace"
+            )
+        except OSError as exc:
+            self.stderr.write(
+                f"Failed to read CBOE weekly options list: {exc}. "
                 "Continuing without weekly options data."
             )
             return None
 
-        if response.status_code != 200:
-            self.stderr.write(
-                "Received unexpected status code "
-                f"{response.status_code} from CBOE weekly options list."
-            )
-            return None
-
-        csv_text = response.content.decode("utf-8-sig", errors="replace")
         if not csv_text.strip():
             self.stderr.write(
-                "CBOE weekly options response was empty after decoding."
+                "CBOE weekly options list was empty after decoding."
             )
             return None
 
