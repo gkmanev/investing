@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import io
 import json
 from typing import Any, Iterable, List
 import copy
@@ -12,6 +14,7 @@ from api.management.commands.rapidapi_counter import log_rapidapi_fetch
 from api.models import Investment, ScreenerType
 
 API_URL = "https://seeking-alpha.p.rapidapi.com/screeners/get-results"
+CBOE_WEEKLY_OPTIONS_URL = "https://cdn.cboe.com/resources/options/weekly_options.csv"
 API_HEADERS = {
     "x-rapidapi-key": "66dcbafb75msha536f3086b06788p1f5e7ajsnac1315877f0f",
     "x-rapidapi-host": "seeking-alpha.p.rapidapi.com",
@@ -187,7 +190,13 @@ class Command(BaseCommand):
                 "Seeking Alpha API response did not include any ticker names."
             )
 
-        self._sync_investments(all_ticker_names, asset_type, screener_name)
+        weekly_option_tickers = self._fetch_weekly_option_tickers()
+        self._sync_investments(
+            all_ticker_names,
+            asset_type,
+            screener_name,
+            weekly_option_tickers=weekly_option_tickers,
+        )
 
         formatted_payload = "\n".join(all_ticker_names)
         return formatted_payload
@@ -196,18 +205,27 @@ class Command(BaseCommand):
         Investment.objects.filter(screener_type=screener_name).delete()
 
     def _sync_investments(
-        self, tickers: Iterable[str], asset_type: str, screener_name: str
+        self,
+        tickers: Iterable[str],
+        asset_type: str,
+        screener_name: str,
+        *,
+        weekly_option_tickers: set[str] | None,
     ) -> None:
         for ticker in tickers:
             ticker_value = ticker.strip()
             if not ticker_value:
                 continue
+            weekly_options = None
+            if weekly_option_tickers is not None:
+                weekly_options = ticker_value.upper() in weekly_option_tickers
 
             Investment.objects.update_or_create(
                 ticker=ticker_value,
                 defaults={
                     "category": asset_type,
                     "screener_type": screener_name,
+                    "weekly_options": weekly_options,
                 },
             )
 
@@ -598,3 +616,63 @@ class Command(BaseCommand):
                     )
 
         return names
+
+    def _fetch_weekly_option_tickers(self) -> set[str] | None:
+        try:
+            response = requests.get(CBOE_WEEKLY_OPTIONS_URL, timeout=30)
+        except requests.RequestException as exc:  # pragma: no cover - network failure
+            self.stderr.write(
+                f"Failed to fetch CBOE weekly options list: {exc}. "
+                "Continuing without weekly options data."
+            )
+            return None
+
+        if response.status_code != 200:
+            self.stderr.write(
+                "Received unexpected status code "
+                f"{response.status_code} from CBOE weekly options list."
+            )
+            return None
+
+        weekly_options = self._parse_weekly_options_csv(response.text)
+        if not weekly_options:
+            self.stderr.write(
+                "CBOE weekly options list did not include any tickers."
+            )
+            return None
+        return weekly_options
+
+    def _parse_weekly_options_csv(self, csv_text: str) -> set[str]:
+        stream = io.StringIO(csv_text)
+        try:
+            has_header = csv.Sniffer().has_header(csv_text[:1024])
+        except csv.Error:
+            has_header = True
+
+        tickers: set[str] = set()
+        if has_header:
+            reader = csv.DictReader(stream)
+            for row in reader:
+                if not isinstance(row, dict):
+                    continue
+                symbol = self._extract_weekly_symbol(row)
+                if symbol:
+                    tickers.add(symbol)
+            return tickers
+
+        stream.seek(0)
+        reader = csv.reader(stream)
+        for row in reader:
+            if not row:
+                continue
+            symbol = str(row[0]).strip().upper()
+            if symbol:
+                tickers.add(symbol)
+        return tickers
+
+    def _extract_weekly_symbol(self, row: dict[str, Any]) -> str | None:
+        for key in ("symbol", "Symbol", "ticker", "Ticker", "root", "Root"):
+            value = row.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip().upper()
+        return None
