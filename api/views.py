@@ -55,10 +55,10 @@ class InvestmentViewSet(viewsets.ModelViewSet):
         queryset = self._apply_decimal_filter(
             queryset,
             params,
-            field_name="opt_val",
-            exact_param="opt_val",
-            min_param="min_opt_val",
-            max_param="max_opt_val",
+            field_name="roi",
+            exact_param="roi",
+            min_param="min_roi",
+            max_param="max_roi",
         )
         queryset = self._apply_decimal_filter(
             queryset,

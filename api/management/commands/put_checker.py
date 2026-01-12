@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
-from decimal import Decimal, DivisionByZero, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal, DivisionByZero, InvalidOperation
 import math
 from typing import Any
 
@@ -87,19 +87,16 @@ class Command(BaseCommand):
                 delta_upper=DELTA_UPPER,
             )
 
-            target_strike = self._target_strike(investment.price)
-            matching_option = self._find_option_by_strike(put_options, target_strike)
-            if matching_option is not None:
-                self._update_investment_opt_val(
-                    investment, matching_option.get("opt_val")
-                )
+            roi_target = self._select_roi_candidate(roi_candidates)
+            if roi_target is not None:
+                self._update_investment_roi(investment, roi_target.get("roi"))
 
             if not roi_candidates:
                 continue
 
             for option in roi_candidates:
-                roi_display = self._format_opt_val(option.get("roi"))
-                mid_display = self._format_opt_val(option.get("mid"))
+                roi_display = self._format_value(option.get("roi"))
+                mid_display = self._format_value(option.get("mid"))
                 delta_display = self._format_delta(option.get("delta"))
                 rsi_display = self._format_rsi(investment.rsi)
                 summary = (
@@ -171,9 +168,6 @@ class Command(BaseCommand):
                 continue
 
             option_with_value = dict(option)
-            option_with_value["opt_val"] = self._calculate_option_value(
-                bid_price=option.get("bid"), strike_price=strike_price
-            )
             option_with_value["implied_volatility"] = self._calculate_implied_volatility(
                 option_price=option.get("bid"),
                 spot_price=spot_price,
@@ -239,53 +233,23 @@ class Command(BaseCommand):
 
         return candidates
 
-    @staticmethod
-    def _target_strike(max_price: Decimal) -> Decimal:
-        """Round the current price to the nearest integer and subtract two."""
-
-        max_price_decimal = Decimal(str(max_price))
-        rounded_price = max_price_decimal.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-        return rounded_price - Decimal(2)
-
-    @staticmethod
-    def _find_option_by_strike(
-        options: list[dict[str, Any]], target_strike: Decimal
+    def _select_roi_candidate(
+        self, roi_candidates: list[dict[str, Any]]
     ) -> dict[str, Any] | None:
-        """Return the first option whose strike matches the target value."""
+        """Return the ROI candidate with the lowest absolute delta."""
 
-        for option in options:
-            try:
-                strike_price = Decimal(str(option.get("strike_price")))
-            except (InvalidOperation, TypeError):
+        best_option: dict[str, Any] | None = None
+        best_delta: Decimal | None = None
+        for option in roi_candidates:
+            delta_decimal = self._to_decimal(option.get("delta"))
+            if delta_decimal is None:
                 continue
 
-            if strike_price == target_strike:
-                return option
+            if best_delta is None or abs(delta_decimal) < abs(best_delta):
+                best_delta = delta_decimal
+                best_option = option
 
-        return None
-
-    @staticmethod
-    def _calculate_option_value(
-        *, bid_price: Any, strike_price: Decimal
-    ) -> Decimal | None:
-        """Return (bid / strike) * 100 as a Decimal.
-
-        Returns ``None`` when prices are missing or invalid.
-        """
-
-        bid_decimal = Command._to_decimal(bid_price)
-        if bid_decimal is None:
-            return None
-
-        if strike_price == 0:
-            return None
-
-        try:
-            percentage = (bid_decimal / strike_price) * Decimal("100")
-        except (InvalidOperation, DivisionByZero):
-            return None
-
-        return percentage.quantize(Decimal("0.01"))
+        return best_option
 
     @staticmethod
     def _calculate_roi_value(
@@ -453,13 +417,13 @@ class Command(BaseCommand):
             return None
 
     @staticmethod
-    def _format_opt_val(opt_val: Decimal | None) -> str:
-        """Convert an optional opt_val to a printable string."""
+    def _format_value(value: Decimal | None) -> str:
+        """Convert an optional value to a printable string."""
 
-        if opt_val is None:
+        if value is None:
             return "N/A"
 
-        return f"{opt_val}"
+        return f"{value}"
 
     @staticmethod
     def _format_implied_volatility(implied_volatility: Decimal | None) -> str:
@@ -488,16 +452,16 @@ class Command(BaseCommand):
 
         return f"{rsi}"
 
-    def _update_investment_opt_val(
-        self, investment: Investment, opt_val: Decimal | None
+    def _update_investment_roi(
+        self, investment: Investment, roi: Decimal | None
     ) -> None:
-        """Persist the calculated opt_val on the investment if it changed."""
+        """Persist the calculated ROI on the investment if it changed."""
 
-        if opt_val == investment.opt_val:
+        if roi == investment.roi:
             return
 
-        investment.opt_val = opt_val
-        investment.save(update_fields=["opt_val"])
+        investment.roi = roi
+        investment.save(update_fields=["roi"])
 
     @staticmethod
     def _format_recent_puts(
