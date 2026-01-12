@@ -8,6 +8,7 @@ from typing import Any
 import requests
 from django.core.management.base import BaseCommand, CommandError
 
+from api.management.commands.rapidapi_counter import log_rapidapi_fetch
 from api.models import Investment
 
 API_URL = "https://seeking-alpha.p.rapidapi.com/symbols/v2/get-options"
@@ -125,6 +126,7 @@ class Command(BaseCommand):
             )
         except requests.RequestException as exc:  # pragma: no cover - network failure
             raise CommandError(f"Failed to call Seeking Alpha options API: {exc}") from exc
+        log_rapidapi_fetch(self)
 
         if response.status_code != 200:
             raise CommandError(

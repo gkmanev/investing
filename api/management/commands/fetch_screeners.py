@@ -10,6 +10,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
 from api.custom_filters import CUSTOM_FILTER_PAYLOAD
+from api.management.commands.rapidapi_counter import log_rapidapi_fetch
 from api.models import ScreenerFilter, ScreenerType
 
 API_URL = "https://seeking-alpha.p.rapidapi.com/screeners/list"
@@ -29,6 +30,7 @@ class Command(BaseCommand):
             response = requests.get(API_URL, headers=API_HEADERS, timeout=30)
         except requests.RequestException as exc:  # pragma: no cover - network failure
             raise CommandError(f"Failed to call Seeking Alpha API: {exc}") from exc
+        log_rapidapi_fetch(self)
 
         if response.status_code != 200:
             raise CommandError(
@@ -381,4 +383,3 @@ def _remove_industry_id(payload: Any) -> Tuple[Any, bool]:
         return updated_list, changed
 
     return payload, False
-
