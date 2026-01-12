@@ -89,7 +89,11 @@ class Command(BaseCommand):
 
             roi_target = self._select_roi_candidate(roi_candidates)
             if roi_target is not None:
-                self._update_investment_roi(investment, roi_target.get("roi"))
+                self._update_investment_roi(
+                    investment,
+                    roi=roi_target.get("roi"),
+                    delta=self._to_decimal(roi_target.get("delta")),
+                )
 
             if not roi_candidates:
                 continue
@@ -453,15 +457,16 @@ class Command(BaseCommand):
         return f"{rsi}"
 
     def _update_investment_roi(
-        self, investment: Investment, roi: Decimal | None
+        self, investment: Investment, *, roi: Decimal | None, delta: Decimal | None
     ) -> None:
-        """Persist the calculated ROI on the investment if it changed."""
+        """Persist the calculated ROI and delta on the investment if they changed."""
 
-        if roi == investment.roi:
+        if roi == investment.roi and delta == investment.delta:
             return
 
         investment.roi = roi
-        investment.save(update_fields=["roi"])
+        investment.delta = delta
+        investment.save(update_fields=["roi", "delta"])
 
     @staticmethod
     def _format_recent_puts(
