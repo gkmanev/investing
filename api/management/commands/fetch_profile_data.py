@@ -206,8 +206,21 @@ class Command(BaseCommand):
             raise CommandError(f"Failed to call '{url}': {exc}") from exc
 
         if response.status_code != 200:
+            content_type = response.headers.get("Content-Type", "")
+            if "text/html" in content_type:
+                raise CommandError(
+                    "Received an HTML error response from "
+                    f"'{url}'. Check the server logs for details."
+                )
             raise CommandError(
                 f"Received unexpected status code {response.status_code} from '{url}': {response.text}"
+            )
+
+        content_type = response.headers.get("Content-Type", "")
+        if "text/html" in content_type:
+            raise CommandError(
+                f"Received HTML from '{url}' when JSON was expected. "
+                "Check that the endpoint is healthy and returning JSON."
             )
 
         try:
