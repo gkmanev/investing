@@ -9,7 +9,7 @@ import requests
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
-from api.custom_filters import CUSTOM_FILTER_PAYLOAD
+from api.custom_filters import CUSTOM_FILTER_PAYLOAD, EXCHANGE_FILTER_PAYLOAD
 from api.management.commands.rapidapi_counter import log_rapidapi_fetch
 from api.models import ScreenerFilter, ScreenerType
 
@@ -53,6 +53,7 @@ class Command(BaseCommand):
                 name = attributes["name"]
                 description = _extract_description(attributes)
                 filter_specs = _extract_filters(attributes, index)
+                filter_specs = _ensure_exchange_filter(filter_specs)
 
                 screener_type, _ = ScreenerType.objects.update_or_create(
                     name=name,
@@ -87,6 +88,25 @@ def _build_custom_filter() -> FilterSpec:
     )
 
 
+def _ensure_exchange_filter(filter_specs: List[FilterSpec]) -> List[FilterSpec]:
+    """Ensure the exchange include filter is present on all screeners."""
+
+    for spec in filter_specs:
+        payload = spec.payload
+        if isinstance(payload, dict) and "exchange" in payload:
+            return filter_specs
+
+    exchange_payload = copy.deepcopy(EXCHANGE_FILTER_PAYLOAD)
+    exchange_label = _format_filter_label(exchange_payload, 0, 0)
+    if not exchange_label:
+        return filter_specs
+
+    return [
+        *filter_specs,
+        FilterSpec(label=exchange_label, payload=exchange_payload),
+    ]
+
+
 def _ensure_custom_filter() -> str:
     """Persist the shared custom filter as its own screener entry."""
 
@@ -101,6 +121,7 @@ def _ensure_custom_filter() -> str:
     _synchronise_filters(screener_type, [filter_spec])
 
     return _format_entry(screener_type.name, [filter_spec.label])
+
 
 def _extract_attributes(item: Any, index: int) -> dict[str, Any]:
     attributes = item.get("attributes") if isinstance(item, dict) else None

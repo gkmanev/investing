@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-CUSTOM_FILTER_PAYLOAD = {
+EXCHANGE_FILTER_PAYLOAD = {
     "exchange": {
         "include": [
             "New York Stock Exchange(NYSE)",
@@ -10,7 +10,11 @@ CUSTOM_FILTER_PAYLOAD = {
             "Nasdaq Global Market(NasdaqGM)",
             "The Toronto Stock Exchange(TSX)",
         ]
-    },
+    }
+}
+
+CUSTOM_FILTER_PAYLOAD = {
+    **EXCHANGE_FILTER_PAYLOAD,
     "marketcap_display": {"gte": 5_000_000_000},
     "quant_rating": {"include": ["buy", "strong_buy"]},
     "sell_side_rating": {"include": ["hold", "buy", "strong_buy"]},
@@ -24,4 +28,3 @@ CUSTOM_FILTER_PAYLOAD = {
     "altman_z_score": {"gte": 2},
     "cash_from_operations_as_reported": {"gte": 0},
 }
-
