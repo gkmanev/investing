@@ -11,10 +11,10 @@ from django.core.management.base import BaseCommand, CommandError
 
 from api.custom_filters import CUSTOM_FILTER_PAYLOAD, EXCHANGE_FILTER_PAYLOAD
 from api.management.commands.rapidapi_counter import log_rapidapi_fetch
-from api.models import Investment, ScreenerType
+from api.models import CboeSecurity, Investment, ScreenerType
 
 API_URL = "https://seeking-alpha.p.rapidapi.com/screeners/get-results"
-CBOE_WEEKLY_OPTIONS_URL = "https://cdn.cboe.com/resources/options/weekly_options.csv"
+CBOE_WEEKLY_OPTIONS_URL = "https://www.cboe.com/available_weeklys/get_csv_download/"
 API_HEADERS = {
     "x-rapidapi-key": "66dcbafb75msha536f3086b06788p1f5e7ajsnac1315877f0f",
     "x-rapidapi-host": "seeking-alpha.p.rapidapi.com",
@@ -640,7 +640,18 @@ class Command(BaseCommand):
                 "CBOE weekly options list did not include any tickers."
             )
             return None
+        self._sync_cboe_securities(weekly_options)
         return weekly_options
+
+    def _sync_cboe_securities(self, tickers: Iterable[str]) -> None:
+        cleaned_tickers = sorted({ticker.strip().upper() for ticker in tickers if ticker})
+        if not cleaned_tickers:
+            return
+
+        CboeSecurity.objects.all().delete()
+        CboeSecurity.objects.bulk_create(
+            [CboeSecurity(symbol=ticker) for ticker in cleaned_tickers]
+        )
 
     def _parse_weekly_options_csv(self, csv_text: str) -> set[str]:
         stream = io.StringIO(csv_text)
