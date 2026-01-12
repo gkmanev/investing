@@ -47,6 +47,7 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args: Any, **options: Any) -> str:
+        rapidapi_calls = 0
         screener_name: str = options["screener_name"]
         investments_payload = self._fetch_json(
             INVESTMENTS_ENDPOINT, params={"screener_type": screener_name}
@@ -84,6 +85,7 @@ class Command(BaseCommand):
                     "Continuing without options data."
                 )
                 continue
+            rapidapi_calls += 1
 
             # This is just informational printing (your existing 31-day window)
             closest_dates = self._select_closest_dates(
@@ -132,6 +134,7 @@ class Command(BaseCommand):
                         "Continuing without price data."
                     )
                 else:
+                    rapidapi_calls += 1
                     if last_price is None:
                         self.stdout.write(
                             f"{ticker}: suitability met but profile returned no price; "
@@ -192,6 +195,7 @@ class Command(BaseCommand):
         if not updated_tickers:
             raise CommandError("No investments were updated with options suitability data.")
 
+        self.stdout.write(f"RapidAPI calls: {rapidapi_calls}")
         return ", ".join(updated_tickers)
 
     # -------------------------
