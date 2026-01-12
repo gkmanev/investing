@@ -139,6 +139,8 @@ class Command(BaseCommand):
                         self.stdout.write(
                             f"{ticker}: suitability met with last price {last_price}."
                         )
+                    if rsi_value is not None:
+                        self.stdout.write(f"{ticker}: RSI {rsi_value}.")
 
             ticker_id_value = self._coerce_ticker_id(expiration_data.get("ticker_id"))
             defaults: dict[str, Any] = {"category": "stock"}
@@ -276,9 +278,6 @@ class Command(BaseCommand):
         payload = self._fetch_json(PROFILE_ENDPOINT, params=params, headers=API_HEADERS)
         last_price = self._extract_last_price(payload)
         rsi_value = self._extract_rsi(payload)
-        print(f"Last Price for {ticker}:{last_price}")
-        if rsi_value is not None:
-            print(f"RSI for {ticker}:{rsi_value}")
         return last_price, rsi_value
 
     def _extract_option_dates(self, payload: Any) -> list[str]:
