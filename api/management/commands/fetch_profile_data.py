@@ -11,6 +11,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
+from api.management.commands.rapidapi_counter import log_rapidapi_fetch
 from api.models import Investment
 
 BASE_URL = "http://127.0.0.1:8000"
@@ -208,6 +209,8 @@ class Command(BaseCommand):
             response = requests.get(url, params=params, headers=headers, timeout=30)
         except requests.RequestException as exc:  # pragma: no cover
             raise CommandError(f"Failed to call '{url}': {exc}") from exc
+        if headers and "x-rapidapi-key" in headers:
+            log_rapidapi_fetch(self)
 
         if response.status_code != 200:
             content_type = response.headers.get("Content-Type", "")

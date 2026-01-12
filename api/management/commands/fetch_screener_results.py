@@ -8,6 +8,7 @@ import requests
 from django.core.management.base import BaseCommand, CommandError
 
 from api.custom_filters import CUSTOM_FILTER_PAYLOAD
+from api.management.commands.rapidapi_counter import log_rapidapi_fetch
 from api.models import Investment, ScreenerType
 
 API_URL = "https://seeking-alpha.p.rapidapi.com/screeners/get-results"
@@ -157,6 +158,7 @@ class Command(BaseCommand):
                 )
             except requests.RequestException as exc:  # pragma: no cover - network failure
                 raise CommandError(f"Failed to call Seeking Alpha API: {exc}") from exc
+            log_rapidapi_fetch(self)
 
             if response.status_code != 200:
                 raise CommandError(
@@ -594,4 +596,3 @@ class Command(BaseCommand):
                     )
 
         return names
-
