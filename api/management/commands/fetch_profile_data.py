@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
-from typing import Any, Iterable
-
-import pandas_ta as ta
+from typing import Any, Iterable, Optional
+import pandas as pd
+from ta.momentum import RSIIndicator
 import requests
 import yfinance as yf
 from django.core.management.base import BaseCommand, CommandError
@@ -429,19 +429,44 @@ class Command(BaseCommand):
         except (InvalidOperation, ValueError):
             return None
 
-    def _fetch_rsi_value(self, ticker: str) -> Decimal | None:
-        data = yf.download(ticker, period="3mo", progress=False)
-        if data is None or data.empty or "Close" not in data.columns:
+    def _fetch_rsi_value(self, ticker: str) -> Optional[Decimal]:
+        df = yf.download(
+            ticker,
+            period="3mo",
+            progress=False,
+            actions=False,
+            auto_adjust=False,
+            group_by="column",   # helps avoid some multi-index layouts
+        )
+
+        if df is None or df.empty:
             return None
-        rsi_series = ta.rsi(data["Close"], length=14)
-        if rsi_series is None:
+
+        close = df.get("Close")
+        if close is None:
             return None
-        rsi_series = rsi_series.dropna()
-        if rsi_series.empty:
+
+        # ✅ Ensure 1D Series
+        if isinstance(close, pd.DataFrame):
+            # if it’s (n,1) take the only column
+            if close.shape[1] == 1:
+                close = close.iloc[:, 0]
+            else:
+                # multiple Close columns (often multi-ticker) — pick the ticker column if possible
+                close = close[ticker] if ticker in close.columns else close.iloc[:, 0]
+
+        close = close.dropna()
+        if close.empty:
             return None
+
+        rsi_series = RSIIndicator(close=close, window=14).rsi()
+        last = rsi_series.dropna().tail(1)
+        if last.empty:
+            return None
+
         try:
-            return Decimal(str(rsi_series.iloc[-1]))
-        except (InvalidOperation, ValueError):
+            return Decimal(str(last.iat[0]))
+        except (InvalidOperation, ValueError, TypeError):
             return None
 
     def _coerce_ticker_id(self, ticker_id: Any) -> int | None:
