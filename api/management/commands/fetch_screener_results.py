@@ -679,6 +679,25 @@ class Command(BaseCommand):
                 symbol = self._extract_weekly_symbol(row)
                 if symbol:
                     tickers.add(symbol)
+            if tickers:
+                return tickers
+
+            stream.seek(0)
+            reader = csv.reader(stream)
+            header_row = next(reader, [])
+            if header_row and any(
+                "symbol" in str(value).strip().lower() for value in header_row
+            ):
+                pass
+            else:
+                stream.seek(0)
+                reader = csv.reader(stream)
+            for row in reader:
+                if not row:
+                    continue
+                symbol = str(row[0]).strip().upper()
+                if symbol:
+                    tickers.add(symbol)
             return tickers
 
         stream.seek(0)
@@ -692,8 +711,19 @@ class Command(BaseCommand):
         return tickers
 
     def _extract_weekly_symbol(self, row: dict[str, Any]) -> str | None:
-        for key in ("symbol", "Symbol", "ticker", "Ticker", "root", "Root"):
-            value = row.get(key)
+        key_aliases = {
+            "symbol",
+            "ticker",
+            "root",
+            "underlying",
+            "underlying symbol",
+            "underlying_symbol",
+        }
+        for key, value in row.items():
+            if not isinstance(key, str):
+                continue
+            if key.strip().lower() not in key_aliases:
+                continue
             if isinstance(value, str) and value.strip():
                 return value.strip().upper()
         return None
