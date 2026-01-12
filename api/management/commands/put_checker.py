@@ -80,14 +80,18 @@ class Command(BaseCommand):
                 time_to_expiration=time_to_expiration,
                 risk_free_rate=risk_free_rate,
             )
-            roi_candidates = self._filter_roi_candidates(
+            roi_options = self._build_roi_options(
                 put_options,
-                roi_threshold=ROI_THRESHOLD,
                 delta_lower=DELTA_LOWER,
                 delta_upper=DELTA_UPPER,
             )
+            roi_candidates = [
+                option
+                for option in roi_options
+                if option.get("roi") is not None and option["roi"] > ROI_THRESHOLD
+            ]
 
-            roi_target = self._select_roi_candidate(roi_candidates)
+            roi_target = self._select_roi_candidate(roi_options)
             if roi_target is not None:
                 self._update_investment_roi(
                     investment,
@@ -201,6 +205,25 @@ class Command(BaseCommand):
     ) -> list[dict[str, Any]]:
         """Return options whose delta range and ROI exceed the threshold."""
 
+        candidates = [
+            option
+            for option in self._build_roi_options(
+                options, delta_lower=delta_lower, delta_upper=delta_upper
+            )
+            if option.get("roi") is not None and option["roi"] > roi_threshold
+        ]
+
+        return candidates
+
+    def _build_roi_options(
+        self,
+        options: list[dict[str, Any]],
+        *,
+        delta_lower: Decimal,
+        delta_upper: Decimal,
+    ) -> list[dict[str, Any]]:
+        """Return options with calculated ROI for the delta range."""
+
         candidates: list[dict[str, Any]] = []
         for option in options:
             delta_raw = option.get("delta")
@@ -224,7 +247,7 @@ class Command(BaseCommand):
                 ask_price=option.get("ask"),
                 strike_price=strike_price,
             )
-            if roi is None or roi <= roi_threshold:
+            if roi is None:
                 continue
 
             option_with_roi = dict(option)
