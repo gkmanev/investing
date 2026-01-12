@@ -20,6 +20,14 @@ API_HEADERS = {
     "x-rapidapi-host": "seeking-alpha.p.rapidapi.com",
     "Content-Type": "application/json",
 }
+CBOE_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+    ),
+    "Accept": "text/csv,text/plain,application/csv,*/*",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
 
 class Command(BaseCommand):
@@ -619,7 +627,9 @@ class Command(BaseCommand):
 
     def _fetch_weekly_option_tickers(self) -> set[str] | None:
         try:
-            response = requests.get(CBOE_WEEKLY_OPTIONS_URL, timeout=30)
+            response = requests.get(
+                CBOE_WEEKLY_OPTIONS_URL, headers=CBOE_HEADERS, timeout=30
+            )
         except requests.RequestException as exc:  # pragma: no cover - network failure
             self.stderr.write(
                 f"Failed to fetch CBOE weekly options list: {exc}. "
@@ -634,7 +644,14 @@ class Command(BaseCommand):
             )
             return None
 
-        weekly_options = self._parse_weekly_options_csv(response.text)
+        csv_text = response.content.decode("utf-8-sig", errors="replace")
+        if not csv_text.strip():
+            self.stderr.write(
+                "CBOE weekly options response was empty after decoding."
+            )
+            return None
+
+        weekly_options = self._parse_weekly_options_csv(csv_text)
         if not weekly_options:
             self.stderr.write(
                 "CBOE weekly options list did not include any tickers."
