@@ -25,6 +25,7 @@ class Command(BaseCommand):
     help = "Fetch screeners list from Seeking Alpha via RapidAPI"
 
     def handle(self, *args: Any, **options: Any) -> str:
+        rapidapi_calls = 0
         try:
             response = requests.get(API_URL, headers=API_HEADERS, timeout=30)
         except requests.RequestException as exc:  # pragma: no cover - network failure
@@ -34,6 +35,7 @@ class Command(BaseCommand):
             raise CommandError(
                 f"Received unexpected status code {response.status_code}: {response.text}"
             )
+        rapidapi_calls += 1
 
         try:
             payload = response.json()
@@ -67,6 +69,7 @@ class Command(BaseCommand):
 
         formatted_payload = "\n".join(formatted_entries)
         self.stdout.write(formatted_payload)
+        self.stdout.write(f"RapidAPI calls: {rapidapi_calls}")
         return formatted_payload
 
 
@@ -381,4 +384,3 @@ def _remove_industry_id(payload: Any) -> Tuple[Any, bool]:
         return updated_list, changed
 
     return payload, False
-

@@ -46,6 +46,7 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args: Any, **options: Any) -> str:
+        rapidapi_calls = 0
         symbol = str(options["symbol"]).strip()
         if not symbol:
             raise CommandError("Symbol cannot be empty.")
@@ -60,6 +61,7 @@ class Command(BaseCommand):
             period_type=period_type,
             statement_type=statement_type,
         )
+        rapidapi_calls += 1
 
         statement, created = FinancialStatement.objects.update_or_create(
             symbol=symbol.upper(),
@@ -76,6 +78,7 @@ class Command(BaseCommand):
             f"{statement.target_currency})."
         )
         self.stdout.write(message)
+        self.stdout.write(f"RapidAPI calls: {rapidapi_calls}")
         return message
 
     def _fetch_payload(
