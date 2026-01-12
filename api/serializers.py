@@ -23,6 +23,7 @@ class InvestmentSerializer(serializers.ModelSerializer):
             "market_cap",
             "options_suitability",
             "option_exp",
+            "weekly_options",
             "description",
             "roi",
             "created_at",
