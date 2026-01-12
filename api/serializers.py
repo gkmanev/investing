@@ -18,6 +18,7 @@ class InvestmentSerializer(serializers.ModelSerializer):
             "category",
             "screener_type",
             "price",
+            "rsi",
             "volume",
             "market_cap",
             "options_suitability",
