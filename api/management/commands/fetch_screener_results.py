@@ -7,7 +7,7 @@ import copy
 import requests
 from django.core.management.base import BaseCommand, CommandError
 
-from api.custom_filters import CUSTOM_FILTER_PAYLOAD
+from api.custom_filters import CUSTOM_FILTER_PAYLOAD, EXCHANGE_FILTER_PAYLOAD
 from api.management.commands.rapidapi_counter import log_rapidapi_fetch
 from api.models import Investment, ScreenerType
 
@@ -227,9 +227,11 @@ class Command(BaseCommand):
     def _build_payload(
         self, filters: Iterable[Any], *, include_custom_filters: bool = True
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = (
-            copy.deepcopy(CUSTOM_FILTER_PAYLOAD) if include_custom_filters else {}
-        )
+        payload: dict[str, Any] = copy.deepcopy(EXCHANGE_FILTER_PAYLOAD)
+        if include_custom_filters:
+            payload = self._merge_payload_dicts(
+                payload, copy.deepcopy(CUSTOM_FILTER_PAYLOAD)
+            )
         for filter_obj in filters:
             filter_payload = filter_obj.payload
             if not filter_payload:
