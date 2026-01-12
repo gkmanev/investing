@@ -120,9 +120,10 @@ class Command(BaseCommand):
                 )
 
             last_price = None
+            rsi_value = None
             if options_suitability == 1:
                 try:
-                    last_price = self._fetch_last_price(ticker)
+                    last_price, rsi_value = self._fetch_profile_snapshot(ticker)
                 except CommandError as exc:
                     self.stderr.write(
                         f"Failed to fetch profile for {ticker}: {exc}. "
@@ -165,6 +166,8 @@ class Command(BaseCommand):
 
             if last_price is not None:
                 investment.price = last_price
+            if rsi_value is not None:
+                investment.rsi = rsi_value
 
             if created:
                 investment.save()
@@ -172,6 +175,8 @@ class Command(BaseCommand):
                 update_fields = ["options_suitability", "option_exp", "updated_at"]
                 if last_price is not None:
                     update_fields.append("price")
+                if rsi_value is not None:
+                    update_fields.append("rsi")
                 investment.save(update_fields=update_fields)
 
             action = "Created" if created else "Updated"
@@ -248,15 +253,20 @@ class Command(BaseCommand):
             raise CommandError("Missing expected data in Seeking Alpha response")
         return {"ticker_id": ticker_id, "dates": dates}
 
-    def _fetch_last_price(self, ticker: str) -> Decimal | None:
+    def _fetch_profile_snapshot(
+        self, ticker: str
+    ) -> tuple[Decimal | None, Decimal | None]:
         params = {"symbols": ticker}
         prepared = requests.Request("GET", PROFILE_ENDPOINT, params=params).prepare()
         self.stdout.write(f"Fetching profile data from {prepared.url}")
 
         payload = self._fetch_json(PROFILE_ENDPOINT, params=params, headers=API_HEADERS)
-        l_price = self._extract_last_price(payload)
-        print(f"Last Price for {ticker}:{l_price}")
-        return l_price
+        last_price = self._extract_last_price(payload)
+        rsi_value = self._extract_rsi(payload)
+        print(f"Last Price for {ticker}:{last_price}")
+        if rsi_value is not None:
+            print(f"RSI for {ticker}:{rsi_value}")
+        return last_price, rsi_value
 
     def _extract_option_dates(self, payload: Any) -> list[str]:
         data_section = payload
@@ -404,6 +414,40 @@ class Command(BaseCommand):
             return Decimal(str(last_value))
         except (InvalidOperation, ValueError):
             return None
+
+    def _extract_rsi(self, payload: Any) -> Decimal | None:
+        value = self._find_payload_value(
+            payload,
+            {
+                "rsi",
+                "relative_strength_index",
+                "relativeStrengthIndex",
+                "relative_strength",
+                "relativeStrength",
+            },
+        )
+        if value is None:
+            return None
+
+        try:
+            return Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return None
+
+    def _find_payload_value(self, payload: Any, keys: set[str]) -> Any | None:
+        if isinstance(payload, dict):
+            for key, value in payload.items():
+                if key in keys:
+                    return value
+                nested_value = self._find_payload_value(value, keys)
+                if nested_value is not None:
+                    return nested_value
+        elif isinstance(payload, list):
+            for item in payload:
+                nested_value = self._find_payload_value(item, keys)
+                if nested_value is not None:
+                    return nested_value
+        return None
 
     def _coerce_ticker_id(self, ticker_id: Any) -> int | None:
         try:
