@@ -100,11 +100,12 @@ class Command(BaseCommand):
                 roi_display = self._format_opt_val(option.get("roi"))
                 mid_display = self._format_opt_val(option.get("mid"))
                 delta_display = self._format_delta(option.get("delta"))
+                rsi_display = self._format_rsi(investment.rsi)
                 summary = (
                     f"{investment.ticker}: ROI {roi_display}% at strike "
                     f"{option.get('strike_price', 'N/A')} bid {option.get('bid', 'N/A')} "
                     f"ask {option.get('ask', 'N/A')} mid {mid_display} "
-                    f"delta {delta_display}"
+                    f"delta {delta_display} rsi {rsi_display}"
                 )
                 self.stdout.write(summary)
                 summaries.append(summary)
@@ -475,6 +476,15 @@ class Command(BaseCommand):
             return "N/A"
 
         return f"{delta}"
+
+    @staticmethod
+    def _format_rsi(rsi: Decimal | None) -> str:
+        """Convert an optional RSI to a printable string."""
+
+        if rsi is None:
+            return "N/A"
+
+        return f"{rsi}"
 
     def _update_investment_opt_val(
         self, investment: Investment, opt_val: Decimal | None
