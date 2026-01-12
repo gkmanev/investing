@@ -4,7 +4,9 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable
 
+import pandas_ta as ta
 import requests
+import yfinance as yf
 from django.core.management.base import BaseCommand, CommandError
 from django.db import IntegrityError, transaction
 from django.utils import timezone
@@ -139,6 +141,8 @@ class Command(BaseCommand):
                         self.stdout.write(
                             f"{ticker}: suitability met with last price {last_price}."
                         )
+                    if rsi_value is not None:
+                        self.stdout.write(f"{ticker}: RSI {rsi_value}.")
 
             ticker_id_value = self._coerce_ticker_id(expiration_data.get("ticker_id"))
             defaults: dict[str, Any] = {"category": "stock"}
@@ -275,10 +279,7 @@ class Command(BaseCommand):
 
         payload = self._fetch_json(PROFILE_ENDPOINT, params=params, headers=API_HEADERS)
         last_price = self._extract_last_price(payload)
-        rsi_value = self._extract_rsi(payload)
-        print(f"Last Price for {ticker}:{last_price}")
-        if rsi_value is not None:
-            print(f"RSI for {ticker}:{rsi_value}")
+        rsi_value = self._fetch_rsi_value(ticker)
         return last_price, rsi_value
 
     def _extract_option_dates(self, payload: Any) -> list[str]:
@@ -428,39 +429,20 @@ class Command(BaseCommand):
         except (InvalidOperation, ValueError):
             return None
 
-    def _extract_rsi(self, payload: Any) -> Decimal | None:
-        value = self._find_payload_value(
-            payload,
-            {
-                "rsi",
-                "relative_strength_index",
-                "relativeStrengthIndex",
-                "relative_strength",
-                "relativeStrength",
-            },
-        )
-        if value is None:
+    def _fetch_rsi_value(self, ticker: str) -> Decimal | None:
+        data = yf.download(ticker, period="3mo", progress=False)
+        if data is None or data.empty or "Close" not in data.columns:
             return None
-
+        rsi_series = ta.rsi(data["Close"], length=14)
+        if rsi_series is None:
+            return None
+        rsi_series = rsi_series.dropna()
+        if rsi_series.empty:
+            return None
         try:
-            return Decimal(str(value))
+            return Decimal(str(rsi_series.iloc[-1]))
         except (InvalidOperation, ValueError):
             return None
-
-    def _find_payload_value(self, payload: Any, keys: set[str]) -> Any | None:
-        if isinstance(payload, dict):
-            for key, value in payload.items():
-                if key in keys:
-                    return value
-                nested_value = self._find_payload_value(value, keys)
-                if nested_value is not None:
-                    return nested_value
-        elif isinstance(payload, list):
-            for item in payload:
-                nested_value = self._find_payload_value(item, keys)
-                if nested_value is not None:
-                    return nested_value
-        return None
 
     def _coerce_ticker_id(self, ticker_id: Any) -> int | None:
         try:
