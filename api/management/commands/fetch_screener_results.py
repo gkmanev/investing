@@ -247,11 +247,10 @@ class Command(BaseCommand):
     def _build_payload(
         self, filters: Iterable[Any], *, include_custom_filters: bool = True
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = copy.deepcopy(EXCHANGE_FILTER_PAYLOAD)
-        if include_custom_filters:
-            payload = self._merge_payload_dicts(
-                payload, copy.deepcopy(CUSTOM_FILTER_PAYLOAD)
-            )
+        base_payload = (
+            CUSTOM_FILTER_PAYLOAD if include_custom_filters else EXCHANGE_FILTER_PAYLOAD
+        )
+        payload: dict[str, Any] = copy.deepcopy(base_payload)
         for filter_obj in filters:
             filter_payload = filter_obj.payload
             if not filter_payload:
