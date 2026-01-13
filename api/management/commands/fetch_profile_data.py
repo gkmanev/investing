@@ -1,12 +1,8 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
-from decimal import Decimal, InvalidOperation
-from typing import Any, Iterable, Optional
-import pandas as pd
-from ta.momentum import RSIIndicator
+from typing import Any, Iterable
 import requests
-import yfinance as yf
 from django.core.management.base import BaseCommand, CommandError
 from django.db import IntegrityError, transaction
 from django.utils import timezone
@@ -19,7 +15,6 @@ INVESTMENTS_ENDPOINT = f"{BASE_URL}/api/investments/"
 OPTION_EXPIRATIONS_ENDPOINT = (
     "https://seeking-alpha.p.rapidapi.com/symbols/get-option-expirations"
 )
-PROFILE_ENDPOINT = "https://seeking-alpha.p.rapidapi.com/symbols/get-profile"
 API_HEADERS = {
     "x-rapidapi-key": "66dcbafb75msha536f3086b06788p1f5e7ajsnac1315877f0f",
     "x-rapidapi-host": "seeking-alpha.p.rapidapi.com",
@@ -27,9 +22,9 @@ API_HEADERS = {
 
 
 class Command(BaseCommand):
-    """Fetch option suitability data for investments."""
+    """Fetch option expiration data for investments."""
 
-    help = "Fetches local investments and updates their options suitability."
+    help = "Fetches local investments and updates their option expiration dates."
 
     def add_arguments(self, parser) -> None:  # pragma: no cover
         parser.add_argument(
@@ -40,11 +35,6 @@ class Command(BaseCommand):
             "--skip-priced",
             action="store_true",
             help="Skip investments that already have a stored price.",
-        )
-        parser.add_argument(
-            "--debug-suitability",
-            action="store_true",
-            help="Print debug information explaining suitability calculations.",
         )
 
     def handle(self, *args: Any, **options: Any) -> str:
@@ -74,8 +64,6 @@ class Command(BaseCommand):
         updated_tickers: list[str] = []
         today = timezone.now().date()
         upper_bound = today + timedelta(days=31)
-        debug_suitability: bool = bool(options.get("debug_suitability"))
-
         for ticker in tickers:
             try:
                 expiration_data = self._fetch_option_expirations(ticker)
@@ -108,42 +96,7 @@ class Command(BaseCommand):
                     f"furthest: {furthest_option_date.isoformat() if furthest_option_date else 'N/A'}"
                 )
 
-            # NEW robust suitability: next 3 upcoming expirations must be weekly spaced
-            (
-                options_suitability,
-                reason,
-                next_three,
-                chosen_option_exp,
-            ) = self._weekly_suitability_details(expiration_data["dates"], today)
-
-            if debug_suitability:
-                shown = ", ".join(d.isoformat() for d in next_three) if next_three else "(none)"
-                self.stdout.write(
-                    f"{ticker}: suitability={options_suitability} | next_three={shown} | {reason}"
-                )
-
-            last_price = None
-            rsi_value = None
-            if options_suitability == 1:
-                try:
-                    last_price, rsi_value = self._fetch_profile_snapshot(ticker)
-                except CommandError as exc:
-                    self.stderr.write(
-                        f"Failed to fetch profile for {ticker}: {exc}. "
-                        "Continuing without price data."
-                    )
-                else:
-                    if last_price is None:
-                        self.stdout.write(
-                            f"{ticker}: suitability met but profile returned no price; "
-                            "leaving price unchanged."
-                        )
-                    else:
-                        self.stdout.write(
-                            f"{ticker}: suitability met with last price {last_price}."
-                        )
-                    if rsi_value is not None:
-                        self.stdout.write(f"{ticker}: RSI {rsi_value}.")
+            chosen_option_exp = self._select_option_expiration(expiration_data["dates"], today)
 
             ticker_id_value = self._coerce_ticker_id(expiration_data.get("ticker_id"))
             defaults: dict[str, Any] = {"category": "stock"}
@@ -164,34 +117,22 @@ class Command(BaseCommand):
                         f"Unable to update id for {ticker} to {ticker_id_value}: value already in use."
                     )
 
-            investment.options_suitability = options_suitability
-
-            # NEW: if suitable, store the 3rd upcoming expiration (the last of the weekly chain)
-            investment.option_exp = chosen_option_exp if options_suitability == 1 else None
-
-            if last_price is not None:
-                investment.price = last_price
-            if rsi_value is not None:
-                investment.rsi = rsi_value
+            investment.option_exp = chosen_option_exp
 
             if created:
                 investment.save()
             else:
-                update_fields = ["options_suitability", "option_exp", "updated_at"]
-                if last_price is not None:
-                    update_fields.append("price")
-                if rsi_value is not None:
-                    update_fields.append("rsi")
+                update_fields = ["option_exp", "updated_at"]
                 investment.save(update_fields=update_fields)
 
             action = "Created" if created else "Updated"
             self.stdout.write(
-                f"{action} investment {ticker} with options suitability={options_suitability}"
+                f"{action} investment {ticker} with option expiration={chosen_option_exp}"
             )
             updated_tickers.append(ticker)
 
         if not updated_tickers:
-            raise CommandError("No investments were updated with options suitability data.")
+            raise CommandError("No investments were updated with option expiration data.")
 
         return ", ".join(updated_tickers)
 
@@ -272,18 +213,6 @@ class Command(BaseCommand):
         if ticker_id is None:
             raise CommandError("Missing expected data in Seeking Alpha response")
         return {"ticker_id": ticker_id, "dates": dates}
-
-    def _fetch_profile_snapshot(
-        self, ticker: str
-    ) -> tuple[Decimal | None, Decimal | None]:
-        params = {"symbols": ticker}
-        prepared = requests.Request("GET", PROFILE_ENDPOINT, params=params).prepare()
-        self.stdout.write(f"Fetching profile data from {prepared.url}")
-
-        payload = self._fetch_json(PROFILE_ENDPOINT, params=params, headers=API_HEADERS)
-        last_price = self._extract_last_price(payload)
-        rsi_value = self._fetch_rsi_value(ticker)
-        return last_price, rsi_value
 
     def _extract_option_dates(self, payload: Any) -> list[str]:
         data_section = payload
@@ -368,110 +297,18 @@ class Command(BaseCommand):
                 furthest = parsed_date
         return furthest
 
-    def _weekly_suitability_details(
-        self, dates: list[str], today: date
-    ) -> tuple[int, str, list[date], date | None]:
-        """
-        Rule:
-          - take the next 3 expiration dates from today (>= today)
-          - suitability = 1 if they are exactly 7 days apart consecutively
-            (d2-d1 == 7 and d3-d2 == 7)
-          - return chosen_option_exp = d3 when suitable else None
-        """
+    def _select_option_expiration(self, dates: list[str], today: date) -> date | None:
+        """Return the third upcoming expiration date (if available)."""
         parsed = self._parse_expiration_dates(dates)
         upcoming = [d for d in parsed if d >= today]
 
         if len(upcoming) < 3:
-            return 0, f"Not enough upcoming expirations (have {len(upcoming)}, need 3).", upcoming[:3], None
-
-        next_three = upcoming[:3]
-        gap1 = (next_three[1] - next_three[0]).days
-        gap2 = (next_three[2] - next_three[1]).days
-
-        if gap1 == 7 and gap2 == 7:
-            return 1, f"Weekly chain OK (gaps: {gap1}, {gap2}).", next_three, next_three[2]
-
-        return 0, f"Weekly chain FAIL (gaps: {gap1}, {gap2}; need 7,7).", next_three, None
+            return None
+        return upcoming[2]
 
     # -------------------------
-    # Price parsing / id coercion
+    # Id coercion
     # -------------------------
-
-    def _extract_last_price(self, payload: Any) -> Decimal | None:
-        data_section = payload
-        if isinstance(payload, dict) and "data" in payload:
-            data_section = payload.get("data")
-
-        def _pluck_last(section: Any) -> Any | None:
-            if not isinstance(section, dict):
-                return None
-            attributes = section.get("attributes")
-            source = attributes if isinstance(attributes, dict) else section
-            price_block = source.get("price") if isinstance(source, dict) else None
-            if isinstance(price_block, dict) and "last" in price_block:
-                return price_block.get("last")
-            last_daily = source.get("lastDaily") if isinstance(source, dict) else None
-            if isinstance(last_daily, dict) and "last" in last_daily:
-                return last_daily.get("last")
-            return source.get("last")
-
-        last_value = None
-        if isinstance(data_section, list):
-            for entry in data_section:
-                last_value = _pluck_last(entry)
-                if last_value is not None:
-                    break
-        else:
-            last_value = _pluck_last(data_section)
-
-        if last_value is None:
-            return None
-
-        try:
-            return Decimal(str(last_value))
-        except (InvalidOperation, ValueError):
-            return None
-
-    def _fetch_rsi_value(self, ticker: str) -> Optional[Decimal]:
-        df = yf.download(
-            ticker,
-            period="3mo",
-            progress=False,
-            actions=False,
-            auto_adjust=False,
-            group_by="column",   # helps avoid some multi-index layouts
-        )
-
-        if df is None or df.empty:
-            return None
-
-        close = df.get("Close")
-        if close is None:
-            return None
-
-        # ✅ Ensure 1D Series
-        if isinstance(close, pd.DataFrame):
-            # if it’s (n,1) take the only column
-            if close.shape[1] == 1:
-                close = close.iloc[:, 0]
-            else:
-                # multiple Close columns (often multi-ticker) — pick the ticker column if possible
-                close = close[ticker] if ticker in close.columns else close.iloc[:, 0]
-
-        close = close.dropna()
-        if close.empty:
-            return None
-
-        rsi_series = RSIIndicator(close=close, window=14).rsi()
-        last = rsi_series.dropna().tail(1)
-        if last.empty:
-            return None
-
-        try:
-            return Decimal(str(last.iat[0]))
-        except (InvalidOperation, ValueError, TypeError):
-            return None
-
     def _coerce_ticker_id(self, ticker_id: Any) -> int | None:
         try:
             return int(ticker_id)

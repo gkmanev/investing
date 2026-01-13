@@ -15,7 +15,6 @@ from api.custom_filters import CUSTOM_FILTER_PAYLOAD
 from api.management.commands.fetch_profile_data import (
     API_HEADERS,
     OPTION_EXPIRATIONS_ENDPOINT,
-    PROFILE_ENDPOINT,
     Command,
 )
 
@@ -1132,147 +1131,27 @@ class FetchProfileDataCommandTests(APITestCase):
 
     @patch("api.management.commands.fetch_profile_data.Command._fetch_option_expirations")
     @patch("api.management.commands.fetch_profile_data.requests.get")
-    def test_command_sets_options_suitability_true_with_three_expirations(
+    def test_command_sets_option_exp_with_three_expirations(
         self, mock_get: MagicMock, mock_expirations: MagicMock
     ) -> None:
         mock_expirations.return_value = {
             "dates": self._build_next_month_dates([5, 12, 19]),
             "ticker_id": "AAA",
         }
-        mock_get.side_effect = [
-            MagicMock(
-                status_code=200, json=lambda: [{"ticker": "AAA"}], text="{}"
-            ),
-            MagicMock(
-                status_code=200,
-                json=lambda: {"data": {"attributes": {"last": 123.45}}},
-                text="{}",
-            ),
-        ]
-
-        buffer = StringIO()
-        call_command("fetch_profile_data", screener_name=self.screener_name, stdout=buffer)
-        investment = Investment.objects.get(ticker="AAA")
-        self.assertEqual(investment.options_suitability, 1)
-        self.assertEqual(investment.price, Decimal("123.45"))
-        expected_expiration = max(
-            self._parse_date(value)
-            for value in mock_expirations.return_value["dates"]
-        )
-        self.assertEqual(investment.option_exp, expected_expiration)
-        expected_url = requests.Request(
-            "GET",
-            PROFILE_ENDPOINT,
-            params={"symbols": "AAA"},
-        ).prepare().url
-        self.assertIn(f"Fetching profile data from {expected_url}", buffer.getvalue())
-
-    @patch(
-        "api.management.commands.fetch_profile_data.Command._calculate_options_suitability",
-        return_value=1,
-    )
-    @patch("api.management.commands.fetch_profile_data.Command._select_closest_dates")
-    @patch("api.management.commands.fetch_profile_data.Command._fetch_option_expirations")
-    @patch("api.management.commands.fetch_profile_data.requests.get")
-    def test_command_prefers_closest_expirations_for_option_exp(
-        self,
-        mock_get: MagicMock,
-        mock_expirations: MagicMock,
-        mock_select_closest: MagicMock,
-        _mock_options_suitability: MagicMock,
-    ) -> None:
-        mock_get.side_effect = [
-            MagicMock(
-                status_code=200, json=lambda: [{"ticker": "AAA"}], text="{}"
-            ),
-            MagicMock(
-                status_code=200,
-                json=lambda: {"data": {"attributes": {"last": 41.45}}},
-                text="{}",
-            ),
-        ]
-        close_dates = [date(2026, 1, 2), date(2025, 12, 26)]
-        mock_select_closest.return_value = close_dates
-        mock_expirations.return_value = {
-            "dates": ["01/02/2026", "12/26/2025", "01/21/2028"],
-            "ticker_id": "1105",
-        }
-
-        buffer = StringIO()
-        call_command(
-            "fetch_profile_data", screener_name=self.screener_name, stdout=buffer
-        )
-
-        investment = Investment.objects.get(ticker="AAA")
-        self.assertEqual(investment.option_exp, max(close_dates))
-        mock_select_closest.assert_called_once()
-        self.assertIn("furthest: 2026-01-02", buffer.getvalue())
-
-    @patch("api.management.commands.fetch_profile_data.Command._fetch_last_price", return_value=None)
-    @patch("api.management.commands.fetch_profile_data.Command._fetch_option_expirations")
-    @patch("api.management.commands.fetch_profile_data.requests.get")
-    def test_command_reports_when_price_missing(
-        self, mock_get: MagicMock, mock_expirations: MagicMock, mock_last_price: MagicMock
-    ) -> None:
-        mock_expirations.return_value = {
-            "dates": self._build_next_month_dates([5, 12, 19, 26]),
-            "ticker_id": "AAA",
-        }
         mock_get.return_value = MagicMock(
             status_code=200, json=lambda: [{"ticker": "AAA"}], text="{}"
         )
 
-        buffer = StringIO()
-        call_command("fetch_profile_data", screener_name=self.screener_name, stdout=buffer)
-
-        investment = Investment.objects.get(ticker="AAA")
-        self.assertEqual(investment.options_suitability, 1)
-        self.assertIsNone(investment.price)
-        expected_expiration = max(
-            self._parse_date(value)
-            for value in mock_expirations.return_value["dates"]
-        )
-        self.assertEqual(investment.option_exp, expected_expiration)
-        self.assertIn(
-            "AAA: suitability met but profile returned no price; leaving price unchanged.",
-            buffer.getvalue(),
-        )
-
-    @patch("api.management.commands.fetch_profile_data.Command._fetch_option_expirations")
-    @patch("api.management.commands.fetch_profile_data.requests.get")
-    def test_command_updates_price_from_profile_when_suitability_is_true(
-        self, mock_get: MagicMock, mock_expirations: MagicMock
-    ) -> None:
-        Investment.objects.filter(ticker="AAA").update(price=Decimal("5.00"))
-        mock_expirations.return_value = {
-            "dates": self._build_next_month_dates([5, 12, 19, 26]),
-            "ticker_id": "AAA",
-        }
-        mock_get.side_effect = [
-            MagicMock(
-                status_code=200, json=lambda: [{"ticker": "AAA"}], text="{}"
-            ),
-            MagicMock(
-                status_code=200,
-                json=lambda: {"data": {"attributes": {"last": 42.15}}},
-                text="{}",
-            ),
-        ]
-
         call_command("fetch_profile_data", screener_name=self.screener_name)
-
         investment = Investment.objects.get(ticker="AAA")
-        self.assertEqual(investment.options_suitability, 1)
-        self.assertEqual(investment.price, Decimal("42.15"))
-        expected_expiration = max(
-            self._parse_date(value)
-            for value in mock_expirations.return_value["dates"]
+        expected_expiration = self._parse_date(
+            mock_expirations.return_value["dates"][2]
         )
         self.assertEqual(investment.option_exp, expected_expiration)
 
     @patch("api.management.commands.fetch_profile_data.Command._fetch_option_expirations")
     @patch("api.management.commands.fetch_profile_data.requests.get")
-    def test_command_sets_options_suitability_false_with_fewer_than_three_expirations(
+    def test_command_clears_option_exp_with_fewer_than_three_expirations(
         self, mock_get: MagicMock, mock_expirations: MagicMock
     ) -> None:
         mock_expirations.return_value = {
@@ -1285,12 +1164,11 @@ class FetchProfileDataCommandTests(APITestCase):
 
         call_command("fetch_profile_data", screener_name=self.screener_name)
         investment = Investment.objects.get(ticker="AAA")
-        self.assertEqual(investment.options_suitability, 0)
         self.assertIsNone(investment.option_exp)
 
     @patch("api.management.commands.fetch_profile_data.Command._fetch_option_expirations")
     @patch("api.management.commands.fetch_profile_data.requests.get")
-    def test_command_sets_options_suitability_unknown_with_no_expirations(
+    def test_command_clears_option_exp_with_no_expirations(
         self, mock_get: MagicMock, mock_expirations: MagicMock
     ) -> None:
         mock_expirations.return_value = {"dates": [], "ticker_id": "AAA"}
@@ -1300,7 +1178,6 @@ class FetchProfileDataCommandTests(APITestCase):
 
         call_command("fetch_profile_data", screener_name=self.screener_name)
         investment = Investment.objects.get(ticker="AAA")
-        self.assertEqual(investment.options_suitability, -1)
         self.assertIsNone(investment.option_exp)
 
     @patch("api.management.commands.fetch_profile_data.Command._fetch_option_expirations")
@@ -1324,7 +1201,6 @@ class FetchProfileDataCommandTests(APITestCase):
         for ticker in ("NEW1", "NEW2"):
             investment = Investment.objects.get(ticker=ticker)
             self.assertEqual(investment.category, "stock")
-            self.assertEqual(investment.options_suitability, -1)
             self.assertIsNone(investment.price)
             self.assertIsNone(investment.market_cap)
 
@@ -1463,41 +1339,3 @@ class FetchProfileDataCommandTests(APITestCase):
         self.assertEqual(request.args[0], OPTION_EXPIRATIONS_ENDPOINT)
         self.assertEqual(request.kwargs.get("params"), {"symbol": "XYZ"})
         self.assertEqual(request.kwargs.get("headers"), API_HEADERS)
-
-    @patch("api.management.commands.fetch_profile_data.requests.get")
-    def test_fetch_last_price_uses_expected_headers_and_params(
-        self, mock_get: MagicMock
-    ) -> None:
-        mock_get.return_value = MagicMock(
-            status_code=200,
-            json=lambda: {"data": {"attributes": {"last": "10.50"}}},
-            text="{}",
-        )
-
-        command = Command()
-        price = command._fetch_last_price("XYZ")
-
-        mock_get.assert_called_once()
-        request = mock_get.call_args
-        self.assertEqual(request.args[0], PROFILE_ENDPOINT)
-        self.assertEqual(request.kwargs.get("params"), {"symbols": "XYZ"})
-        self.assertEqual(request.kwargs.get("headers"), API_HEADERS)
-        self.assertEqual(price, Decimal("10.50"))
-
-    def test_extract_last_price_accepts_nested_price_block(self) -> None:
-        command = Command()
-
-        price = command._extract_last_price(
-            {"data": {"attributes": {"price": {"last": "77.01"}}}}
-        )
-
-        self.assertEqual(price, Decimal("77.01"))
-
-    def test_extract_last_price_accepts_last_daily_block(self) -> None:
-        command = Command()
-
-        price = command._extract_last_price(
-            {"data": [{"attributes": {"lastDaily": {"last": "41.45"}}}]}
-        )
-
-        self.assertEqual(price, Decimal("41.45"))
