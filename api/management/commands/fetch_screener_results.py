@@ -101,11 +101,25 @@ class Command(BaseCommand):
         only_filter_keys: Iterable[str] | None = options.get("only_filter_keys")
         quant_rating: str | None = options.get("quant_rating")
 
-        screener = self._get_screener(screener_name)
+        include_custom_filters = self._should_include_custom_filters(screener_name)
+        filters: Iterable[Any]
+        if include_custom_filters:
+            try:
+                screener = ScreenerType.objects.prefetch_related("filters").get(
+                    name=screener_name
+                )
+            except ScreenerType.DoesNotExist:
+                screener = None
+                filters = []
+            else:
+                filters = screener.filters.all()
+        else:
+            screener = self._get_screener(screener_name)
+            filters = screener.filters.all()
         self._delete_existing_investments(screener_name)
         payload = self._build_payload(
-            screener.filters.all(),
-            include_custom_filters=self._should_include_custom_filters(screener_name),
+            filters,
+            include_custom_filters=include_custom_filters,
         )
         if screener_name.strip().lower() == "stocks by quant":
             payload = self._remove_industry_id(payload)
@@ -247,11 +261,10 @@ class Command(BaseCommand):
     def _build_payload(
         self, filters: Iterable[Any], *, include_custom_filters: bool = True
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = copy.deepcopy(EXCHANGE_FILTER_PAYLOAD)
-        if include_custom_filters:
-            payload = self._merge_payload_dicts(
-                payload, copy.deepcopy(CUSTOM_FILTER_PAYLOAD)
-            )
+        base_payload = (
+            CUSTOM_FILTER_PAYLOAD if include_custom_filters else EXCHANGE_FILTER_PAYLOAD
+        )
+        payload: dict[str, Any] = copy.deepcopy(base_payload)
         for filter_obj in filters:
             filter_payload = filter_obj.payload
             if not filter_payload:
