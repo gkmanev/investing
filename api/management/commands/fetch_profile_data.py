@@ -42,8 +42,8 @@ class Command(BaseCommand):
         investments_payload = self._fetch_json(
             INVESTMENTS_ENDPOINT, params={"screener_type": screener_name}
         )
-        tickers = self._extract_tickers(investments_payload)
-        if not tickers:
+        investments = self._extract_investments(investments_payload)
+        if not investments:
             raise CommandError(
                 "Investments endpoint did not return any entries with ticker information."
             )
@@ -52,11 +52,16 @@ class Command(BaseCommand):
             priced_tickers = {
                 ticker.upper()
                 for ticker in Investment.objects.filter(
-                    ticker__in=tickers, price__isnull=False
+                    ticker__in=[entry["ticker"] for entry in investments],
+                    price__isnull=False,
                 ).values_list("ticker", flat=True)
             }
-            tickers = [t for t in tickers if t.upper() not in priced_tickers]
-            if not tickers:
+            investments = [
+                entry
+                for entry in investments
+                if entry["ticker"].upper() not in priced_tickers
+            ]
+            if not investments:
                 raise CommandError(
                     "No tickers remain to update after skipping priced investments."
                 )
@@ -64,41 +69,52 @@ class Command(BaseCommand):
         updated_tickers: list[str] = []
         today = timezone.now().date()
         upper_bound = today + timedelta(days=31)
-        for ticker in tickers:
-            try:
-                expiration_data = self._fetch_option_expirations(ticker)
-            except CommandError as exc:
-                self.stderr.write(
-                    f"Failed to fetch option expirations for {ticker}: {exc}. "
-                    "Continuing without options data."
-                )
-                continue
+        for entry in investments:
+            ticker = entry["ticker"]
+            weekly_options = entry.get("weekly_options")
+            expiration_data = None
+            ticker_id_value = None
+            chosen_option_exp = None
 
-            # This is just informational printing (your existing 31-day window)
-            closest_dates = self._select_closest_dates(
-                expiration_data["dates"], today, upper_bound
-            )
-            furthest_option_date = (
-                max(closest_dates)
-                if closest_dates
-                else self._select_furthest_date(expiration_data["dates"])
-            )
-
-            if not closest_dates:
-                self.stdout.write(
-                    f"{ticker} (ticker_id {expiration_data['ticker_id']}): No option "
-                    "expiration date within the next 31 days."
-                )
+            if weekly_options is True:
+                try:
+                    expiration_data = self._fetch_option_expirations(ticker)
+                except CommandError as exc:
+                    self.stderr.write(
+                        f"Failed to fetch option expirations for {ticker}: {exc}. "
+                        "Continuing without options data."
+                    )
+                    continue
             else:
-                formatted = ", ".join(d.isoformat() for d in closest_dates)
-                self.stdout.write(
-                    f"{ticker} (ticker_id {expiration_data['ticker_id']}): {formatted}; "
-                    f"furthest: {furthest_option_date.isoformat() if furthest_option_date else 'N/A'}"
+                expiration_data = None
+
+            if expiration_data is not None:
+                # This is just informational printing (your existing 31-day window)
+                closest_dates = self._select_closest_dates(
+                    expiration_data["dates"], today, upper_bound
+                )
+                furthest_option_date = (
+                    max(closest_dates)
+                    if closest_dates
+                    else self._select_furthest_date(expiration_data["dates"])
                 )
 
-            chosen_option_exp = self._select_option_expiration(expiration_data["dates"], today)
+                if not closest_dates:
+                    self.stdout.write(
+                        f"{ticker} (ticker_id {expiration_data['ticker_id']}): No option "
+                        "expiration date within the next 31 days."
+                    )
+                else:
+                    formatted = ", ".join(d.isoformat() for d in closest_dates)
+                    self.stdout.write(
+                        f"{ticker} (ticker_id {expiration_data['ticker_id']}): {formatted}; "
+                        f"furthest: {furthest_option_date.isoformat() if furthest_option_date else 'N/A'}"
+                    )
 
-            ticker_id_value = self._coerce_ticker_id(expiration_data.get("ticker_id"))
+                chosen_option_exp = self._select_option_expiration(
+                    expiration_data["dates"], today
+                )
+                ticker_id_value = self._coerce_ticker_id(expiration_data.get("ticker_id"))
             defaults: dict[str, Any] = {"category": "stock"}
             if ticker_id_value is not None:
                 defaults["id"] = ticker_id_value
@@ -176,7 +192,7 @@ class Command(BaseCommand):
         except ValueError as exc:
             raise CommandError(f"Response from '{url}' did not contain valid JSON.") from exc
 
-    def _extract_tickers(self, payload: Any) -> list[str]:
+    def _extract_investments(self, payload: Any) -> list[dict[str, Any]]:
         entries: Iterable[Any]
         if isinstance(payload, list):
             entries = payload
@@ -193,14 +209,19 @@ class Command(BaseCommand):
         else:
             raise CommandError("Investments payload had an unexpected structure.")
 
-        tickers: list[str] = []
+        investments: list[dict[str, Any]] = []
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
             ticker = entry.get("ticker")
             if ticker:
-                tickers.append(str(ticker))
-        return tickers
+                investments.append(
+                    {
+                        "ticker": str(ticker),
+                        "weekly_options": entry.get("weekly_options"),
+                    }
+                )
+        return investments
 
     def _fetch_option_expirations(self, ticker: str) -> dict:
         payload = self._fetch_json(
