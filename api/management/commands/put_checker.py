@@ -36,12 +36,12 @@ class Command(BaseCommand):
     def handle(self, *args: Any, **options: Any) -> str:
         screener_type: str = options["screener_type"]
         investments = Investment.objects.filter(
-            options_suitability=1, screener_type=screener_type
+            weekly_options=True, screener_type=screener_type
         )
 
         if not investments.exists():
             raise CommandError(
-                "No investments found with options_suitability=1 for the provided screener type."
+                "No investments found with weekly_options=True for the provided screener type."
             )
 
         risk_free_rate = self._fetch_risk_free_rate()
