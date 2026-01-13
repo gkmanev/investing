@@ -596,6 +596,65 @@ class FetchScreenerResultsCommandTests(APITestCase):
             Investment.objects.filter(screener_type=self.screener.name).count(), 3
         )
 
+    @patch("api.management.commands.fetch_screener_results.Command._fetch_weekly_option_tickers")
+    @patch("api.management.commands.fetch_screener_results.Command._fetch_profile_snapshot")
+    @patch("api.management.commands.fetch_screener_results.requests.post")
+    def test_command_populates_price_and_rsi_for_weekly_options_only(
+        self,
+        mock_post: MagicMock,
+        mock_profile_snapshot: MagicMock,
+        mock_weekly_tickers: MagicMock,
+    ) -> None:
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {
+                "data": [
+                    {"attributes": {"name": "WEEKLY"}},
+                    {"attributes": {"name": "DAILY"}},
+                ]
+            },
+            text="{}",
+        )
+        mock_weekly_tickers.return_value = {"WEEKLY"}
+        mock_profile_snapshot.return_value = (Decimal("123.45"), Decimal("55.67"))
+
+        call_command("fetch_screener_results", screener_name=self.screener.name)
+
+        weekly_investment = Investment.objects.get(ticker="WEEKLY")
+        self.assertTrue(weekly_investment.weekly_options)
+        self.assertEqual(weekly_investment.price, Decimal("123.45"))
+        self.assertEqual(weekly_investment.rsi, Decimal("55.67"))
+
+        daily_investment = Investment.objects.get(ticker="DAILY")
+        self.assertFalse(daily_investment.weekly_options)
+        self.assertIsNone(daily_investment.price)
+        self.assertIsNone(daily_investment.rsi)
+        mock_profile_snapshot.assert_called_once_with("WEEKLY")
+
+    @patch("api.management.commands.fetch_screener_results.Command._fetch_weekly_option_tickers")
+    @patch("api.management.commands.fetch_screener_results.Command._fetch_profile_snapshot")
+    @patch("api.management.commands.fetch_screener_results.requests.post")
+    def test_command_skips_price_fetch_when_weekly_options_unknown(
+        self,
+        mock_post: MagicMock,
+        mock_profile_snapshot: MagicMock,
+        mock_weekly_tickers: MagicMock,
+    ) -> None:
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {"data": [{"attributes": {"name": "UNKNOWN"}}]},
+            text="{}",
+        )
+        mock_weekly_tickers.return_value = None
+
+        call_command("fetch_screener_results", screener_name=self.screener.name)
+
+        investment = Investment.objects.get(ticker="UNKNOWN")
+        self.assertIsNone(investment.weekly_options)
+        self.assertIsNone(investment.price)
+        self.assertIsNone(investment.rsi)
+        mock_profile_snapshot.assert_not_called()
+
     @patch("api.management.commands.fetch_screener_results.requests.post")
     def test_command_prints_count_for_custom_screener(
         self, mock_post: MagicMock
