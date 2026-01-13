@@ -1139,7 +1139,9 @@ class FetchProfileDataCommandTests(APITestCase):
             "ticker_id": "AAA",
         }
         mock_get.return_value = MagicMock(
-            status_code=200, json=lambda: [{"ticker": "AAA"}], text="{}"
+            status_code=200,
+            json=lambda: [{"ticker": "AAA", "weekly_options": True}],
+            text="{}",
         )
 
         call_command("fetch_profile_data", screener_name=self.screener_name)
@@ -1159,7 +1161,9 @@ class FetchProfileDataCommandTests(APITestCase):
             "ticker_id": "AAA",
         }
         mock_get.return_value = MagicMock(
-            status_code=200, json=lambda: [{"ticker": "AAA"}], text="{}"
+            status_code=200,
+            json=lambda: [{"ticker": "AAA", "weekly_options": True}],
+            text="{}",
         )
 
         call_command("fetch_profile_data", screener_name=self.screener_name)
@@ -1173,7 +1177,9 @@ class FetchProfileDataCommandTests(APITestCase):
     ) -> None:
         mock_expirations.return_value = {"dates": [], "ticker_id": "AAA"}
         mock_get.return_value = MagicMock(
-            status_code=200, json=lambda: [{"ticker": "AAA"}], text="{}"
+            status_code=200,
+            json=lambda: [{"ticker": "AAA", "weekly_options": True}],
+            text="{}",
         )
 
         call_command("fetch_profile_data", screener_name=self.screener_name)
@@ -1188,8 +1194,8 @@ class FetchProfileDataCommandTests(APITestCase):
         mock_get.return_value = MagicMock(
             status_code=200,
             json=lambda: [
-                {"ticker": "NEW1"},
-                {"ticker": "NEW2"},
+                {"ticker": "NEW1", "weekly_options": True},
+                {"ticker": "NEW2", "weekly_options": True},
             ],
             text="{}",
         )
@@ -1216,7 +1222,7 @@ class FetchProfileDataCommandTests(APITestCase):
         mock_get.return_value = MagicMock(
             status_code=200,
             json=lambda: [
-                {"ticker": "NEW1"},
+                {"ticker": "NEW1", "weekly_options": True},
             ],
             text="{}",
         )
@@ -1233,7 +1239,9 @@ class FetchProfileDataCommandTests(APITestCase):
         self, mock_get: MagicMock, mock_expirations: MagicMock
     ) -> None:
         mock_get.return_value = MagicMock(
-            status_code=200, json=lambda: [{"ticker": "AAA"}], text="{}"
+            status_code=200,
+            json=lambda: [{"ticker": "AAA", "weekly_options": True}],
+            text="{}",
         )
         mock_expirations.return_value = {"dates": [], "ticker_id": "9999"}
 
@@ -1255,8 +1263,8 @@ class FetchProfileDataCommandTests(APITestCase):
         mock_get.return_value = MagicMock(
             status_code=200,
             json=lambda: [
-                {"ticker": "AAA"},
-                {"ticker": "BBB"},
+                {"ticker": "AAA", "weekly_options": True},
+                {"ticker": "BBB", "weekly_options": True},
             ],
             text="{}",
         )
@@ -1289,9 +1297,9 @@ class FetchProfileDataCommandTests(APITestCase):
         mock_get.return_value = MagicMock(
             status_code=200,
             json=lambda: [
-                {"ticker": "AAA"},
-                {"ticker": "BBB"},
-                {"ticker": "CCC"},
+                {"ticker": "AAA", "weekly_options": True},
+                {"ticker": "BBB", "weekly_options": True},
+                {"ticker": "CCC", "weekly_options": True},
             ],
             text="{}",
         )
@@ -1309,7 +1317,9 @@ class FetchProfileDataCommandTests(APITestCase):
         self, mock_get: MagicMock, mock_expirations: MagicMock
     ) -> None:
         mock_get.return_value = MagicMock(
-            status_code=200, json=lambda: [{"ticker": "AAA"}], text="{}"
+            status_code=200,
+            json=lambda: [{"ticker": "AAA", "weekly_options": True}],
+            text="{}",
         )
         mock_expirations.return_value = {"dates": [], "ticker_id": "AAA"}
 
@@ -1339,3 +1349,27 @@ class FetchProfileDataCommandTests(APITestCase):
         self.assertEqual(request.args[0], OPTION_EXPIRATIONS_ENDPOINT)
         self.assertEqual(request.kwargs.get("params"), {"symbol": "XYZ"})
         self.assertEqual(request.kwargs.get("headers"), API_HEADERS)
+
+    @patch("api.management.commands.fetch_profile_data.Command._fetch_option_expirations")
+    @patch("api.management.commands.fetch_profile_data.requests.get")
+    def test_command_skips_option_fetch_for_non_weekly(
+        self, mock_get: MagicMock, mock_expirations: MagicMock
+    ) -> None:
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=lambda: [
+                {"ticker": "AAA", "weekly_options": True},
+                {"ticker": "BBB", "weekly_options": False, "option_exp": "2024-01-19"},
+            ],
+            text="{}",
+        )
+        mock_expirations.return_value = {
+            "dates": self._build_next_month_dates([5, 12, 19]),
+            "ticker_id": "AAA",
+        }
+
+        call_command("fetch_profile_data", screener_name=self.screener_name)
+
+        mock_expirations.assert_called_once_with("AAA")
+        investment = Investment.objects.get(ticker="BBB")
+        self.assertEqual(investment.option_exp, date(2024, 1, 19))
