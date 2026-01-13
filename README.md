@@ -47,12 +47,18 @@ Filter by a screener type that includes spaces:
 
 ```bash
 curl "http://127.0.0.1:8000/api/investments/?screener_type=Strong%20Buy%20Stocks%20With%20Short%20Squeeze%20Potential"
+```
+
+When requesting the custom screener filter, the response includes the number of returned tickers:
+
+```bash
+curl "http://127.0.0.1:8000/api/investments/?screener_type=Custom%20screener%20filter"
+```
 
 Using the legacy `screenter_type` query parameter works the same way:
 
 ```bash
 curl "http://127.0.0.1:8000/api/investments/?screenter_type=growth"
-```
 ```
 
 Find ETFs with a minimum price of $10 and minimum volume of 1,000:
