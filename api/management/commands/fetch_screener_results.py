@@ -207,6 +207,9 @@ class Command(BaseCommand):
             weekly_option_tickers=weekly_option_tickers,
         )
 
+        if screener_name.strip().lower() == "custom screener filter":
+            self.stdout.write(f"Returned tickers: {len(all_ticker_names)}")
+
         formatted_payload = "\n".join(all_ticker_names)
         return formatted_payload
 

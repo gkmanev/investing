@@ -597,6 +597,35 @@ class FetchScreenerResultsCommandTests(APITestCase):
         )
 
     @patch("api.management.commands.fetch_screener_results.requests.post")
+    def test_command_prints_count_for_custom_screener(
+        self, mock_post: MagicMock
+    ) -> None:
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {
+                "data": [
+                    {"attributes": {"name": "Alpha Corp"}},
+                    {"attributes": {"name": "Beta LLC"}},
+                ]
+            },
+            text="{}",
+        )
+
+        buffer = StringIO()
+        result = call_command(
+            "fetch_screener_results",
+            screener_name="Custom screener filter",
+            stdout=buffer,
+        )
+
+        expected_output = "Alpha Corp\nBeta LLC"
+        self.assertEqual(result, expected_output)
+        self.assertEqual(
+            buffer.getvalue(),
+            "Returned tickers: 2\n" + expected_output + "\n",
+        )
+
+    @patch("api.management.commands.fetch_screener_results.requests.post")
     def test_command_fetches_multiple_pages(self, mock_post: MagicMock) -> None:
         def build_response(names: list[str]) -> MagicMock:
             payload = {
