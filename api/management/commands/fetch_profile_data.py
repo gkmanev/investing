@@ -72,10 +72,9 @@ class Command(BaseCommand):
         for entry in investments:
             ticker = entry["ticker"]
             weekly_options = entry.get("weekly_options")
-            existing_option_exp = entry.get("option_exp")
             expiration_data = None
             ticker_id_value = None
-            chosen_option_exp = existing_option_exp
+            chosen_option_exp = None
 
             if weekly_options is True:
                 try:
@@ -220,22 +219,9 @@ class Command(BaseCommand):
                     {
                         "ticker": str(ticker),
                         "weekly_options": entry.get("weekly_options"),
-                        "option_exp": self._parse_option_expiration(
-                            entry.get("option_exp")
-                        ),
                     }
                 )
         return investments
-
-    def _parse_option_expiration(self, value: Any) -> date | None:
-        if value in (None, ""):
-            return None
-        if isinstance(value, date):
-            return value
-        try:
-            return date.fromisoformat(str(value))
-        except ValueError:
-            return None
 
     def _fetch_option_expirations(self, ticker: str) -> dict:
         payload = self._fetch_json(

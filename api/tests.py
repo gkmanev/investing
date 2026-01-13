@@ -1359,7 +1359,7 @@ class FetchProfileDataCommandTests(APITestCase):
             status_code=200,
             json=lambda: [
                 {"ticker": "AAA", "weekly_options": True},
-                {"ticker": "BBB", "weekly_options": False, "option_exp": "2024-01-19"},
+                {"ticker": "BBB", "weekly_options": False},
             ],
             text="{}",
         )
@@ -1372,4 +1372,4 @@ class FetchProfileDataCommandTests(APITestCase):
 
         mock_expirations.assert_called_once_with("AAA")
         investment = Investment.objects.get(ticker="BBB")
-        self.assertEqual(investment.option_exp, date(2024, 1, 19))
+        self.assertIsNone(investment.option_exp)
