@@ -14,7 +14,7 @@ from ta.momentum import RSIIndicator
 import yfinance as yf
 from django.core.management.base import BaseCommand, CommandError
 
-from api.custom_filters import CUSTOM_FILTER_PAYLOAD
+from api.custom_filters import CUSTOM_FILTER_PAYLOAD, CUSTOM_FILTER_PAYLOAD_V2
 from api.management.commands.rapidapi_counter import log_rapidapi_fetch
 from api.models import CboeSecurity, Investment, ScreenerType
 
@@ -106,7 +106,8 @@ class Command(BaseCommand):
         only_filter_keys: Iterable[str] | None = options.get("only_filter_keys")
         quant_rating: str | None = options.get("quant_rating")
 
-        include_custom_filters = self._should_include_custom_filters(screener_name)
+        custom_filter_payload = self._get_custom_filter_payload(screener_name)
+        include_custom_filters = custom_filter_payload is not None
         filters: Iterable[Any]
         if include_custom_filters:
             screener = None
@@ -115,10 +116,7 @@ class Command(BaseCommand):
             screener = self._get_screener(screener_name)
             filters = screener.filters.all()
         self._delete_existing_investments(screener_name)
-        payload = self._build_payload(
-            filters,
-            include_custom_filters=include_custom_filters,
-        )
+        payload = self._build_payload(filters, base_payload=custom_filter_payload)
         if screener_name.strip().lower() == "stocks by quant":
             payload = self._remove_industry_id(payload)
         if only_filter_keys:
@@ -393,14 +391,20 @@ class Command(BaseCommand):
                 f"Screener named '{screener_name}' does not exist in the database."
             ) from exc
 
+    def _get_custom_filter_payload(self, screener_name: str) -> dict[str, Any] | None:
+        custom_filter_payloads = {
+            "Custom screener filter": CUSTOM_FILTER_PAYLOAD,
+            "Custom screener filterV2": CUSTOM_FILTER_PAYLOAD_V2,
+        }
+        return custom_filter_payloads.get(screener_name)
+
     def _should_include_custom_filters(self, screener_name: str) -> bool:
-        return screener_name == "Custom screener filter"
+        return self._get_custom_filter_payload(screener_name) is not None
 
     def _build_payload(
-        self, filters: Iterable[Any], *, include_custom_filters: bool = True
+        self, filters: Iterable[Any], *, base_payload: dict[str, Any] | None = None
     ) -> dict[str, Any]:
-        base_payload = CUSTOM_FILTER_PAYLOAD if include_custom_filters else {}
-        payload: dict[str, Any] = copy.deepcopy(base_payload)
+        payload: dict[str, Any] = copy.deepcopy(base_payload or {})
         for filter_obj in filters:
             filter_payload = filter_obj.payload
             if not filter_payload:

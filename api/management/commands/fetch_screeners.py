@@ -9,7 +9,11 @@ import requests
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
-from api.custom_filters import CUSTOM_FILTER_PAYLOAD, EXCHANGE_FILTER_PAYLOAD
+from api.custom_filters import (
+    CUSTOM_FILTER_PAYLOAD,
+    CUSTOM_FILTER_PAYLOAD_V2,
+    EXCHANGE_FILTER_PAYLOAD,
+)
 from api.management.commands.rapidapi_counter import log_rapidapi_fetch
 from api.models import ScreenerFilter, ScreenerType
 
@@ -64,8 +68,7 @@ class Command(BaseCommand):
                     _format_entry(name, [spec.label for spec in filter_specs])
                 )
 
-            custom_entry = _ensure_custom_filter()
-            formatted_entries.append(custom_entry)
+            formatted_entries.extend(_ensure_custom_filters())
 
         formatted_payload = "\n".join(formatted_entries)
         self.stdout.write(formatted_payload)
@@ -78,29 +81,36 @@ class FilterSpec:
     payload: Any
 
 
-def _build_custom_filter() -> FilterSpec:
+def _build_custom_filter(name: str, payload: dict[str, Any]) -> FilterSpec:
     """Build a filter spec representing the shared custom filter payload."""
 
     return FilterSpec(
-        label="Custom screener filter",
-        payload=copy.deepcopy(CUSTOM_FILTER_PAYLOAD),
+        label=name,
+        payload=copy.deepcopy(payload),
     )
 
 
-def _ensure_custom_filter() -> str:
-    """Persist the shared custom filter as its own screener entry."""
+def _ensure_custom_filters() -> list[str]:
+    """Persist the shared custom filters as their own screener entries."""
 
-    screener_type, _ = ScreenerType.objects.update_or_create(
-        name="Custom screener filter",
-        defaults={
-            "description": "Shared filter applied to all screeners.",
-        },
-    )
+    entries = []
+    for name, payload in (
+        ("Custom screener filter", CUSTOM_FILTER_PAYLOAD),
+        ("Custom screener filterV2", CUSTOM_FILTER_PAYLOAD_V2),
+    ):
+        screener_type, _ = ScreenerType.objects.update_or_create(
+            name=name,
+            defaults={
+                "description": "Shared filter applied to all screeners.",
+            },
+        )
 
-    filter_spec = _build_custom_filter()
-    _synchronise_filters(screener_type, [filter_spec])
+        filter_spec = _build_custom_filter(name, payload)
+        _synchronise_filters(screener_type, [filter_spec])
 
-    return _format_entry(screener_type.name, [filter_spec.label])
+        entries.append(_format_entry(screener_type.name, [filter_spec.label]))
+
+    return entries
 
 
 def _remove_exchange_filters(filter_specs: List[FilterSpec]) -> List[FilterSpec]:

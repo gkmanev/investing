@@ -28,3 +28,9 @@ CUSTOM_FILTER_PAYLOAD = {
     "altman_z_score": {"gte": 2},
     "cash_from_operations_as_reported": {"gte": 0},
 }
+
+CUSTOM_FILTER_PAYLOAD_V2 = {
+    **EXCHANGE_FILTER_PAYLOAD,
+    "marketcap_display": {"gte": 5_000_000_000},
+    "quant_rating": {"in": ["buy", "strong_buy"]},
+}
