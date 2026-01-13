@@ -128,6 +128,21 @@ class InvestmentAPITestCase(APITestCase):
         self.assertEqual(len(response.data), 1)
         self.assertEqual(response.data[0]["ticker"], "SBS")
 
+    def test_list_custom_screener_filter_returns_count(self) -> None:
+        custom_screener = "Custom screener filter"
+        self.create_investment(ticker="CSTM1", screener_type=custom_screener)
+        self.create_investment(ticker="CSTM2", screener_type=custom_screener)
+        self.create_investment(ticker="OTHER", screener_type="Another Screener")
+
+        response = self.client.get(self.list_url, {"screener_type": custom_screener})
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 2)
+        self.assertEqual(len(response.data["results"]), 2)
+        self.assertEqual(
+            {item["ticker"] for item in response.data["results"]}, {"CSTM1", "CSTM2"}
+        )
+
     def test_legacy_screenter_type_query_param_is_supported(self) -> None:
         self.create_investment(ticker="BND", category="ETF", screener_type="Growth")
         self.create_investment(ticker="GRW", category="Fund", screener_type="Value")

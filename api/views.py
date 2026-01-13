@@ -5,6 +5,7 @@ from typing import Mapping
 
 from rest_framework import viewsets
 from rest_framework.exceptions import ValidationError
+from rest_framework.response import Response
 
 from .models import (
     DueDiligenceReport,
@@ -27,6 +28,17 @@ class InvestmentViewSet(viewsets.ModelViewSet):
 
     queryset = Investment.objects.all()
     serializer_class = InvestmentSerializer
+
+    def list(self, request, *args, **kwargs):  # type: ignore[override]
+        screener_type = request.query_params.get("screener_type") or request.query_params.get(
+            "screenter_type"
+        )
+        if screener_type and screener_type.strip().lower() == "custom screener filter":
+            queryset = self.filter_queryset(self.get_queryset())
+            serializer = self.get_serializer(queryset, many=True)
+            return Response({"count": len(serializer.data), "results": serializer.data})
+
+        return super().list(request, *args, **kwargs)
 
     def get_queryset(self):  # type: ignore[override]
         queryset = super().get_queryset()
