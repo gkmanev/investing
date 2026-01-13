@@ -11,7 +11,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 from unittest.mock import MagicMock, call, patch
 
-from api.custom_filters import CUSTOM_FILTER_PAYLOAD
+from api.custom_filters import CUSTOM_FILTER_PAYLOAD, CUSTOM_FILTER_PAYLOAD_V2
 from api.management.commands.fetch_profile_data import (
     API_HEADERS,
     OPTION_EXPIRATIONS_ENDPOINT,
@@ -283,6 +283,14 @@ class ScreenerFilterAPITestCase(APITestCase):
 
 
 class FetchScreenersCommandTests(APITestCase):
+    def _assert_custom_filter(self, name: str, payload: dict) -> None:
+        custom_screener = ScreenerType.objects.get(name=name)
+        custom_filters = list(custom_screener.filters.order_by("display_order"))
+        self.assertEqual(len(custom_filters), 1)
+        self.assertEqual(custom_filters[0].label, name)
+        self.assertEqual(custom_filters[0].payload, payload)
+        self.assertEqual(custom_filters[0].display_order, 1)
+
     @patch("api.management.commands.fetch_screeners.requests.get")
     def test_fetch_and_persist_screeners(self, mock_get: MagicMock) -> None:
         mock_get.return_value = MagicMock(
@@ -331,7 +339,7 @@ class FetchScreenersCommandTests(APITestCase):
 
         call_command("fetch_screeners")
 
-        self.assertEqual(ScreenerType.objects.count(), 3)
+        self.assertEqual(ScreenerType.objects.count(), 4)
         screener = ScreenerType.objects.get(name="Value Stocks")
         self.assertEqual(screener.description, "Stocks filtered by valuation metrics.")
 
@@ -379,12 +387,8 @@ class FetchScreenersCommandTests(APITestCase):
 
         self.assertEqual(filters[1].display_order, 2)
 
-        custom_screener = ScreenerType.objects.get(name="Custom screener filter")
-        custom_filters = list(custom_screener.filters.order_by("display_order"))
-        self.assertEqual(len(custom_filters), 1)
-        self.assertEqual(custom_filters[0].label, "Custom screener filter")
-        self.assertEqual(custom_filters[0].payload, CUSTOM_FILTER_PAYLOAD)
-        self.assertEqual(custom_filters[0].display_order, 1)
+        self._assert_custom_filter("Custom screener filter", CUSTOM_FILTER_PAYLOAD)
+        self._assert_custom_filter("Custom screener filterV2", CUSTOM_FILTER_PAYLOAD_V2)
 
     @patch("api.management.commands.fetch_screeners.requests.get")
     def test_command_removes_missing_filters(self, mock_get: MagicMock) -> None:
@@ -422,12 +426,8 @@ class FetchScreenersCommandTests(APITestCase):
         self.assertEqual(filters[0].payload, "Volume Surge")
         self.assertEqual(filters[0].display_order, 1)
 
-        custom_screener = ScreenerType.objects.get(name="Custom screener filter")
-        custom_filters = list(custom_screener.filters.order_by("display_order"))
-        self.assertEqual(len(custom_filters), 1)
-        self.assertEqual(custom_filters[0].label, "Custom screener filter")
-        self.assertEqual(custom_filters[0].payload, CUSTOM_FILTER_PAYLOAD)
-        self.assertEqual(custom_filters[0].display_order, 1)
+        self._assert_custom_filter("Custom screener filter", CUSTOM_FILTER_PAYLOAD)
+        self._assert_custom_filter("Custom screener filterV2", CUSTOM_FILTER_PAYLOAD_V2)
 
     @patch("api.management.commands.fetch_screeners.requests.get")
     def test_command_trims_quant_rating_values(self, mock_get: MagicMock) -> None:
@@ -473,11 +473,8 @@ class FetchScreenersCommandTests(APITestCase):
             'field=sample, quant_rating=["strong_buy", "buy"]',
         )
 
-        custom_screener = ScreenerType.objects.get(name="Custom screener filter")
-        custom_filters = list(custom_screener.filters.order_by("display_order"))
-        self.assertEqual(len(custom_filters), 1)
-        self.assertEqual(custom_filters[0].label, "Custom screener filter")
-        self.assertEqual(custom_filters[0].payload, CUSTOM_FILTER_PAYLOAD)
+        self._assert_custom_filter("Custom screener filter", CUSTOM_FILTER_PAYLOAD)
+        self._assert_custom_filter("Custom screener filterV2", CUSTOM_FILTER_PAYLOAD_V2)
 
     @patch("api.management.commands.fetch_screeners.requests.get")
     def test_command_removes_industry_id_from_quant_screener(
@@ -889,6 +886,43 @@ class FetchScreenerResultsCommandTests(APITestCase):
         self.assertEqual(payload["close"].get("lte"), 50)
         self.assertEqual(payload["close"].get("gte"), 15.0)
         self.assertEqual(payload["marketcap_display"].get("gte"), 7_000_000_000)
+
+    @patch("api.management.commands.fetch_screener_results.requests.post")
+    def test_command_includes_custom_filter_v2(self, mock_post: MagicMock) -> None:
+        custom_screener = ScreenerType.objects.create(
+            name="Custom screener filterV2",
+            description="Custom filter payload V2 only.",
+        )
+        ScreenerFilter.objects.create(
+            screener_type=custom_screener,
+            label="Base filters",
+            payload={"close": {"lte": 25}},
+            display_order=1,
+        )
+
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {"data": [{"attributes": {"name": "Sample"}}]},
+            text="{}",
+        )
+
+        call_command(
+            "fetch_screener_results",
+            screener_name=custom_screener.name,
+            market_cap="6B",
+            min_price="10",
+        )
+
+        _, kwargs = mock_post.call_args
+        payload = kwargs["json"]
+
+        self.assertEqual(payload.get("exchange"), CUSTOM_FILTER_PAYLOAD_V2["exchange"])
+        self.assertIn("marketcap_display", payload)
+        self.assertEqual(payload["marketcap_display"].get("gte"), 6_000_000_000)
+        self.assertIn("quant_rating", payload)
+        self.assertNotIn("altman_z_score", payload)
+        self.assertEqual(payload["close"].get("lte"), 25)
+        self.assertEqual(payload["close"].get("gte"), 10.0)
 
     @patch("api.management.commands.fetch_screener_results.requests.post")
     def test_command_removes_industry_id_for_quant_screener(
