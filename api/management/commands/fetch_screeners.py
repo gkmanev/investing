@@ -9,7 +9,7 @@ import requests
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
-from api.custom_filters import CUSTOM_FILTER_PAYLOAD
+from api.custom_filters import CUSTOM_FILTER_PAYLOAD, EXCHANGE_FILTER_PAYLOAD
 from api.management.commands.rapidapi_counter import log_rapidapi_fetch
 from api.models import ScreenerFilter, ScreenerType
 
@@ -296,11 +296,16 @@ def _apply_payload_rules(
         )
 
         if quant_changed or trimmed_payload != payload_without_industry:
-            return trimmed_payload, True
+            updated_payload, _ = _add_exchange_filter(trimmed_payload)
+            return updated_payload, True
 
-        return payload_without_industry, industry_changed
+        updated_payload, exchange_changed = _add_exchange_filter(
+            payload_without_industry
+        )
+        return updated_payload, industry_changed or exchange_changed
 
-    return payload, False
+    updated_payload, exchange_changed = _add_exchange_filter(payload)
+    return updated_payload, exchange_changed
 
 
 def _trim_quant_rating_values(payload: Any) -> Tuple[Any, bool]:
@@ -395,5 +400,28 @@ def _remove_industry_id(payload: Any) -> Tuple[Any, bool]:
                 changed = True
 
         return updated_list, changed
+
+    return payload, False
+
+
+def _add_exchange_filter(payload: Any) -> Tuple[Any, bool]:
+    if isinstance(payload, dict):
+        if "exchange" in payload:
+            return payload, False
+        updated_payload = {**payload, **EXCHANGE_FILTER_PAYLOAD}
+        return updated_payload, True
+
+    if isinstance(payload, list):
+        changed = False
+        updated_list: list[Any] = []
+        for item in payload:
+            new_item, item_changed = _add_exchange_filter(item)
+            updated_list.append(new_item)
+            if item_changed or new_item != item:
+                changed = True
+
+        if changed:
+            return updated_list, True
+        return payload, False
 
     return payload, False
