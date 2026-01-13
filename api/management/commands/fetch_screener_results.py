@@ -104,15 +104,8 @@ class Command(BaseCommand):
         include_custom_filters = self._should_include_custom_filters(screener_name)
         filters: Iterable[Any]
         if include_custom_filters:
-            try:
-                screener = ScreenerType.objects.prefetch_related("filters").get(
-                    name=screener_name
-                )
-            except ScreenerType.DoesNotExist:
-                screener = None
-                filters = []
-            else:
-                filters = screener.filters.all()
+            screener = None
+            filters = []
         else:
             screener = self._get_screener(screener_name)
             filters = screener.filters.all()
