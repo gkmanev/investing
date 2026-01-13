@@ -11,7 +11,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 from unittest.mock import MagicMock, call, patch
 
-from api.custom_filters import CUSTOM_FILTER_PAYLOAD, EXCHANGE_FILTER_PAYLOAD
+from api.custom_filters import CUSTOM_FILTER_PAYLOAD
 from api.management.commands.fetch_profile_data import (
     API_HEADERS,
     OPTION_EXPIRATIONS_ENDPOINT,
@@ -322,7 +322,7 @@ class FetchScreenersCommandTests(APITestCase):
         self.assertEqual(screener.description, "Stocks filtered by valuation metrics.")
 
         filters = list(screener.filters.order_by("display_order"))
-        self.assertEqual(len(filters), 3)
+        self.assertEqual(len(filters), 2)
         self.assertEqual(filters[0].label, "field=pe_ratio, operator=<, value=15")
         self.assertEqual(
             filters[0].payload,
@@ -337,23 +337,10 @@ class FetchScreenersCommandTests(APITestCase):
         )
         self.assertEqual(filters[1].display_order, 2)
 
-        exchange_filter = filters[2]
-        self.assertEqual(
-            exchange_filter.label,
-            (
-                'exchange={"include": ["New York Stock Exchange(NYSE)", '
-                '"Nasdaq Global Select(NasdaqGS)", '
-                '"Nasdaq Global Market(NasdaqGM)", '
-                '"The Toronto Stock Exchange(TSX)"]}'
-            ),
-        )
-        self.assertEqual(exchange_filter.payload, EXCHANGE_FILTER_PAYLOAD)
-        self.assertEqual(exchange_filter.display_order, 3)
-
         second = ScreenerType.objects.get(name="Growth Picks")
         self.assertEqual(second.description, "High growth companies.")
         filters = list(second.filters.order_by("display_order"))
-        self.assertEqual(len(filters), 3)
+        self.assertEqual(len(filters), 2)
 
         industry_filter = filters[0]
         self.assertEqual(industry_filter.label, "industry_id=999")
@@ -377,19 +364,6 @@ class FetchScreenersCommandTests(APITestCase):
         self.assertIn("industry_id", growth_filter.payload)
 
         self.assertEqual(filters[1].display_order, 2)
-
-        exchange_filter = filters[2]
-        self.assertEqual(
-            exchange_filter.label,
-            (
-                'exchange={"include": ["New York Stock Exchange(NYSE)", '
-                '"Nasdaq Global Select(NasdaqGS)", '
-                '"Nasdaq Global Market(NasdaqGM)", '
-                '"The Toronto Stock Exchange(TSX)"]}'
-            ),
-        )
-        self.assertEqual(exchange_filter.payload, EXCHANGE_FILTER_PAYLOAD)
-        self.assertEqual(exchange_filter.display_order, 3)
 
         custom_screener = ScreenerType.objects.get(name="Custom screener filter")
         custom_filters = list(custom_screener.filters.order_by("display_order"))
@@ -429,23 +403,10 @@ class FetchScreenersCommandTests(APITestCase):
         screener.refresh_from_db()
         self.assertEqual(screener.description, "Updated description.")
         filters = list(screener.filters.order_by("display_order"))
-        self.assertEqual(len(filters), 2)
+        self.assertEqual(len(filters), 1)
         self.assertEqual(filters[0].label, "Volume Surge")
         self.assertEqual(filters[0].payload, "Volume Surge")
         self.assertEqual(filters[0].display_order, 1)
-
-        exchange_filter = filters[1]
-        self.assertEqual(
-            exchange_filter.label,
-            (
-                'exchange={"include": ["New York Stock Exchange(NYSE)", '
-                '"Nasdaq Global Select(NasdaqGS)", '
-                '"Nasdaq Global Market(NasdaqGM)", '
-                '"The Toronto Stock Exchange(TSX)"]}'
-            ),
-        )
-        self.assertEqual(exchange_filter.payload, EXCHANGE_FILTER_PAYLOAD)
-        self.assertEqual(exchange_filter.display_order, 2)
 
         custom_screener = ScreenerType.objects.get(name="Custom screener filter")
         custom_filters = list(custom_screener.filters.order_by("display_order"))
@@ -488,7 +449,7 @@ class FetchScreenersCommandTests(APITestCase):
         self.assertEqual(screener.description, "Quant focused screener.")
 
         filters = list(screener.filters.order_by("display_order"))
-        self.assertEqual(len(filters), 2)
+        self.assertEqual(len(filters), 1)
         self.assertEqual(
             filters[0].payload,
             {"field": "sample", "quant_rating": ["strong_buy", "buy"]},
@@ -498,17 +459,6 @@ class FetchScreenersCommandTests(APITestCase):
             'field=sample, quant_rating=["strong_buy", "buy"]',
         )
 
-        exchange_filter = filters[1]
-        self.assertEqual(
-            exchange_filter.label,
-            (
-                'exchange={"include": ["New York Stock Exchange(NYSE)", '
-                '"Nasdaq Global Select(NasdaqGS)", '
-                '"Nasdaq Global Market(NasdaqGM)", '
-                '"The Toronto Stock Exchange(TSX)"]}'
-            ),
-        )
-        self.assertEqual(exchange_filter.payload, EXCHANGE_FILTER_PAYLOAD)
         custom_screener = ScreenerType.objects.get(name="Custom screener filter")
         custom_filters = list(custom_screener.filters.order_by("display_order"))
         self.assertEqual(len(custom_filters), 1)
@@ -545,25 +495,13 @@ class FetchScreenersCommandTests(APITestCase):
 
         screener = ScreenerType.objects.get(name="Stocks by Quant")
         filters = list(screener.filters.order_by("display_order"))
-        self.assertEqual(len(filters), 2)
+        self.assertEqual(len(filters), 1)
         self.assertEqual(
             filters[0].payload,
             {"field": "sample", "quant_rating": {"in": ["strong_buy", "buy"]}},
         )
         self.assertNotIn("industry_id", filters[0].label)
         self.assertNotIn("industry_id", json.dumps(filters[0].payload))
-
-        exchange_filter = filters[1]
-        self.assertEqual(
-            exchange_filter.label,
-            (
-                'exchange={"include": ["New York Stock Exchange(NYSE)", '
-                '"Nasdaq Global Select(NasdaqGS)", '
-                '"Nasdaq Global Market(NasdaqGM)", '
-                '"The Toronto Stock Exchange(TSX)"]}'
-            ),
-        )
-        self.assertEqual(exchange_filter.payload, EXCHANGE_FILTER_PAYLOAD)
 
 
 class FetchTickerNamesCommandTests(APITestCase):
@@ -809,12 +747,7 @@ class FetchScreenerResultsCommandTests(APITestCase):
 
         self.assertEqual(
             payload,
-            {
-                "exchange": EXCHANGE_FILTER_PAYLOAD["exchange"],
-                "field": "market_cap",
-                "operator": ">=",
-                "value": 500_000_000,
-            },
+            {"field": "market_cap", "operator": ">=", "value": 500_000_000},
         )
         self.assertNotIn("value_category", payload)
 
