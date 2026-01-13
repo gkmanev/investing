@@ -4,7 +4,7 @@ from __future__ import annotations
 
 EXCHANGE_FILTER_PAYLOAD = {
     "exchange": {
-        "include": [
+        "in": [
             "New York Stock Exchange(NYSE)",
             "Nasdaq Global Select(NasdaqGS)",
             "Nasdaq Global Market(NasdaqGM)",
