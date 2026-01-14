@@ -5,7 +5,7 @@ from typing import Any, Iterable
 import requests
 from django.core.management.base import BaseCommand, CommandError
 
-INVESTMENTS_URL = "http://127.0.0.1:8000/api/investments/"
+INVESTMENTS_URL = "http://127.0.0.1:8080/api/investments/"
 DEFAULT_SCREENER_TYPE = "Stocks by Quant"
 
 

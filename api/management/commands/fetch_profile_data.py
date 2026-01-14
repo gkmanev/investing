@@ -10,7 +10,7 @@ from django.utils import timezone
 from api.management.commands.rapidapi_counter import log_rapidapi_fetch
 from api.models import Investment
 
-BASE_URL = "http://127.0.0.1:8000"
+BASE_URL = "http://127.0.0.1:8080"
 INVESTMENTS_ENDPOINT = f"{BASE_URL}/api/investments/"
 OPTION_EXPIRATIONS_ENDPOINT = (
     "https://seeking-alpha.p.rapidapi.com/symbols/get-option-expirations"

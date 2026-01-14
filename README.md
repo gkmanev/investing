@@ -23,7 +23,7 @@ python manage.py migrate
 python manage.py runserver
 ```
 
-The API will be available at `http://127.0.0.1:8000/api/investments/`.
+The API will be available at `http://127.0.0.1:8080/api/investments/`.
 
 ## Deploying with Docker Compose
 
@@ -42,7 +42,7 @@ Set `ALLOWED_HOSTS` to include your VM IP (for example, `209.38.208.230`) and up
 docker compose up -d --build
 ```
 
-The API will be available at `http://209.38.208.230:8000/api/investments/`.
+The API will be available at `http://209.38.208.230:8080/api/investments/`.
 
 To view logs:
 
@@ -71,31 +71,31 @@ You can refine the investment list by passing query parameters:
 List only growth screener investments suitable for options:
 
 ```bash
-curl "http://127.0.0.1:8000/api/investments/?screener_type=growth&options_suitability=1"
+curl "http://127.0.0.1:8080/api/investments/?screener_type=growth&options_suitability=1"
 ```
 
 Filter by a screener type that includes spaces:
 
 ```bash
-curl "http://127.0.0.1:8000/api/investments/?screener_type=Strong%20Buy%20Stocks%20With%20Short%20Squeeze%20Potential"
+curl "http://127.0.0.1:8080/api/investments/?screener_type=Strong%20Buy%20Stocks%20With%20Short%20Squeeze%20Potential"
 ```
 
 When requesting the custom screener filter, the response includes the number of returned tickers:
 
 ```bash
-curl "http://127.0.0.1:8000/api/investments/?screener_type=Custom%20screener%20filter"
+curl "http://127.0.0.1:8080/api/investments/?screener_type=Custom%20screener%20filter"
 ```
 
 Using the legacy `screenter_type` query parameter works the same way:
 
 ```bash
-curl "http://127.0.0.1:8000/api/investments/?screenter_type=growth"
+curl "http://127.0.0.1:8080/api/investments/?screenter_type=growth"
 ```
 
 Find ETFs with a minimum price of $10 and minimum volume of 1,000:
 
 ```bash
-curl "http://127.0.0.1:8000/api/investments/?category=ETF&min_price=10&min_volume=1000"
+curl "http://127.0.0.1:8080/api/investments/?category=ETF&min_price=10&min_volume=1000"
 ```
 
 ## Running tests

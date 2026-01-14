@@ -531,7 +531,7 @@ class FetchTickerNamesCommandTests(APITestCase):
         result = call_command("fetch_ticker_names", stdout=buffer)
 
         mock_get.assert_called_once_with(
-            "http://127.0.0.1:8000/api/investments/",
+            "http://127.0.0.1:8080/api/investments/",
             params={"options_suitability": 1, "screener_type": "Stocks by Quant"},
             timeout=30,
         )
