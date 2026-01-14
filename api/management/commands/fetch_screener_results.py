@@ -14,7 +14,11 @@ from ta.momentum import RSIIndicator
 import yfinance as yf
 from django.core.management.base import BaseCommand, CommandError
 
-from api.custom_filters import CUSTOM_FILTER_PAYLOAD, CUSTOM_FILTER_PAYLOAD_V2
+from api.custom_filters import (
+    CUSTOM_FILTER_PAYLOAD,
+    CUSTOM_FILTER_PAYLOAD_V2,
+    CUSTOM_FILTER_PAYLOAD_V3,
+)
 from api.management.commands.rapidapi_counter import log_rapidapi_fetch
 from api.models import CboeSecurity, Investment, ScreenerType
 
@@ -395,6 +399,7 @@ class Command(BaseCommand):
         custom_filter_payloads = {
             "Custom screener filter": CUSTOM_FILTER_PAYLOAD,
             "Custom screener filterV2": CUSTOM_FILTER_PAYLOAD_V2,
+            "Custom screener filterV3": CUSTOM_FILTER_PAYLOAD_V3,
         }
         return custom_filter_payloads.get(screener_name)
 
