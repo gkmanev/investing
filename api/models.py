@@ -22,7 +22,7 @@ class ScreenerFilter(models.Model):
     screener_type = models.ForeignKey(
         ScreenerType, related_name="filters", on_delete=models.CASCADE
     )
-    label = models.CharField(max_length=255)
+    label = models.TextField()
     payload = models.JSONField(blank=True, null=True)
     display_order = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
