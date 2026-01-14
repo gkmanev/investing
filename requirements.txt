@@ -5,3 +5,4 @@ yfinance>=0.2,<0.3
 pandas
 gunicorn>=21.2,<22.0
 python-dotenv>=1.0,<2.0
+psycopg2-binary>=2.9,<3.0
