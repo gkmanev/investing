@@ -817,9 +817,26 @@ class Command(BaseCommand):
         if not cleaned_tickers:
             return
 
+        max_length = CboeSecurity._meta.get_field("symbol").max_length
+        filtered_tickers: list[str] = []
+        for ticker in cleaned_tickers:
+            if max_length and len(ticker) > max_length:
+                self.stderr.write(
+                    f"Skipping CBOE symbol '{ticker}' because it exceeds {max_length} characters."
+                )
+                continue
+            filtered_tickers.append(ticker)
+
+        if not filtered_tickers:
+            self.stderr.write(
+                "No CBOE symbols were within the allowed length; "
+                "skipping weekly options sync."
+            )
+            return
+
         CboeSecurity.objects.all().delete()
         CboeSecurity.objects.bulk_create(
-            [CboeSecurity(symbol=ticker) for ticker in cleaned_tickers]
+            [CboeSecurity(symbol=ticker) for ticker in filtered_tickers]
         )
 
     def _parse_weekly_options_csv(self, csv_text: str) -> set[str]:
