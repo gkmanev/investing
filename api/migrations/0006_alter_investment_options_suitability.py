@@ -10,9 +10,25 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.AlterField(
-            model_name="investment",
-            name="options_suitability",
-            field=models.SmallIntegerField(blank=True, null=True),
+        migrations.RunSQL(
+            sql=(
+                'ALTER TABLE "api_investment" '
+                'ALTER COLUMN "options_suitability" TYPE smallint '
+                'USING CASE WHEN "options_suitability" THEN 1 ELSE 0 END, '
+                'ALTER COLUMN "options_suitability" DROP NOT NULL'
+            ),
+            reverse_sql=(
+                'ALTER TABLE "api_investment" '
+                'ALTER COLUMN "options_suitability" TYPE boolean '
+                'USING ("options_suitability" = 1), '
+                'ALTER COLUMN "options_suitability" SET NOT NULL'
+            ),
+            state_operations=[
+                migrations.AlterField(
+                    model_name="investment",
+                    name="options_suitability",
+                    field=models.SmallIntegerField(blank=True, null=True),
+                ),
+            ],
         ),
     ]
