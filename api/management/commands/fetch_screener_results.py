@@ -235,20 +235,25 @@ class Command(BaseCommand):
             ticker_value = ticker.strip()
             if not ticker_value:
                 continue
-            weekly_options = None
+            weekly_options: bool | None = None
+            price = None
+            rsi = None
+            profile_payload = None
             if weekly_option_tickers is not None:
                 weekly_options = ticker_value.upper() in weekly_option_tickers
 
-            price = None
-            rsi = None
             if weekly_options:
                 try:
-                    price, rsi = self._fetch_profile_snapshot(ticker_value)
+                    profile_payload = self._fetch_profile_payload(ticker_value)
                 except CommandError as exc:
                     self.stderr.write(
-                        f"Failed to fetch price/RSI for {ticker_value}: {exc}. "
+                        f"Failed to fetch profile data for {ticker_value}: {exc}. "
                         "Continuing without price data."
                     )
+
+                if profile_payload is not None:
+                    price = self._extract_last_price(profile_payload)
+                rsi = self._fetch_rsi_value(ticker_value)
 
             defaults: dict[str, Any] = {
                 "category": asset_type,
@@ -265,17 +270,13 @@ class Command(BaseCommand):
                 defaults=defaults,
             )
 
-    def _fetch_profile_snapshot(
-        self, ticker: str
-    ) -> tuple[Decimal | None, Decimal | None]:
+    def _fetch_profile_payload(self, ticker: str) -> Any:
         params = {"symbols": ticker}
         prepared = requests.Request("GET", PROFILE_ENDPOINT, params=params).prepare()
         self.stdout.write(f"Fetching profile data from {prepared.url}")
 
-        payload = self._fetch_json(PROFILE_ENDPOINT, params=params, headers=API_HEADERS)
-        last_price = self._extract_last_price(payload)
-        rsi_value = self._fetch_rsi_value(ticker)
-        return last_price, rsi_value
+        return self._fetch_json(PROFILE_ENDPOINT, params=params, headers=API_HEADERS)
+
 
     def _fetch_json(
         self,

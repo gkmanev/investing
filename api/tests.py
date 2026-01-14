@@ -593,12 +593,14 @@ class FetchScreenerResultsCommandTests(APITestCase):
         )
 
     @patch("api.management.commands.fetch_screener_results.Command._fetch_weekly_option_tickers")
-    @patch("api.management.commands.fetch_screener_results.Command._fetch_profile_snapshot")
+    @patch("api.management.commands.fetch_screener_results.Command._fetch_rsi_value")
+    @patch("api.management.commands.fetch_screener_results.Command._fetch_profile_payload")
     @patch("api.management.commands.fetch_screener_results.requests.post")
     def test_command_populates_price_and_rsi_for_weekly_options_only(
         self,
         mock_post: MagicMock,
-        mock_profile_snapshot: MagicMock,
+        mock_profile_payload: MagicMock,
+        mock_rsi_value: MagicMock,
         mock_weekly_tickers: MagicMock,
     ) -> None:
         mock_post.return_value = MagicMock(
@@ -612,7 +614,10 @@ class FetchScreenerResultsCommandTests(APITestCase):
             text="{}",
         )
         mock_weekly_tickers.return_value = {"WEEKLY"}
-        mock_profile_snapshot.return_value = (Decimal("123.45"), Decimal("55.67"))
+        mock_profile_payload.return_value = {
+            "data": {"attributes": {"price": {"last": "123.45"}}}
+        }
+        mock_rsi_value.return_value = Decimal("55.67")
 
         call_command("fetch_screener_results", screener_name=self.screener.name)
 
@@ -625,15 +630,18 @@ class FetchScreenerResultsCommandTests(APITestCase):
         self.assertFalse(daily_investment.weekly_options)
         self.assertIsNone(daily_investment.price)
         self.assertIsNone(daily_investment.rsi)
-        mock_profile_snapshot.assert_called_once_with("WEEKLY")
+        mock_profile_payload.assert_called_once_with("WEEKLY")
+        mock_rsi_value.assert_called_once_with("WEEKLY")
 
     @patch("api.management.commands.fetch_screener_results.Command._fetch_weekly_option_tickers")
-    @patch("api.management.commands.fetch_screener_results.Command._fetch_profile_snapshot")
+    @patch("api.management.commands.fetch_screener_results.Command._fetch_rsi_value")
+    @patch("api.management.commands.fetch_screener_results.Command._fetch_profile_payload")
     @patch("api.management.commands.fetch_screener_results.requests.post")
     def test_command_skips_price_fetch_when_weekly_options_unknown(
         self,
         mock_post: MagicMock,
-        mock_profile_snapshot: MagicMock,
+        mock_profile_payload: MagicMock,
+        mock_rsi_value: MagicMock,
         mock_weekly_tickers: MagicMock,
     ) -> None:
         mock_post.return_value = MagicMock(
@@ -649,7 +657,8 @@ class FetchScreenerResultsCommandTests(APITestCase):
         self.assertIsNone(investment.weekly_options)
         self.assertIsNone(investment.price)
         self.assertIsNone(investment.rsi)
-        mock_profile_snapshot.assert_not_called()
+        mock_profile_payload.assert_not_called()
+        mock_rsi_value.assert_not_called()
 
     @patch("api.management.commands.fetch_screener_results.requests.post")
     def test_command_prints_count_for_custom_screener(
