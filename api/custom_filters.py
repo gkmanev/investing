@@ -34,3 +34,10 @@ CUSTOM_FILTER_PAYLOAD_V2 = {
     "marketcap_display": {"gte": 5_000_000_000},
     "quant_rating": {"in": ["buy", "strong_buy"]},
 }
+
+CUSTOM_FILTER_PAYLOAD_V3 = {
+    **EXCHANGE_FILTER_PAYLOAD,
+    "marketcap_display": {"gte": 5_000_000_000},
+    "profitability_category": {"in": ["A+", "A", "A-", "B+", "B"]},
+    "eps_revisions_category": {"in": ["A+", "A", "A-", "B+", "B"]},
+}
