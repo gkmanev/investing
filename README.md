@@ -25,6 +25,37 @@ python manage.py runserver
 
 The API will be available at `http://127.0.0.1:8000/api/investments/`.
 
+## Deploying with Docker Compose
+
+1. Copy the example environment file and update values:
+
+```bash
+cp .env.example .env
+```
+
+Set `ALLOWED_HOSTS` to include your VM IP (for example, `209.38.208.230`) and update
+`SECRET_KEY` for production.
+
+2. Build and start the service:
+
+```bash
+docker compose up -d --build
+```
+
+The API will be available at `http://209.38.208.230:8000/api/investments/`.
+
+To view logs:
+
+```bash
+docker compose logs -f
+```
+
+To stop:
+
+```bash
+docker compose down
+```
+
 ## Filtering investments
 
 You can refine the investment list by passing query parameters:

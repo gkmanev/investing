@@ -23,13 +23,16 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = "django-insecure-@^$l03hdb8%d%#eo=k*+qdjq94u-5fmbnmlr6)m5yfuh8@nhvi"
+SECRET_KEY = os.getenv(
+    "SECRET_KEY", "django-insecure-@^$l03hdb8%d%#eo=k*+qdjq94u-5fmbnmlr6)m5yfuh8@nhvi"
+)
 
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.getenv("DEBUG", "False").lower() in {"1", "true", "yes"}
 
-ALLOWED_HOSTS = []
+allowed_hosts = os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost")
+ALLOWED_HOSTS = [host.strip() for host in allowed_hosts.split(",") if host.strip()]
 
 
 # Application definition
