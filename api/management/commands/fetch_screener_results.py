@@ -13,6 +13,7 @@ import requests
 from ta.momentum import RSIIndicator
 import yfinance as yf
 from django.core.management.base import BaseCommand, CommandError
+from django.db import connection
 
 from api.custom_filters import (
     CUSTOM_FILTER_PAYLOAD,
@@ -207,6 +208,7 @@ class Command(BaseCommand):
             )
 
         weekly_option_tickers = self._fetch_weekly_option_tickers()
+        self._ensure_investment_sequence()
         self._sync_investments(
             all_ticker_names,
             asset_type,
@@ -222,6 +224,24 @@ class Command(BaseCommand):
 
     def _delete_existing_investments(self, screener_name: str) -> None:
         Investment.objects.filter(screener_type=screener_name).delete()
+
+    def _ensure_investment_sequence(self) -> None:
+        if connection.vendor != "postgresql":
+            return
+
+        table_name = Investment._meta.db_table
+        quoted_table = connection.ops.quote_name(table_name)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                (
+                    "SELECT setval("
+                    "pg_get_serial_sequence(%s, %s), "
+                    "COALESCE(MAX(id), 1), "
+                    "MAX(id) IS NOT NULL"
+                    f") FROM {quoted_table}"
+                ),
+                [table_name, "id"],
+            )
 
     def _sync_investments(
         self,
