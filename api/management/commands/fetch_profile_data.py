@@ -20,6 +20,7 @@ API_HEADERS = {
     "x-rapidapi-key": "66dcbafb75msha536f3086b06788p1f5e7ajsnac1315877f0f",
     "x-rapidapi-host": "seeking-alpha.p.rapidapi.com",
 }
+TARGET_OPTION_WEEKS = 3
 
 
 class Command(BaseCommand):
@@ -113,7 +114,9 @@ class Command(BaseCommand):
                     )
 
                 chosen_option_exp = self._select_option_expiration(
-                    expiration_data["dates"], today
+                    expiration_data["dates"],
+                    today,
+                    target_weeks=TARGET_OPTION_WEEKS,
                 )
                 ticker_id_value = self._coerce_ticker_id(expiration_data.get("ticker_id"))
             defaults: dict[str, Any] = {"category": "stock"}
@@ -319,14 +322,28 @@ class Command(BaseCommand):
                 furthest = parsed_date
         return furthest
 
-    def _select_option_expiration(self, dates: list[str], today: date) -> date | None:
-        """Return the third upcoming expiration date (if available)."""
+    def _select_option_expiration(
+        self, dates: list[str], today: date, target_weeks: int
+    ) -> date | None:
+        """Return the first expiration date on/after the target Friday."""
         parsed = self._parse_expiration_dates(dates)
         upcoming = [d for d in parsed if d >= today]
 
-        if len(upcoming) < 3:
+        if not upcoming:
             return None
-        return upcoming[2]
+
+        target_date = self._target_friday(today, target_weeks)
+        for expiration_date in upcoming:
+            if expiration_date >= target_date:
+                return expiration_date
+        return None
+
+    def _target_friday(self, today: date, target_weeks: int) -> date:
+        if target_weeks < 1:
+            raise CommandError("TARGET_OPTION_WEEKS must be at least 1.")
+        days_until_friday = (4 - today.weekday()) % 7
+        next_friday = today + timedelta(days=days_until_friday)
+        return next_friday + timedelta(weeks=target_weeks - 1)
 
     # -------------------------
     # Id coercion
