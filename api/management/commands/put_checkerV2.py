@@ -1,0 +1,525 @@
+from __future__ import annotations
+
+from datetime import date
+from decimal import Decimal, DivisionByZero, InvalidOperation
+import math
+from typing import Any
+
+import requests
+from django.core.management.base import BaseCommand, CommandError
+
+from api.management.commands.rapidapi_counter import log_rapidapi_fetch
+from api.models import Investment
+
+API_URL = "https://seeking-alpha.p.rapidapi.com/symbols/v2/get-options"
+API_HEADERS = {
+    "x-rapidapi-key": "66dcbafb75msha536f3086b06788p1f5e7ajsnac1315877f0f",
+    "x-rapidapi-host": "seeking-alpha.p.rapidapi.com",
+}
+ROI_MIN = Decimal("2.8")
+ROI_MAX = Decimal("3.2")
+DELTA_LOWER = Decimal("-0.34")
+DELTA_UPPER = Decimal("-0.25")
+
+
+class Command(BaseCommand):
+    """Fetch put options priced below stored investment prices."""
+
+    help = "Check for put options below the stored investment price."
+
+    def add_arguments(self, parser) -> None:  # pragma: no cover - argparse wiring
+        parser.add_argument(
+            "--screener_type",
+            help="Screener type to filter investments by.",
+            required=True,
+        )
+
+    def handle(self, *args: Any, **options: Any) -> str:
+        screener_type: str = options["screener_type"]
+        investments = Investment.objects.filter(
+            weekly_options=True, screener_type=screener_type
+        )
+
+        if not investments.exists():
+            raise CommandError(
+                "No investments found with weekly_options=True for the provided screener type."
+            )
+
+        risk_free_rate = self._fetch_risk_free_rate()
+        if risk_free_rate is None:
+            self.stderr.write(
+                "Risk-free rate unavailable; implied volatility will be skipped."
+            )
+
+        summaries: list[str] = []
+        for investment in investments:
+            if investment.option_exp is None:
+                self.stderr.write(
+                    f"Skipping {investment.ticker}: missing option expiration date."
+                )
+                continue
+
+            if investment.price is None:
+                self.stderr.write(
+                    f"Skipping {investment.ticker}: missing stored price for comparison."
+                )
+                continue
+
+            try:
+                options_payload = self._fetch_options(
+                    investment.id, investment.option_exp.isoformat()
+                )
+            except CommandError as exc:
+                self.stderr.write(f"{investment.ticker}: {exc}")
+                continue
+
+            time_to_expiration = self._time_to_expiration_years(investment.option_exp)
+            put_options = self._filter_put_options(
+                options_payload,
+                investment.price,
+                spot_price=investment.price,
+                time_to_expiration=time_to_expiration,
+                risk_free_rate=risk_free_rate,
+            )
+            roi_options = self._build_roi_options(
+                put_options,
+                delta_lower=DELTA_LOWER,
+                delta_upper=DELTA_UPPER,
+            )
+            roi_candidates = [
+                option
+                for option in roi_options
+                if option.get("roi") is not None
+                and ROI_MIN <= option["roi"] <= ROI_MAX
+            ]
+
+            roi_target = self._select_roi_candidate(roi_options)
+            if roi_target is not None:
+                self._update_investment_roi(
+                    investment,
+                    roi=roi_target.get("roi"),
+                    delta=self._to_decimal(roi_target.get("delta")),
+                )
+
+            if not roi_candidates:
+                continue
+
+            for option in roi_candidates:
+                mid_display = self._format_value(option.get("mid"))
+                delta_display = self._format_delta(option.get("delta"))
+                summary = (
+                    f"{investment.ticker}: delta {delta_display} mid {mid_display} "
+                    f"strike {option.get('strike_price', 'N/A')}"
+                )
+                self.stdout.write(summary)
+                summaries.append(summary)
+
+        if not summaries:
+            raise CommandError(
+                "No put options met the ROI range for the selected investments."
+            )
+
+        return ""
+
+    def _fetch_options(self, ticker_id: int, expiration_date: str) -> Any:
+        params = {"ticker_id": str(ticker_id), "expiration_date": expiration_date}
+        try:
+            response = requests.get(
+                API_URL, headers=API_HEADERS, params=params, timeout=30
+            )
+        except requests.RequestException as exc:  # pragma: no cover - network failure
+            raise CommandError(f"Failed to call Seeking Alpha options API: {exc}") from exc
+        log_rapidapi_fetch(self)
+
+        if response.status_code != 200:
+            raise CommandError(
+                f"Unexpected status code {response.status_code}: {response.text}"
+            )
+
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise CommandError("Invalid JSON received from options API.") from exc
+
+    def _filter_put_options(
+        self,
+        payload: Any,
+        max_price: Decimal,
+        *args: Any,
+        spot_price: Decimal | None = None,
+        time_to_expiration: Decimal | None = None,
+        risk_free_rate: Decimal | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return put options below the max price.
+
+        Accepts extra positional arguments for backward compatibility with
+        older call sites that passed additional parameters, ensuring the
+        command does not fail with a positional argument error.
+        """
+        options = self._extract_options(payload)
+        filtered: list[tuple[Decimal, dict[str, Any]]] = []
+
+        for option in options:
+            option_type = str(option.get("option_type", "")).lower()
+            if option_type != "put":
+                continue
+
+            strike_raw = option.get("strike_price")
+            try:
+                strike_price = Decimal(str(strike_raw))
+            except (InvalidOperation, TypeError):
+                continue
+
+            if strike_price > max_price:
+                continue
+
+            option_with_value = dict(option)
+            option_with_value["implied_volatility"] = self._calculate_implied_volatility(
+                option_price=option.get("bid"),
+                spot_price=spot_price,
+                strike_price=strike_price,
+                time_to_expiration=time_to_expiration,
+                risk_free_rate=risk_free_rate,
+            )
+            option_with_value["delta"] = self._calculate_delta(
+                spot_price=spot_price,
+                strike_price=strike_price,
+                time_to_expiration=time_to_expiration,
+                risk_free_rate=risk_free_rate,
+                implied_volatility=option_with_value["implied_volatility"],
+            )
+            filtered.append((strike_price, option_with_value))
+
+        filtered.sort(key=lambda item: item[0], reverse=True)
+        return [option for _, option in filtered]
+
+    def _build_roi_options(
+        self,
+        options: list[dict[str, Any]],
+        *,
+        delta_lower: Decimal,
+        delta_upper: Decimal,
+    ) -> list[dict[str, Any]]:
+        """Return options with calculated ROI for the delta range."""
+
+        candidates: list[dict[str, Any]] = []
+        for option in options:
+            delta_raw = option.get("delta")
+            if delta_raw is None:
+                continue
+
+            delta_decimal = self._to_decimal(delta_raw)
+            if delta_decimal is None:
+                continue
+
+            if not (delta_lower <= delta_decimal <= delta_upper):
+                continue
+
+            try:
+                strike_price = Decimal(str(option.get("strike_price")))
+            except (InvalidOperation, TypeError):
+                continue
+
+            roi = self._calculate_roi_value(
+                bid_price=option.get("bid"),
+                ask_price=option.get("ask"),
+                strike_price=strike_price,
+            )
+            if roi is None:
+                continue
+
+            option_with_roi = dict(option)
+            option_with_roi["roi"] = roi
+            option_with_roi["mid"] = self._calculate_mid_price(
+                bid_price=option.get("bid"),
+                ask_price=option.get("ask"),
+            )
+            candidates.append(option_with_roi)
+
+        return candidates
+
+    def _select_roi_candidate(
+        self, roi_candidates: list[dict[str, Any]]
+    ) -> dict[str, Any] | None:
+        """Return the ROI candidate with the lowest absolute delta."""
+
+        best_option: dict[str, Any] | None = None
+        best_delta: Decimal | None = None
+        for option in roi_candidates:
+            delta_decimal = self._to_decimal(option.get("delta"))
+            if delta_decimal is None:
+                continue
+
+            if best_delta is None or abs(delta_decimal) < abs(best_delta):
+                best_delta = delta_decimal
+                best_option = option
+
+        return best_option
+
+    @staticmethod
+    def _calculate_roi_value(
+        *, bid_price: Any, ask_price: Any, strike_price: Decimal
+    ) -> Decimal | None:
+        """Return ((bid + ask) / 2 / strike) * 100 as a Decimal.
+
+        Returns ``None`` when prices are missing or invalid.
+        """
+
+        bid_decimal = Command._to_decimal(bid_price)
+        ask_decimal = Command._to_decimal(ask_price)
+        if bid_decimal is None or ask_decimal is None:
+            return None
+
+        if strike_price == 0:
+            return None
+
+        try:
+            mid_price = (bid_decimal + ask_decimal) / Decimal("2")
+            percentage = (mid_price / strike_price) * Decimal("100")
+        except (InvalidOperation, DivisionByZero):
+            return None
+
+        return percentage.quantize(Decimal("0.01"))
+
+    @staticmethod
+    def _calculate_mid_price(*, bid_price: Any, ask_price: Any) -> Decimal | None:
+        """Return (bid + ask) / 2 as a Decimal."""
+
+        bid_decimal = Command._to_decimal(bid_price)
+        ask_decimal = Command._to_decimal(ask_price)
+        if bid_decimal is None or ask_decimal is None:
+            return None
+
+        try:
+            mid_price = (bid_decimal + ask_decimal) / Decimal("2")
+        except (InvalidOperation, DivisionByZero):
+            return None
+
+        return mid_price.quantize(Decimal("0.01"))
+
+    @staticmethod
+    def _calculate_implied_volatility(
+        *,
+        option_price: Any,
+        spot_price: Decimal | None,
+        strike_price: Decimal,
+        time_to_expiration: Decimal | None,
+        risk_free_rate: Decimal | None,
+    ) -> Decimal | None:
+        """Calculate implied volatility using a bisection method.
+
+        Returns the implied volatility as a percentage, or ``None`` if inputs are
+        missing or invalid.
+        """
+
+        option_decimal = Command._to_decimal(option_price)
+        if (
+            option_decimal is None
+            or spot_price is None
+            or time_to_expiration is None
+            or risk_free_rate is None
+        ):
+            return None
+
+        if option_decimal <= 0 or spot_price <= 0 or strike_price <= 0:
+            return None
+
+        if time_to_expiration <= 0:
+            return None
+
+        try:
+            spot = float(spot_price)
+            strike = float(strike_price)
+            time_years = float(time_to_expiration)
+            rate = float(risk_free_rate)
+            target_price = float(option_decimal)
+        except (TypeError, ValueError):
+            return None
+
+        def cdf(value: float) -> float:
+            return 0.5 * (1.0 + math.erf(value / math.sqrt(2.0)))
+
+        def put_price(volatility: float) -> float:
+            if volatility <= 0:
+                return 0.0
+            sqrt_time = math.sqrt(time_years)
+            d1 = (
+                math.log(spot / strike)
+                + (rate + 0.5 * volatility**2) * time_years
+            ) / (volatility * sqrt_time)
+            d2 = d1 - volatility * sqrt_time
+            return strike * math.exp(-rate * time_years) * cdf(-d2) - spot * cdf(-d1)
+
+        low = 1e-6
+        high = 5.0
+        low_price = put_price(low)
+        high_price = put_price(high)
+
+        if target_price < low_price or target_price > high_price:
+            return None
+
+        for _ in range(100):
+            mid = (low + high) / 2.0
+            mid_price = put_price(mid)
+            if abs(mid_price - target_price) < 1e-6:
+                low = mid
+                break
+            if mid_price > target_price:
+                high = mid
+            else:
+                low = mid
+
+        return Decimal(str(low * 100)).quantize(Decimal("0.01"))
+
+    @staticmethod
+    def _calculate_delta(
+        *,
+        spot_price: Decimal | None,
+        strike_price: Decimal,
+        time_to_expiration: Decimal | None,
+        risk_free_rate: Decimal | None,
+        implied_volatility: Decimal | None,
+    ) -> Decimal | None:
+        """Calculate the Black-Scholes delta for a put option."""
+
+        if (
+            spot_price is None
+            or time_to_expiration is None
+            or risk_free_rate is None
+            or implied_volatility is None
+        ):
+            return None
+
+        if spot_price <= 0 or strike_price <= 0 or time_to_expiration <= 0:
+            return None
+
+        try:
+            spot = float(spot_price)
+            strike = float(strike_price)
+            time_years = float(time_to_expiration)
+            rate = float(risk_free_rate)
+            volatility = float(implied_volatility) / 100.0
+        except (TypeError, ValueError):
+            return None
+
+        if volatility <= 0:
+            return None
+
+        sqrt_time = math.sqrt(time_years)
+        d1 = (
+            math.log(spot / strike) + (rate + 0.5 * volatility**2) * time_years
+        ) / (volatility * sqrt_time)
+        delta = 0.5 * (1.0 + math.erf(d1 / math.sqrt(2.0))) - 1.0
+        return Decimal(str(delta)).quantize(Decimal("0.01"))
+
+    @staticmethod
+    def _to_decimal(value: Any) -> Decimal | None:
+        """Convert a value to Decimal, returning None when conversion fails."""
+
+        try:
+            return Decimal(str(value))
+        except (InvalidOperation, TypeError):
+            return None
+
+    @staticmethod
+    def _format_value(value: Decimal | None) -> str:
+        """Convert an optional value to a printable string."""
+
+        if value is None:
+            return "N/A"
+
+        return f"{value}"
+
+    @staticmethod
+    def _format_delta(delta: Decimal | None) -> str:
+        """Convert an optional delta to a printable string."""
+
+        if delta is None:
+            return "N/A"
+
+        return f"{delta}"
+
+    def _update_investment_roi(
+        self, investment: Investment, *, roi: Decimal | None, delta: Decimal | None
+    ) -> None:
+        """Persist the calculated ROI and delta on the investment if they changed."""
+
+        if roi == investment.roi and delta == investment.delta:
+            return
+
+        investment.roi = roi
+        investment.delta = delta
+        investment.save(update_fields=["roi", "delta"])
+
+    def _extract_options(self, payload: Any) -> list[dict[str, Any]]:
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+
+        if isinstance(payload, dict):
+            options = payload.get("options")
+            if isinstance(options, list):
+                return [item for item in options if isinstance(item, dict)]
+
+        raise CommandError("Options data was not found in the API response.")
+
+    def _fetch_risk_free_rate(self) -> Decimal | None:
+        """Fetch the latest risk-free rate from the U.S. Treasury API."""
+
+        url = (
+            "https://api.fiscaldata.treasury.gov/services/api/"
+            "fiscal_service/v2/accounting/od/avg_interest_rates"
+        )
+        params = {
+            "filter": "security_desc:eq:Treasury Bills",
+            "sort": "-record_date",
+            "page[size]": "1",
+        }
+        try:
+            response = requests.get(url, params=params, timeout=30)
+        except requests.RequestException as exc:  # pragma: no cover - network failure
+            self.stderr.write(f"Failed to fetch risk-free rate: {exc}")
+            return None
+
+        if response.status_code != 200:
+            self.stderr.write(
+                "Risk-free rate request failed with status "
+                f"{response.status_code}: {response.text}"
+            )
+            return None
+
+        try:
+            payload = response.json()
+        except ValueError:
+            self.stderr.write("Risk-free rate response was not valid JSON.")
+            return None
+
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, list) or not data:
+            self.stderr.write("Risk-free rate data was missing in the response.")
+            return None
+
+        entry = data[0] if isinstance(data[0], dict) else None
+        if not entry:
+            self.stderr.write("Risk-free rate entry was missing.")
+            return None
+
+        rate_raw = entry.get("avg_interest_rate_amt")
+        rate_decimal = self._to_decimal(rate_raw)
+        if rate_decimal is None:
+            self.stderr.write("Risk-free rate value was invalid.")
+            return None
+
+        return (rate_decimal / Decimal("100")).quantize(Decimal("0.0001"))
+
+    @staticmethod
+    def _time_to_expiration_years(expiration_date: date | None) -> Decimal | None:
+        """Return time to expiration in years."""
+
+        if expiration_date is None:
+            return None
+
+        days = (expiration_date - date.today()).days
+        if days <= 0:
+            return None
+
+        return (Decimal(days) / Decimal("365")).quantize(Decimal("0.0001"))
