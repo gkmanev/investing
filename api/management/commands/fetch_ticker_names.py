@@ -3,9 +3,10 @@ from __future__ import annotations
 from typing import Any, Iterable
 
 import requests
+from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
-INVESTMENTS_URL = "http://127.0.0.1:8080/api/investments/"
+INVESTMENTS_URL = f"{settings.LOCAL_API_BASE_URL}/api/investments/"
 DEFAULT_SCREENER_TYPE = "Stocks by Quant"
 
 

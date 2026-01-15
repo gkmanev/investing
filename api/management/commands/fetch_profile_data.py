@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from typing import Any, Iterable
 import requests
+from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db import IntegrityError, transaction
 from django.utils import timezone
@@ -10,7 +11,7 @@ from django.utils import timezone
 from api.management.commands.rapidapi_counter import log_rapidapi_fetch
 from api.models import Investment
 
-BASE_URL = "http://127.0.0.1:8080"
+BASE_URL = settings.LOCAL_API_BASE_URL
 INVESTMENTS_ENDPOINT = f"{BASE_URL}/api/investments/"
 OPTION_EXPIRATIONS_ENDPOINT = (
     "https://seeking-alpha.p.rapidapi.com/symbols/get-option-expirations"
