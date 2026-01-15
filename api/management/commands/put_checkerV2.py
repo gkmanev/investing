@@ -107,9 +107,10 @@ class Command(BaseCommand):
             for option in roi_candidates:
                 mid_display = self._format_value(option.get("mid"))
                 delta_display = self._format_delta(option.get("delta"))
+                roi_display = self._format_value(option.get("roi"))
                 summary = (
-                    f"{investment.ticker}: delta {delta_display} mid {mid_display} "
-                    f"strike {option.get('strike_price', 'N/A')}"
+                    f"{investment.ticker}: delta {delta_display} roi {roi_display} "
+                    f"mid {mid_display} strike {option.get('strike_price', 'N/A')}"
                 )
                 self.stdout.write(summary)
                 summaries.append(summary)
