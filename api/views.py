@@ -79,6 +79,13 @@ class InvestmentViewSet(viewsets.ModelViewSet):
             min_param="min_market_cap",
             max_param="max_market_cap",
         )
+        queryset = self._apply_decimal_filter(
+            queryset,
+            params,
+            field_name="rsi",
+            min_param="min_rsi",
+            max_param="max_rsi",
+        )
         queryset = self._apply_integer_min_filter(
             queryset, params, field_name="volume", param_name="min_volume"
         )
