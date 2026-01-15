@@ -3,6 +3,8 @@ from __future__ import annotations
 from decimal import Decimal, InvalidOperation
 from typing import Mapping
 
+from django.db.models import Q, Value
+from django.db.models.functions import Replace
 from rest_framework import viewsets
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
@@ -50,7 +52,14 @@ class InvestmentViewSet(viewsets.ModelViewSet):
 
         screener_type = params.get("screener_type") or params.get("screenter_type")
         if screener_type:
-            queryset = queryset.filter(screener_type__iexact=screener_type)
+            normalized_screener_type = " ".join(screener_type.split())
+            compact_screener_type = normalized_screener_type.replace(" ", "")
+            queryset = queryset.annotate(
+                screener_type_compact=Replace("screener_type", Value(" "), Value(""))
+            ).filter(
+                Q(screener_type__iexact=normalized_screener_type)
+                | Q(screener_type_compact__iexact=compact_screener_type)
+            )
 
         ticker_query = params.get("ticker")
         if ticker_query:
@@ -71,6 +80,14 @@ class InvestmentViewSet(viewsets.ModelViewSet):
             exact_param="roi",
             min_param="min_roi",
             max_param="max_roi",
+        )
+        queryset = self._apply_decimal_filter(
+            queryset,
+            params,
+            field_name="delta",
+            exact_param="delta",
+            min_param="min_delta",
+            max_param="max_delta",
         )
         queryset = self._apply_decimal_filter(
             queryset,
