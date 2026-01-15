@@ -75,6 +75,14 @@ class InvestmentViewSet(viewsets.ModelViewSet):
         queryset = self._apply_decimal_filter(
             queryset,
             params,
+            field_name="delta",
+            exact_param="delta",
+            min_param="min_delta",
+            max_param="max_delta",
+        )
+        queryset = self._apply_decimal_filter(
+            queryset,
+            params,
             field_name="market_cap",
             min_param="min_market_cap",
             max_param="max_market_cap",
