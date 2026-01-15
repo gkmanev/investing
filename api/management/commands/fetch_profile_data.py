@@ -20,7 +20,7 @@ API_HEADERS = {
     "x-rapidapi-key": "66dcbafb75msha536f3086b06788p1f5e7ajsnac1315877f0f",
     "x-rapidapi-host": "seeking-alpha.p.rapidapi.com",
 }
-TARGET_OPTION_WEEKS = 3
+TARGET_OPTION_WEEKS = 5
 
 
 class Command(BaseCommand):
