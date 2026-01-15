@@ -30,6 +30,11 @@ SECRET_KEY = os.getenv(
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv("DEBUG", "False").lower() in {"1", "true", "yes"}
+APP_ENV = os.getenv("APP_ENV", "development").lower()
+IS_PRODUCTION = APP_ENV == "production"
+DEFAULT_APP_PORT = "8080" if IS_PRODUCTION else "8000"
+APP_PORT = int(os.getenv("PORT", DEFAULT_APP_PORT))
+LOCAL_API_BASE_URL = os.getenv("LOCAL_API_BASE_URL", f"http://127.0.0.1:{APP_PORT}")
 
 allowed_hosts_env = os.getenv("ALLOWED_HOSTS")
 if allowed_hosts_env:
@@ -44,6 +49,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:4173",
     # optional if you also hit it from other places:
     "http://localhost:8000",
+    "http://localhost:8080",
     "http://127.0.0.1:4173",
 ]
 

@@ -32,7 +32,9 @@ class FinancialDDAgent:
             self.client = OpenAI(api_key=api_key)
         else:
             self.client = OpenAI()  # Falls back to environment variable
-        self.base_url = base_url or getattr(settings, 'FINANCIAL_API_BASE_URL', 'http://127.0.0.1:8000')
+        self.base_url = base_url or getattr(
+            settings, "FINANCIAL_API_BASE_URL", settings.LOCAL_API_BASE_URL
+        )
         self.model = getattr(settings, 'OPENAI_MODEL', 'gpt-4o-mini')
     
     def fetch_financial_data(self, symbol: str) -> Dict[str, Any]:
