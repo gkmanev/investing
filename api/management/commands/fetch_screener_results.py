@@ -277,7 +277,6 @@ class Command(BaseCommand):
 
             defaults: dict[str, Any] = {
                 "category": asset_type,
-                "screener_type": screener_name,
                 "weekly_options": weekly_options,
             }
             if price is not None:
@@ -287,6 +286,7 @@ class Command(BaseCommand):
 
             Investment.objects.update_or_create(
                 ticker=ticker_value,
+                screener_type=screener_name,
                 defaults=defaults,
             )
 

@@ -55,6 +55,7 @@ class Command(BaseCommand):
                 ticker.upper()
                 for ticker in Investment.objects.filter(
                     ticker__in=[entry["ticker"] for entry in investments],
+                    screener_type=screener_name,
                     price__isnull=False,
                 ).values_list("ticker", flat=True)
             }
@@ -119,12 +120,15 @@ class Command(BaseCommand):
                     target_weeks=TARGET_OPTION_WEEKS,
                 )
                 ticker_id_value = self._coerce_ticker_id(expiration_data.get("ticker_id"))
-            defaults: dict[str, Any] = {"category": "stock"}
+            defaults: dict[str, Any] = {
+                "category": "stock",
+                "screener_type": screener_name,
+            }
             if ticker_id_value is not None:
                 defaults["id"] = ticker_id_value
 
             investment, created = Investment.objects.get_or_create(
-                ticker=ticker, defaults=defaults
+                ticker=ticker, screener_type=screener_name, defaults=defaults
             )
 
             if not created and ticker_id_value is not None and investment.id != ticker_id_value:

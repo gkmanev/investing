@@ -38,7 +38,7 @@ class ScreenerFilter(models.Model):
 class Investment(models.Model):
     """Represents an investment option exposed through the API."""
 
-    ticker = models.CharField(max_length=50, unique=True)
+    ticker = models.CharField(max_length=50)
     category = models.CharField(max_length=100)
     screener_type = models.CharField(max_length=255, blank=True, null=True)
     price = models.DecimalField(max_digits=20, decimal_places=4, null=True, blank=True)
@@ -56,6 +56,12 @@ class Investment(models.Model):
 
     class Meta:
         ordering = ["ticker"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["ticker", "screener_type"],
+                name="unique_investment_ticker_screener_type",
+            )
+        ]
 
     def __str__(self) -> str:  # pragma: no cover - simple data representation
         return self.ticker
