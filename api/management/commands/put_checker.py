@@ -40,9 +40,6 @@ class Command(BaseCommand):
         )
 
         if not investments.exists():
-            self.stdout.write(
-                "No investments found with weekly_options=True for the provided screener type."
-            )
             return ""
 
         risk_free_rate = self._fetch_risk_free_rate()
