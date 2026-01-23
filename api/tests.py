@@ -1197,7 +1197,7 @@ class FetchProfileDataCommandTests(APITestCase):
             for expiration in parsed
             if window_start <= expiration <= window_end
         ]
-        return min(expirations_in_window) if expirations_in_window else None
+        return max(expirations_in_window) if expirations_in_window else None
 
     @patch("api.management.commands.fetch_profile_data.Command._fetch_option_expirations")
     @patch("api.management.commands.fetch_profile_data.requests.get")

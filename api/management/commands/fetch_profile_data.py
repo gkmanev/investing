@@ -130,7 +130,7 @@ class Command(BaseCommand):
                         f"furthest: {furthest_option_date.isoformat() if furthest_option_date else 'N/A'}"
                     )
 
-                chosen_option_exp = min(expirations_in_window) if expirations_in_window else None
+                chosen_option_exp = max(expirations_in_window) if expirations_in_window else None
                 ticker_id_value = self._coerce_ticker_id(expiration_data.get("ticker_id"))
             defaults: dict[str, Any] = {"category": "stock"}
             if ticker_id_value is not None:
