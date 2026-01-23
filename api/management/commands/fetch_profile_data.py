@@ -69,7 +69,7 @@ class Command(BaseCommand):
         today = timezone.now().date()
         window_start = today + timedelta(days=20)
         window_end = today + timedelta(days=40)
-        debug_windows = [(20, 40), (40, 60), (60, 80)]
+        debug_windows = [(20, 40)]
         for entry in investments:
             ticker = entry["ticker"]
             weekly_options = entry.get("weekly_options")
@@ -113,9 +113,9 @@ class Command(BaseCommand):
                         f"Debug {ticker}: expirations between {debug_start.isoformat()} "
                         f"and {debug_end.isoformat()}: {formatted_expirations}"
                     )
-                furthest_option_date = max(parsed_dates) if parsed_dates else None
-                upcoming = [expiration for expiration in parsed_dates if expiration >= today]
-                closest_expiration = min(upcoming) if upcoming else None
+                furthest_option_date = (
+                    max(expirations_in_window) if expirations_in_window else None
+                )
 
                 if len(expirations_in_window) == 0:
                     self.stdout.write(
@@ -130,7 +130,7 @@ class Command(BaseCommand):
                         f"furthest: {furthest_option_date.isoformat() if furthest_option_date else 'N/A'}"
                     )
 
-                chosen_option_exp = closest_expiration
+                chosen_option_exp = min(expirations_in_window) if expirations_in_window else None
                 ticker_id_value = self._coerce_ticker_id(expiration_data.get("ticker_id"))
             defaults: dict[str, Any] = {"category": "stock"}
             if ticker_id_value is not None:
