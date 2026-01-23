@@ -69,6 +69,7 @@ class Command(BaseCommand):
         today = timezone.now().date()
         window_start = today + timedelta(days=20)
         window_end = today + timedelta(days=40)
+        debug_windows = [(20, 40), (40, 60), (60, 80)]
         for entry in investments:
             ticker = entry["ticker"]
             weekly_options = entry.get("weekly_options")
@@ -89,15 +90,34 @@ class Command(BaseCommand):
                 expiration_data = None
 
             if expiration_data is not None:
-                expirations_in_window = self._count_expirations_in_window(
-                    expiration_data["dates"], window_start, window_end
-                )
-                furthest_option_date = self._select_furthest_date(expiration_data["dates"])
-                closest_expiration = self._select_closest_expiration(
-                    expiration_data["dates"], today
-                )
+                parsed_dates = self._parse_expiration_dates(expiration_data["dates"])
+                expirations_in_window = [
+                    expiration
+                    for expiration in parsed_dates
+                    if window_start <= expiration <= window_end
+                ]
+                for start_offset, end_offset in debug_windows:
+                    debug_start = today + timedelta(days=start_offset)
+                    debug_end = today + timedelta(days=end_offset)
+                    debug_expirations = [
+                        expiration
+                        for expiration in parsed_dates
+                        if debug_start <= expiration <= debug_end
+                    ]
+                    formatted_expirations = (
+                        ", ".join(expiration.isoformat() for expiration in debug_expirations)
+                        if debug_expirations
+                        else "None"
+                    )
+                    self.stdout.write(
+                        f"Debug {ticker}: expirations between {debug_start.isoformat()} "
+                        f"and {debug_end.isoformat()}: {formatted_expirations}"
+                    )
+                furthest_option_date = max(parsed_dates) if parsed_dates else None
+                upcoming = [expiration for expiration in parsed_dates if expiration >= today]
+                closest_expiration = min(upcoming) if upcoming else None
 
-                if expirations_in_window == 0:
+                if len(expirations_in_window) == 0:
                     self.stdout.write(
                         f"{ticker} (ticker_id {expiration_data['ticker_id']}): No option "
                         "expiration date between 20 and 40 days from today."
@@ -105,7 +125,7 @@ class Command(BaseCommand):
                 else:
                     self.stdout.write(
                         f"{ticker} (ticker_id {expiration_data['ticker_id']}): "
-                        f"{expirations_in_window} expiration dates between "
+                        f"{len(expirations_in_window)} expiration dates between "
                         f"{window_start.isoformat()} and {window_end.isoformat()}; "
                         f"furthest: {furthest_option_date.isoformat() if furthest_option_date else 'N/A'}"
                     )
