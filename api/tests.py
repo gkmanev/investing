@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from io import StringIO
 import json
@@ -1187,6 +1187,18 @@ class FetchProfileDataCommandTests(APITestCase):
     def _parse_date(self, value: str) -> date:
         return datetime.strptime(value, "%m/%d/%Y").date()
 
+    def _expected_option_expiration(self, dates: list[str]) -> date | None:
+        today = date.today()
+        window_start = today + timedelta(days=20)
+        window_end = today + timedelta(days=40)
+        parsed = [self._parse_date(value) for value in dates]
+        expirations_in_window = [
+            expiration
+            for expiration in parsed
+            if window_start <= expiration <= window_end
+        ]
+        return min(expirations_in_window) if expirations_in_window else None
+
     @patch("api.management.commands.fetch_profile_data.Command._fetch_option_expirations")
     @patch("api.management.commands.fetch_profile_data.requests.get")
     def test_command_sets_option_exp_with_three_expirations(
@@ -1204,8 +1216,8 @@ class FetchProfileDataCommandTests(APITestCase):
 
         call_command("fetch_profile_data", screener_name=self.screener_name)
         investment = Investment.objects.get(ticker="AAA")
-        expected_expiration = self._parse_date(
-            mock_expirations.return_value["dates"][0]
+        expected_expiration = self._expected_option_expiration(
+            mock_expirations.return_value["dates"]
         )
         self.assertEqual(investment.option_exp, expected_expiration)
 
@@ -1226,8 +1238,8 @@ class FetchProfileDataCommandTests(APITestCase):
 
         call_command("fetch_profile_data", screener_name=self.screener_name)
         investment = Investment.objects.get(ticker="AAA")
-        expected_expiration = self._parse_date(
-            mock_expirations.return_value["dates"][0]
+        expected_expiration = self._expected_option_expiration(
+            mock_expirations.return_value["dates"]
         )
         self.assertEqual(investment.option_exp, expected_expiration)
 
