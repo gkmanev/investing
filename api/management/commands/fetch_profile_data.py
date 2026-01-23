@@ -69,7 +69,7 @@ class Command(BaseCommand):
         today = timezone.now().date()
         window_start = today + timedelta(days=20)
         window_end = today + timedelta(days=40)
-        debug_windows = [(20, 40), (40, 60), (60, 80)]
+        debug_windows = [(20, 40)]
         for entry in investments:
             ticker = entry["ticker"]
             weekly_options = entry.get("weekly_options")
