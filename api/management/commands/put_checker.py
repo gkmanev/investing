@@ -93,10 +93,14 @@ class Command(BaseCommand):
 
             roi_target = self._select_roi_candidate(roi_options)
             if roi_target is not None:
-                self._update_investment_roi(
+                self._update_investment_metrics(
                     investment,
                     roi=roi_target.get("roi"),
                     delta=self._to_decimal(roi_target.get("delta")),
+                    bid_ask_spread=self._calculate_bid_ask_spread(
+                        bid_price=roi_target.get("bid"),
+                        ask_price=roi_target.get("ask"),
+                    ),
                 )
 
             if not roi_candidates:
@@ -320,6 +324,27 @@ class Command(BaseCommand):
         return mid_price.quantize(Decimal("0.01"))
 
     @staticmethod
+    def _calculate_bid_ask_spread(
+        *, bid_price: Any, ask_price: Any
+    ) -> Decimal | None:
+        """Return (ask - bid) as a Decimal."""
+
+        bid_decimal = Command._to_decimal(bid_price)
+        ask_decimal = Command._to_decimal(ask_price)
+        if bid_decimal is None or ask_decimal is None:
+            return None
+
+        try:
+            spread = ask_decimal - bid_decimal
+        except (InvalidOperation, DivisionByZero):
+            return None
+
+        if spread < 0:
+            return None
+
+        return spread.quantize(Decimal("0.0001"))
+
+    @staticmethod
     def _calculate_implied_volatility(
         *,
         option_price: Any,
@@ -479,17 +504,27 @@ class Command(BaseCommand):
 
         return f"{rsi}"
 
-    def _update_investment_roi(
-        self, investment: Investment, *, roi: Decimal | None, delta: Decimal | None
+    def _update_investment_metrics(
+        self,
+        investment: Investment,
+        *,
+        roi: Decimal | None,
+        delta: Decimal | None,
+        bid_ask_spread: Decimal | None,
     ) -> None:
-        """Persist the calculated ROI and delta on the investment if they changed."""
+        """Persist the calculated ROI, delta, and spread on the investment if needed."""
 
-        if roi == investment.roi and delta == investment.delta:
+        if (
+            roi == investment.roi
+            and delta == investment.delta
+            and bid_ask_spread == investment.bid_ask_spread
+        ):
             return
 
         investment.roi = roi
         investment.delta = delta
-        investment.save(update_fields=["roi", "delta"])
+        investment.bid_ask_spread = bid_ask_spread
+        investment.save(update_fields=["roi", "delta", "bid_ask_spread"])
 
     @staticmethod
     def _format_recent_puts(
