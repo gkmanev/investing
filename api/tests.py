@@ -1205,13 +1205,13 @@ class FetchProfileDataCommandTests(APITestCase):
         call_command("fetch_profile_data", screener_name=self.screener_name)
         investment = Investment.objects.get(ticker="AAA")
         expected_expiration = self._parse_date(
-            mock_expirations.return_value["dates"][2]
+            mock_expirations.return_value["dates"][0]
         )
         self.assertEqual(investment.option_exp, expected_expiration)
 
     @patch("api.management.commands.fetch_profile_data.Command._fetch_option_expirations")
     @patch("api.management.commands.fetch_profile_data.requests.get")
-    def test_command_clears_option_exp_with_fewer_than_three_expirations(
+    def test_command_sets_option_exp_with_fewer_than_three_expirations(
         self, mock_get: MagicMock, mock_expirations: MagicMock
     ) -> None:
         mock_expirations.return_value = {
@@ -1226,7 +1226,10 @@ class FetchProfileDataCommandTests(APITestCase):
 
         call_command("fetch_profile_data", screener_name=self.screener_name)
         investment = Investment.objects.get(ticker="AAA")
-        self.assertIsNone(investment.option_exp)
+        expected_expiration = self._parse_date(
+            mock_expirations.return_value["dates"][0]
+        )
+        self.assertEqual(investment.option_exp, expected_expiration)
 
     @patch("api.management.commands.fetch_profile_data.Command._fetch_option_expirations")
     @patch("api.management.commands.fetch_profile_data.requests.get")
