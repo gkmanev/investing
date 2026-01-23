@@ -18,7 +18,7 @@ from api.management.commands.fetch_profile_data import (
     Command,
 )
 
-from .models import Investment, ScreenerFilter, ScreenerType
+from .models import CboeSecurity, Investment, ScreenerFilter, ScreenerType
 
 
 class InvestmentAPITestCase(APITestCase):
@@ -185,6 +185,21 @@ class InvestmentAPITestCase(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("options_suitability", response.data)
+
+    def test_list_can_filter_by_cboe_membership(self) -> None:
+        self.create_investment(ticker="AAA", category="ETF")
+        self.create_investment(ticker="BBB", category="ETF")
+        CboeSecurity.objects.create(symbol="AAA")
+
+        response = self.client.get(self.list_url, {"cboe": "true"})
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual([item["ticker"] for item in response.data], ["AAA"])
+
+        response = self.client.get(self.list_url, {"cboe": "false"})
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual([item["ticker"] for item in response.data], ["BBB"])
 
     def test_can_update_investment(self) -> None:
         investment = self.create_investment()

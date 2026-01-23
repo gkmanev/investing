@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import copy
 import csv
 import io
@@ -33,6 +34,15 @@ API_HEADERS = {
     "x-rapidapi-host": "seeking-alpha.p.rapidapi.com",
     "Content-Type": "application/json",
 }
+
+
+def _parse_cli_bool(value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized in {"true", "1", "yes", "y"}:
+        return True
+    if normalized in {"false", "0", "no", "n"}:
+        return False
+    raise argparse.ArgumentTypeError("Expected a boolean value (true/false).")
 
 class Command(BaseCommand):
     """Fetch screener results using previously stored filters."""
@@ -100,6 +110,15 @@ class Command(BaseCommand):
                 "Only applies when the screener stores a quant_rating filter."
             ),
         )
+        parser.add_argument(
+            "--cboe",
+            type=_parse_cli_bool,
+            default=True,
+            help=(
+                "When true, mark weekly options using the CBOE list (default: true). "
+                "Set to false to skip CBOE membership checks."
+            ),
+        )
     def handle(self, *args: Any, **options: Any) -> str:
         screener_name: str = options["screener_name"]
         page: int = options["page"]
@@ -110,6 +129,7 @@ class Command(BaseCommand):
         max_price_raw: str | None = options.get("max_price")
         only_filter_keys: Iterable[str] | None = options.get("only_filter_keys")
         quant_rating: str | None = options.get("quant_rating")
+        include_cboe: bool = options.get("cboe", True)
 
         custom_filter_payload = self._get_custom_filter_payload(screener_name)
         include_custom_filters = custom_filter_payload is not None
@@ -207,7 +227,9 @@ class Command(BaseCommand):
                 "Seeking Alpha API response did not include any ticker names."
             )
 
-        weekly_option_tickers = self._fetch_weekly_option_tickers()
+        weekly_option_tickers = (
+            self._fetch_weekly_option_tickers() if include_cboe else None
+        )
         self._ensure_investment_sequence()
         self._sync_investments(
             all_ticker_names,

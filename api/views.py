@@ -10,6 +10,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
 from .models import (
+    CboeSecurity,
     DueDiligenceReport,
     FinancialStatement,
     Investment,
@@ -118,6 +119,7 @@ class InvestmentViewSet(viewsets.ModelViewSet):
             field_name="weekly_options",
             param_name="weekly_options",
         )
+        queryset = self._apply_cboe_filter(queryset, params, param_name="cboe")
 
         return queryset
 
@@ -179,6 +181,17 @@ class InvestmentViewSet(viewsets.ModelViewSet):
             return queryset
 
         return queryset.filter(**{field_name: value})
+
+    def _apply_cboe_filter(self, queryset, params: Mapping[str, str], *, param_name: str):
+        value = self._parse_boolean(params.get(param_name), param_name)
+        if value is None:
+            return queryset
+
+        cboe_symbols = CboeSecurity.objects.values_list("symbol", flat=True)
+        if value:
+            return queryset.filter(ticker__in=cboe_symbols)
+
+        return queryset.exclude(ticker__in=cboe_symbols)
 
     def _parse_decimal(self, raw_value: str | None, field: str) -> Decimal | None:
         if raw_value is None:
