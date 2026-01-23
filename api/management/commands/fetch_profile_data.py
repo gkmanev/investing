@@ -20,9 +20,6 @@ API_HEADERS = {
     "x-rapidapi-key": "66dcbafb75msha536f3086b06788p1f5e7ajsnac1315877f0f",
     "x-rapidapi-host": "seeking-alpha.p.rapidapi.com",
 }
-TARGET_OPTION_WEEKS = 5
-
-
 class Command(BaseCommand):
     """Fetch option expiration data for investments."""
 
@@ -70,7 +67,8 @@ class Command(BaseCommand):
 
         updated_tickers: list[str] = []
         today = timezone.now().date()
-        upper_bound = today + timedelta(days=31)
+        window_start = today + timedelta(days=20)
+        window_end = today + timedelta(days=40)
         for entry in investments:
             ticker = entry["ticker"]
             weekly_options = entry.get("weekly_options")
@@ -91,33 +89,28 @@ class Command(BaseCommand):
                 expiration_data = None
 
             if expiration_data is not None:
-                # This is just informational printing (your existing 31-day window)
-                closest_dates = self._select_closest_dates(
-                    expiration_data["dates"], today, upper_bound
+                expirations_in_window = self._count_expirations_in_window(
+                    expiration_data["dates"], window_start, window_end
                 )
-                furthest_option_date = (
-                    max(closest_dates)
-                    if closest_dates
-                    else self._select_furthest_date(expiration_data["dates"])
+                furthest_option_date = self._select_furthest_date(expiration_data["dates"])
+                closest_expiration = self._select_closest_expiration(
+                    expiration_data["dates"], today
                 )
 
-                if not closest_dates:
+                if expirations_in_window == 0:
                     self.stdout.write(
                         f"{ticker} (ticker_id {expiration_data['ticker_id']}): No option "
-                        "expiration date within the next 31 days."
+                        "expiration date between 20 and 40 days from today."
                     )
                 else:
-                    formatted = ", ".join(d.isoformat() for d in closest_dates)
                     self.stdout.write(
-                        f"{ticker} (ticker_id {expiration_data['ticker_id']}): {formatted}; "
+                        f"{ticker} (ticker_id {expiration_data['ticker_id']}): "
+                        f"{expirations_in_window} expiration dates between "
+                        f"{window_start.isoformat()} and {window_end.isoformat()}; "
                         f"furthest: {furthest_option_date.isoformat() if furthest_option_date else 'N/A'}"
                     )
 
-                chosen_option_exp = self._select_option_expiration(
-                    expiration_data["dates"],
-                    today,
-                    target_weeks=TARGET_OPTION_WEEKS,
-                )
+                chosen_option_exp = closest_expiration
                 ticker_id_value = self._coerce_ticker_id(expiration_data.get("ticker_id"))
             defaults: dict[str, Any] = {"category": "stock"}
             if ticker_id_value is not None:
@@ -297,19 +290,11 @@ class Command(BaseCommand):
                 continue
         return sorted(parsed)
 
-    def _select_closest_dates(
-        self, dates: Iterable[str], today: date, upper_bound: date
-    ) -> list[date]:
-        valid_dates: list[date] = []
-        for date_string in dates:
-            try:
-                parsed_date = datetime.strptime(date_string, "%m/%d/%Y").date()
-            except ValueError:  # pragma: no cover
-                continue
-            if today <= parsed_date <= upper_bound:
-                valid_dates.append(parsed_date)
-
-        return sorted(valid_dates, key=lambda d: (upper_bound - d).days)[:2]
+    def _count_expirations_in_window(
+        self, dates: Iterable[str], window_start: date, window_end: date
+    ) -> int:
+        parsed = self._parse_expiration_dates(dates)
+        return sum(1 for expiration in parsed if window_start <= expiration <= window_end)
 
     def _select_furthest_date(self, dates: Iterable[str]) -> date | None:
         furthest: date | None = None
@@ -322,28 +307,10 @@ class Command(BaseCommand):
                 furthest = parsed_date
         return furthest
 
-    def _select_option_expiration(
-        self, dates: list[str], today: date, target_weeks: int
-    ) -> date | None:
-        """Return the first expiration date on/after the target Friday."""
+    def _select_closest_expiration(self, dates: list[str], today: date) -> date | None:
         parsed = self._parse_expiration_dates(dates)
         upcoming = [d for d in parsed if d >= today]
-
-        if not upcoming:
-            return None
-
-        target_date = self._target_friday(today, target_weeks)
-        for expiration_date in upcoming:
-            if expiration_date >= target_date:
-                return expiration_date
-        return None
-
-    def _target_friday(self, today: date, target_weeks: int) -> date:
-        if target_weeks < 1:
-            raise CommandError("TARGET_OPTION_WEEKS must be at least 1.")
-        days_until_friday = (4 - today.weekday()) % 7
-        next_friday = today + timedelta(days=days_until_friday)
-        return next_friday + timedelta(weeks=target_weeks - 1)
+        return min(upcoming) if upcoming else None
 
     # -------------------------
     # Id coercion
