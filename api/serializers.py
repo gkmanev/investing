@@ -22,6 +22,7 @@ class InvestmentSerializer(serializers.ModelSerializer):
             #"volume",
             #"market_cap",
             "delta",
+            "bid_ask_spread",
             "options_suitability",
             "option_exp",
             "weekly_options",
