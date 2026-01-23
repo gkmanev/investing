@@ -1434,3 +1434,24 @@ class FetchProfileDataCommandTests(APITestCase):
         mock_expirations.assert_called_once_with("AAA")
         investment = Investment.objects.get(ticker="BBB")
         self.assertIsNone(investment.option_exp)
+
+    @patch("api.management.commands.fetch_profile_data.Command._fetch_option_expirations")
+    @patch("api.management.commands.fetch_profile_data.requests.get")
+    def test_command_fetches_options_for_string_weekly_flag(
+        self, mock_get: MagicMock, mock_expirations: MagicMock
+    ) -> None:
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=lambda: [{"ticker": "AAA", "weekly_options": "true"}],
+            text="{}",
+        )
+        mock_expirations.return_value = {
+            "dates": self._build_next_month_dates([5]),
+            "ticker_id": "AAA",
+        }
+
+        call_command("fetch_profile_data", screener_name=self.screener_name)
+
+        mock_expirations.assert_called_once_with("AAA")
+        investment = Investment.objects.get(ticker="AAA")
+        self.assertIsNotNone(investment.option_exp)
