@@ -35,9 +35,7 @@ class Command(BaseCommand):
 
     def handle(self, *args: Any, **options: Any) -> str:
         screener_type: str = options["screener_type"]
-        investments = Investment.objects.filter(
-            weekly_options=True, screener_type=screener_type
-        )
+        investments = Investment.objects.filter(screener_type=screener_type)
 
         if not investments.exists():
             return ""
@@ -90,16 +88,27 @@ class Command(BaseCommand):
             ]
 
             roi_target = self._select_roi_candidate(roi_options)
+            roi_value = roi_target.get("roi") if roi_target is not None else None
+            bid_ask_spread = (
+                self._calculate_bid_ask_spread(
+                    bid_price=roi_target.get("bid"),
+                    ask_price=roi_target.get("ask"),
+                )
+                if roi_target is not None
+                else None
+            )
             if roi_target is not None:
                 self._update_investment_metrics(
                     investment,
-                    roi=roi_target.get("roi"),
+                    roi=roi_value,
                     delta=self._to_decimal(roi_target.get("delta")),
-                    bid_ask_spread=self._calculate_bid_ask_spread(
-                        bid_price=roi_target.get("bid"),
-                        ask_price=roi_target.get("ask"),
-                    ),
+                    bid_ask_spread=bid_ask_spread,
                 )
+            self.stdout.write(
+                "DEBUG "
+                f"{investment.ticker} ROI {self._format_value(roi_value)} "
+                f"bid_ask_spread {self._format_value(bid_ask_spread)}"
+            )
 
             if not roi_candidates:
                 continue
