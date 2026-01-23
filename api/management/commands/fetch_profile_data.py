@@ -77,7 +77,7 @@ class Command(BaseCommand):
             ticker_id_value = None
             chosen_option_exp = None
 
-            if weekly_options is True:
+            if self._is_weekly_options(weekly_options):
                 try:
                     expiration_data = self._fetch_option_expirations(ticker)
                 except CommandError as exc:
@@ -239,6 +239,17 @@ class Command(BaseCommand):
                     }
                 )
         return investments
+
+    def _is_weekly_options(self, value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        if isinstance(value, int):
+            return value == 1
+        if isinstance(value, str):
+            return value.strip().lower() in {"true", "1", "yes", "y"}
+        return False
 
     def _fetch_option_expirations(self, ticker: str) -> dict:
         payload = self._fetch_json(
