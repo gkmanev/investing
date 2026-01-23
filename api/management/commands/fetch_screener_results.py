@@ -284,18 +284,17 @@ class Command(BaseCommand):
             if weekly_option_tickers is not None:
                 weekly_options = ticker_value.upper() in weekly_option_tickers
 
-            if weekly_options:
-                try:
-                    profile_payload = self._fetch_profile_payload(ticker_value)
-                except CommandError as exc:
-                    self.stderr.write(
-                        f"Failed to fetch profile data for {ticker_value}: {exc}. "
-                        "Continuing without price data."
-                    )
+            try:
+                profile_payload = self._fetch_profile_payload(ticker_value)
+            except CommandError as exc:
+                self.stderr.write(
+                    f"Failed to fetch profile data for {ticker_value}: {exc}. "
+                    "Continuing without price data."
+                )
 
-                if profile_payload is not None:
-                    price = self._extract_last_price(profile_payload)
-                rsi = self._fetch_rsi_value(ticker_value)
+            if profile_payload is not None:
+                price = self._extract_last_price(profile_payload)
+            rsi = self._fetch_rsi_value(ticker_value)
 
             defaults: dict[str, Any] = {
                 "category": asset_type,
