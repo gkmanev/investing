@@ -113,7 +113,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--cboe",
             type=_parse_cli_bool,
-            default=True,
+            default=False,
             help=(
                 "When true, mark weekly options using the CBOE list (default: true). "
                 "Set to false to skip CBOE membership checks."
