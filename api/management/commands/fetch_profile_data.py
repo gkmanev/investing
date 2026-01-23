@@ -244,12 +244,16 @@ class Command(BaseCommand):
         if isinstance(value, bool):
             return value
         if value is None:
-            return False
+            return True
         if isinstance(value, int):
-            return value == 1
+            return value != 0
         if isinstance(value, str):
-            return value.strip().lower() in {"true", "1", "yes", "y"}
-        return False
+            normalized = value.strip().lower()
+            if normalized in {"false", "0", "no", "n"}:
+                return False
+            if normalized in {"true", "1", "yes", "y"}:
+                return True
+        return True
 
     def _fetch_option_expirations(self, ticker: str) -> dict:
         payload = self._fetch_json(
