@@ -38,7 +38,7 @@ CUSTOM_FILTER_PAYLOAD = {
 CUSTOM_FILTER_PAYLOAD_V3 = {
     **EXCHANGE_FILTER_PAYLOAD,
     "marketcap_display": {"gte": 5000000000},
-    "profitability_category": {"in": ["A+", "A", "A-", "B+", "B"]},
-    "eps_revisions_category": {"in": ["A+", "A", "A-", "B+", "B"]},
-    "momentum_category"     : {"in": ["A+", "A", "A-", "B+", "B","B-"]}
+    "profitability_category": {"in": ["A+", "A", "A-", "B+", "B", "B-"]},
+    "eps_revisions_category": {"in": ["A+", "A", "A-", "B+", "B", "B-"]},
+    # "momentum_category"     : {"in": ["A+", "A", "A-", "B+", "B","B-","C+","C"]}
 }
