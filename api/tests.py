@@ -608,14 +608,12 @@ class FetchScreenerResultsCommandTests(APITestCase):
         )
 
     @patch("api.management.commands.fetch_screener_results.Command._fetch_weekly_option_tickers")
-    @patch("api.management.commands.fetch_screener_results.Command._fetch_rsi_value")
-    @patch("api.management.commands.fetch_screener_results.Command._fetch_profile_payload")
+    @patch("api.management.commands.fetch_screener_results.Command._fetch_price_and_rsi")
     @patch("api.management.commands.fetch_screener_results.requests.post")
     def test_command_populates_price_and_rsi_for_all_tickers(
         self,
         mock_post: MagicMock,
-        mock_profile_payload: MagicMock,
-        mock_rsi_value: MagicMock,
+        mock_price_and_rsi: MagicMock,
         mock_weekly_tickers: MagicMock,
     ) -> None:
         mock_post.return_value = MagicMock(
@@ -629,11 +627,10 @@ class FetchScreenerResultsCommandTests(APITestCase):
             text="{}",
         )
         mock_weekly_tickers.return_value = {"WEEKLY"}
-        mock_profile_payload.side_effect = [
-            {"data": {"attributes": {"price": {"last": "123.45"}}}},
-            {"data": {"attributes": {"price": {"last": "67.89"}}}},
+        mock_price_and_rsi.side_effect = [
+            (Decimal("123.45"), Decimal("55.67")),
+            (Decimal("67.89"), Decimal("44.32")),
         ]
-        mock_rsi_value.side_effect = [Decimal("55.67"), Decimal("44.32")]
 
         call_command("fetch_screener_results", screener_name=self.screener.name)
 
@@ -646,18 +643,15 @@ class FetchScreenerResultsCommandTests(APITestCase):
         self.assertFalse(daily_investment.weekly_options)
         self.assertEqual(daily_investment.price, Decimal("67.89"))
         self.assertEqual(daily_investment.rsi, Decimal("44.32"))
-        mock_profile_payload.assert_has_calls([call("WEEKLY"), call("DAILY")])
-        mock_rsi_value.assert_has_calls([call("WEEKLY"), call("DAILY")])
+        mock_price_and_rsi.assert_has_calls([call("WEEKLY"), call("DAILY")])
 
     @patch("api.management.commands.fetch_screener_results.Command._fetch_weekly_option_tickers")
-    @patch("api.management.commands.fetch_screener_results.Command._fetch_rsi_value")
-    @patch("api.management.commands.fetch_screener_results.Command._fetch_profile_payload")
+    @patch("api.management.commands.fetch_screener_results.Command._fetch_price_and_rsi")
     @patch("api.management.commands.fetch_screener_results.requests.post")
     def test_command_populates_price_when_weekly_options_unknown(
         self,
         mock_post: MagicMock,
-        mock_profile_payload: MagicMock,
-        mock_rsi_value: MagicMock,
+        mock_price_and_rsi: MagicMock,
         mock_weekly_tickers: MagicMock,
     ) -> None:
         mock_post.return_value = MagicMock(
@@ -666,10 +660,7 @@ class FetchScreenerResultsCommandTests(APITestCase):
             text="{}",
         )
         mock_weekly_tickers.return_value = None
-        mock_profile_payload.return_value = {
-            "data": {"attributes": {"price": {"last": "222.22"}}}
-        }
-        mock_rsi_value.return_value = Decimal("33.11")
+        mock_price_and_rsi.return_value = (Decimal("222.22"), Decimal("33.11"))
 
         call_command("fetch_screener_results", screener_name=self.screener.name)
 
@@ -677,8 +668,7 @@ class FetchScreenerResultsCommandTests(APITestCase):
         self.assertIsNone(investment.weekly_options)
         self.assertEqual(investment.price, Decimal("222.22"))
         self.assertEqual(investment.rsi, Decimal("33.11"))
-        mock_profile_payload.assert_called_once_with("UNKNOWN")
-        mock_rsi_value.assert_called_once_with("UNKNOWN")
+        mock_price_and_rsi.assert_called_once_with("UNKNOWN")
 
     @patch("api.management.commands.fetch_screener_results.requests.post")
     def test_command_prints_count_for_custom_screener(
