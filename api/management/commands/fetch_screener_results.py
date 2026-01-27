@@ -9,9 +9,10 @@ from pathlib import Path
 from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable, List, Optional
 
+import numpy as np
 import pandas as pd
 import requests
-from ta.momentum import RSIIndicator
+import talib
 import yfinance as yf
 from django.core.management.base import BaseCommand, CommandError
 from django.db import connection
@@ -25,7 +26,6 @@ from api.management.commands.rapidapi_counter import log_rapidapi_fetch
 from api.models import CboeSecurity, Investment, ScreenerType
 
 API_URL = "https://seeking-alpha.p.rapidapi.com/screeners/get-results"
-PROFILE_ENDPOINT = "https://seeking-alpha.p.rapidapi.com/symbols/get-profile"
 CBOE_WEEKLY_OPTIONS_PATH = (
     Path(__file__).resolve().parent / "CBOE" / "cboe_weeklys.csv"
 )
@@ -280,21 +280,10 @@ class Command(BaseCommand):
             weekly_options: bool | None = None
             price = None
             rsi = None
-            profile_payload = None
             if weekly_option_tickers is not None:
                 weekly_options = ticker_value.upper() in weekly_option_tickers
 
-            try:
-                profile_payload = self._fetch_profile_payload(ticker_value)
-            except CommandError as exc:
-                self.stderr.write(
-                    f"Failed to fetch profile data for {ticker_value}: {exc}. "
-                    "Continuing without price data."
-                )
-
-            if profile_payload is not None:
-                price = self._extract_last_price(profile_payload)
-            rsi = self._fetch_rsi_value(ticker_value)
+            price, rsi = self._fetch_price_and_rsi(ticker_value)
 
             defaults: dict[str, Any] = {
                 "category": asset_type,
@@ -311,101 +300,31 @@ class Command(BaseCommand):
                 defaults=defaults,
             )
 
-    def _fetch_profile_payload(self, ticker: str) -> Any:
-        params = {"symbols": ticker}
-        prepared = requests.Request("GET", PROFILE_ENDPOINT, params=params).prepare()
-        self.stdout.write(f"Fetching profile data from {prepared.url}")
-
-        return self._fetch_json(PROFILE_ENDPOINT, params=params, headers=API_HEADERS)
-
-
-    def _fetch_json(
-        self,
-        url: str,
-        params: dict[str, str] | None = None,
-        headers: dict[str, str] | None = None,
-    ) -> Any:
+    def _fetch_price_and_rsi(
+        self, ticker: str
+    ) -> tuple[Decimal | None, Optional[Decimal]]:
         try:
-            response = requests.get(url, params=params, headers=headers, timeout=30)
-        except requests.RequestException as exc:  # pragma: no cover
-            raise CommandError(f"Failed to call '{url}': {exc}") from exc
-        if headers and "x-rapidapi-key" in headers:
-            log_rapidapi_fetch(self)
-
-        if response.status_code != 200:
-            content_type = response.headers.get("Content-Type", "")
-            if "text/html" in content_type:
-                raise CommandError(
-                    "Received an HTML error response from "
-                    f"'{url}'. Check the server logs for details."
-                )
-            raise CommandError(
-                f"Received unexpected status code {response.status_code} from '{url}': {response.text}"
+            df = yf.download(
+                ticker,
+                period="3mo",
+                progress=False,
+                actions=False,
+                auto_adjust=False,
+                group_by="column",
             )
-
-        content_type = response.headers.get("Content-Type", "")
-        if "text/html" in content_type:
-            raise CommandError(
-                f"Received HTML from '{url}' when JSON was expected. "
-                "Check that the endpoint is healthy and returning JSON."
+        except Exception as exc:  # pragma: no cover - upstream network failure
+            self.stderr.write(
+                f"Failed to download price history for {ticker}: {exc}. "
+                "Continuing without price/RSI data."
             )
-
-        try:
-            return response.json()
-        except ValueError as exc:
-            raise CommandError(f"Response from '{url}' did not contain valid JSON.") from exc
-
-    def _extract_last_price(self, payload: Any) -> Decimal | None:
-        data_section = payload
-        if isinstance(payload, dict) and "data" in payload:
-            data_section = payload.get("data")
-
-        def _pluck_last(section: Any) -> Any | None:
-            if not isinstance(section, dict):
-                return None
-            attributes = section.get("attributes")
-            source = attributes if isinstance(attributes, dict) else section
-            price_block = source.get("price") if isinstance(source, dict) else None
-            if isinstance(price_block, dict) and "last" in price_block:
-                return price_block.get("last")
-            last_daily = source.get("lastDaily") if isinstance(source, dict) else None
-            if isinstance(last_daily, dict) and "last" in last_daily:
-                return last_daily.get("last")
-            return source.get("last")
-
-        last_value = None
-        if isinstance(data_section, list):
-            for entry in data_section:
-                last_value = _pluck_last(entry)
-                if last_value is not None:
-                    break
-        else:
-            last_value = _pluck_last(data_section)
-
-        if last_value is None:
-            return None
-
-        try:
-            return Decimal(str(last_value))
-        except (InvalidOperation, ValueError):
-            return None
-
-    def _fetch_rsi_value(self, ticker: str) -> Optional[Decimal]:
-        df = yf.download(
-            ticker,
-            period="3mo",
-            progress=False,
-            actions=False,
-            auto_adjust=False,
-            group_by="column",
-        )
+            return None, None
 
         if df is None or df.empty:
-            return None
+            return None, None
 
         close = df.get("Close")
         if close is None:
-            return None
+            return None, None
 
         if isinstance(close, pd.DataFrame):
             if close.shape[1] == 1:
@@ -415,17 +334,28 @@ class Command(BaseCommand):
 
         close = close.dropna()
         if close.empty:
-            return None
+            return None, None
 
-        rsi_series = RSIIndicator(close=close, window=14).rsi()
-        last = rsi_series.dropna().tail(1)
-        if last.empty:
-            return None
+        price = None
+        last_close = close.tail(1)
+        if not last_close.empty:
+            try:
+                price = Decimal(str(last_close.iat[0]))
+            except (InvalidOperation, ValueError, TypeError):
+                price = None
 
-        try:
-            return Decimal(str(last.iat[0]))
-        except (InvalidOperation, ValueError, TypeError):
-            return None
+        rsi = None
+        closes = close.astype(float).to_numpy()
+        if closes.size:
+            rsi_values = talib.RSI(closes, timeperiod=14)
+            valid_rsi = rsi_values[~np.isnan(rsi_values)]
+            if valid_rsi.size:
+                try:
+                    rsi = Decimal(str(valid_rsi[-1]))
+                except (InvalidOperation, ValueError, TypeError):
+                    rsi = None
+
+        return price, rsi
 
     def _get_screener(self, screener_name: str) -> ScreenerType:
         try:
