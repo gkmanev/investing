@@ -15,5 +15,4 @@ COPY . .
 
 EXPOSE 8080
 
-#CMD ["sh", "-c", "gunicorn investing_project.wsgi:application --bind 0.0.0.0:${PORT:-8080}"]
-CMD ["sh", "-c", "env | grep -E 'PG|DATABASE|POSTGRES' && sleep 30"]
+CMD ["sh", "-c", "python manage.py migrate && gunicorn investing_project.wsgi:application --bind 0.0.0.0:${PORT:-8080} --access-logfile - --error-logfile -"]
