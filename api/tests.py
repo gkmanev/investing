@@ -2,6 +2,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from io import StringIO
 import json
+from typing import Any
 
 import requests
 from django.core.management import call_command
@@ -12,13 +13,101 @@ from rest_framework.test import APITestCase
 from unittest.mock import MagicMock, call, patch
 
 from api.custom_filters import CUSTOM_FILTER_PAYLOAD, CUSTOM_FILTER_PAYLOAD_V2
+from api.management.commands import ai_agents_potential as ai_agents_potential_command
+from api.management.commands import initial_screener as initial_screener_command
 from api.management.commands.fetch_profile_data import (
     API_HEADERS,
     OPTION_EXPIRATIONS_ENDPOINT,
     Command,
 )
+from api.management.commands.trading_view_scrape import (
+    Command as TradingViewCommand,
+    TradingViewOptions,
+)
 
-from .models import CboeSecurity, Investment, ScreenerFilter, ScreenerType
+from .models import CboeSecurity, DueDiligenceReport, Investment, ScreenerFilter, ScreenerType, Symbol
+from .serializers import SymbolSerializer
+
+
+class InitialScreenerHelpersTestCase(APITestCase):
+    @patch("api.management.commands.initial_screener.requests.get")
+    def test_fetch_next_earnings_date_uses_quote_endpoint_fields(
+        self, mock_get: MagicMock
+    ) -> None:
+        earliest = date.today() + timedelta(days=7)
+        later = date.today() + timedelta(days=14)
+        past = date.today() - timedelta(days=2)
+
+        response = MagicMock(status_code=200)
+        response.json.return_value = {
+            "quoteResponse": {
+                "result": [
+                    {
+                        "earningsTimestamp": int(
+                            datetime.combine(later, datetime.min.time()).timestamp()
+                        ),
+                        "earningsTimestampStart": int(
+                            datetime.combine(earliest, datetime.min.time()).timestamp()
+                        ),
+                        "earningsTimestampEnd": int(
+                            datetime.combine(past, datetime.min.time()).timestamp()
+                        ),
+                    }
+                ]
+            }
+        }
+        mock_get.return_value = response
+
+        result = initial_screener_command._fetch_next_earnings_date("AAPL")
+
+        self.assertEqual(result, earliest)
+
+    @patch("api.management.commands.initial_screener.requests.get")
+    def test_fetch_next_earnings_date_returns_none_on_quote_error(
+        self, mock_get: MagicMock
+    ) -> None:
+        mock_get.side_effect = requests.RequestException("boom")
+
+        result = initial_screener_command._fetch_next_earnings_date("AAPL")
+
+        self.assertIsNone(result)
+
+    @patch("api.management.commands.initial_screener.requests.get")
+    def test_fetch_next_earnings_date_falls_back_to_fmp(
+        self, mock_get: MagicMock
+    ) -> None:
+        quote_response = MagicMock(status_code=200)
+        quote_response.json.return_value = {"quoteResponse": {"result": [{}]}}
+
+        fmp_date = date.today() + timedelta(days=10)
+        fmp_response = MagicMock(status_code=200)
+        fmp_response.json.return_value = [{"date": fmp_date.isoformat()}]
+
+        mock_get.side_effect = [quote_response, fmp_response]
+
+        result = initial_screener_command._fetch_next_earnings_date(
+            "AAPL", "test-api-key"
+        )
+
+        self.assertEqual(result, fmp_date)
+
+    @patch("api.management.commands.initial_screener.requests.get")
+    def test_fetch_next_earnings_date_returns_none_when_quote_and_fmp_empty(
+        self, mock_get: MagicMock
+    ) -> None:
+        quote_response = MagicMock(status_code=200)
+        quote_response.json.return_value = {"quoteResponse": {"result": [{}]}}
+
+        fmp_response = MagicMock(status_code=200)
+        fmp_response.json.return_value = []
+
+        mock_get.side_effect = [quote_response, fmp_response]
+
+        result = initial_screener_command._fetch_next_earnings_date(
+            "AAPL", "test-api-key"
+        )
+
+        self.assertIsNone(result)
 
 
 class InvestmentAPITestCase(APITestCase):
@@ -1483,3 +1572,819 @@ class FetchProfileDataCommandTests(APITestCase):
         mock_expirations.assert_called_once_with("AAA")
         investment = Investment.objects.get(ticker="AAA")
         self.assertIsNotNone(investment.option_exp)
+
+
+class PutCheckerCommandTests(APITestCase):
+    """Tests for the put_checker management command."""
+
+    _CMD = "api.management.commands.put_checker.Command"
+
+    def setUp(self) -> None:
+        self.symbol = Symbol.objects.create(
+            ticker="AAPL",
+            score=80,
+            price=Decimal("100.00"),
+            rsi=Decimal("45.00"),
+        )
+
+    def _option_exp_in_window(self) -> date:
+        """Return a date 25 days from today (within the 15-30 day window)."""
+        return date.today() + timedelta(days=25)
+
+    def _put_option(
+        self, strike: float = 95.0, bid: float = 3.0, ask: float = 4.0
+    ) -> dict:
+        return {
+            "option_type": "put",
+            "strike_price": strike,
+            "bid": bid,
+            "ask": ask,
+            "last_price": (bid + ask) / 2,
+            "volume": 200,
+            "open_interest": 1000,
+            "contract_symbol": "AAPL250101P00095000",
+            "implied_volatility": None,
+        }
+
+    # Early-exit paths
+
+    def test_no_qualifying_symbols_returns_early(self) -> None:
+        """Command exits silently when no Symbol has score >= 75."""
+        Symbol.objects.all().delete()
+        buffer = StringIO()
+        result = call_command("put_checker", stdout=buffer)
+        self.assertEqual(result, "")
+        self.assertEqual(buffer.getvalue(), "")
+
+    def test_rsi_filter_excludes_symbol_with_high_rsi(self) -> None:
+        """--rsi flag skips symbols whose RSI is outside 30-70."""
+        self.symbol.rsi = Decimal("85.00")
+        self.symbol.save()
+        buffer = StringIO()
+        result = call_command("put_checker", rsi=True, stdout=buffer)
+        self.assertEqual(result, "")
+
+    # price + RSI refresh
+
+    @patch("api.management.commands.put_checker.Command._fetch_risk_free_rate")
+    @patch("api.management.commands.put_checker.Command._ensure_option_expiration")
+    @patch("api.management.commands.put_checker.Command._fetch_next_earnings_date")
+    @patch("api.management.commands.put_checker.Command._fetch_price_and_rsi")
+    def test_price_and_rsi_fetched_and_saved_before_option_processing(
+        self,
+        mock_pnr: MagicMock,
+        mock_earnings: MagicMock,
+        mock_ensure_exp: MagicMock,
+        mock_rfr: MagicMock,
+    ) -> None:
+        """Fresh price and RSI are persisted on Symbol before the option chain is checked."""
+        mock_pnr.return_value = (Decimal("110.00"), Decimal("55.00"))
+        mock_earnings.return_value = None
+        mock_ensure_exp.return_value = None  # forces skipped_missing_exp -> CommandError
+        mock_rfr.return_value = Decimal("0.0450")
+
+        with self.assertRaises(CommandError):
+            call_command("put_checker")
+
+        mock_pnr.assert_called_once_with("AAPL")
+        self.symbol.refresh_from_db()
+        self.assertEqual(self.symbol.price, Decimal("110.00"))
+        self.assertEqual(self.symbol.rsi, Decimal("55.00"))
+
+    @patch("api.management.commands.put_checker.Command._fetch_risk_free_rate")
+    @patch("api.management.commands.put_checker.Command._ensure_option_expiration")
+    @patch("api.management.commands.put_checker.Command._fetch_next_earnings_date")
+    @patch("api.management.commands.put_checker.Command._fetch_price_and_rsi")
+    def test_unchanged_price_and_rsi_not_saved(
+        self,
+        mock_pnr: MagicMock,
+        mock_earnings: MagicMock,
+        mock_ensure_exp: MagicMock,
+        mock_rfr: MagicMock,
+    ) -> None:
+        """Symbol is not re-saved when the fetched values match what is already stored."""
+        mock_pnr.return_value = (Decimal("100.00"), Decimal("45.00"))
+        mock_earnings.return_value = None
+        mock_ensure_exp.return_value = None
+        mock_rfr.return_value = Decimal("0.0450")
+
+        original_updated_at = self.symbol.updated_at
+
+        with self.assertRaises(CommandError):
+            call_command("put_checker")
+
+        self.symbol.refresh_from_db()
+        self.assertEqual(self.symbol.updated_at, original_updated_at)
+
+    # Skip conditions
+
+    @patch("api.management.commands.put_checker.Command._fetch_risk_free_rate")
+    @patch("api.management.commands.put_checker.Command._ensure_option_expiration")
+    @patch("api.management.commands.put_checker.Command._fetch_next_earnings_date")
+    @patch("api.management.commands.put_checker.Command._fetch_price_and_rsi")
+    def test_skips_symbol_with_no_price(
+        self,
+        mock_pnr: MagicMock,
+        mock_earnings: MagicMock,
+        mock_ensure_exp: MagicMock,
+        mock_rfr: MagicMock,
+    ) -> None:
+        """Symbol without a price (and whose fetch also returns None) is skipped."""
+        self.symbol.price = None
+        self.symbol.save()
+        mock_pnr.return_value = (None, None)
+        mock_earnings.return_value = None
+        mock_ensure_exp.return_value = self._option_exp_in_window()
+        mock_rfr.return_value = Decimal("0.0450")
+
+        with self.assertRaises(CommandError):
+            call_command("put_checker")
+
+        self.symbol.refresh_from_db()
+        self.assertIsNone(self.symbol.price)
+
+    # Happy path
+
+    @patch("api.management.commands.put_checker.Command._fetch_risk_free_rate")
+    @patch("api.management.commands.put_checker.Command._fetch_options_yfinance")
+    @patch("api.management.commands.put_checker.Command._ensure_option_expiration")
+    @patch("api.management.commands.put_checker.Command._fetch_next_earnings_date")
+    @patch("api.management.commands.put_checker.Command._fetch_price_and_rsi")
+    def test_happy_path_updates_strike_price_and_prints_summary(
+        self,
+        mock_pnr: MagicMock,
+        mock_earnings: MagicMock,
+        mock_ensure_exp: MagicMock,
+        mock_fetch_opts: MagicMock,
+        mock_rfr: MagicMock,
+    ) -> None:
+        """When a valid put option is found the symbol strike_price is saved and a
+        summary is printed.
+
+        Calibration: spot=100, strike=95, bid=3.0, ask=4.0, T=25/365 yr, rfr=4.5%.
+        Black-Scholes gives IV~50%, delta~-0.32 (in range), ROI~3.68% (above 2%).
+        """
+        mock_pnr.return_value = (Decimal("100.00"), Decimal("45.00"))
+        mock_earnings.return_value = None
+        mock_ensure_exp.return_value = self._option_exp_in_window()
+        mock_fetch_opts.return_value = [self._put_option(strike=95.0, bid=3.0, ask=4.0)]
+        mock_rfr.return_value = Decimal("0.0450")
+
+        buffer = StringIO()
+        call_command("put_checker", stdout=buffer)
+
+        self.symbol.refresh_from_db()
+        self.assertIsNotNone(self.symbol.option_data)
+        self.assertEqual(self.symbol.option_data.get("strike_price"), 95.0)
+        output = buffer.getvalue()
+        self.assertIn("AAPL", output)
+        self.assertIn("ROI", output)
+
+    # No ROI candidates
+
+    @patch("api.management.commands.put_checker.Command._fetch_risk_free_rate")
+    @patch("api.management.commands.put_checker.Command._fetch_options_yfinance")
+    @patch("api.management.commands.put_checker.Command._ensure_option_expiration")
+    @patch("api.management.commands.put_checker.Command._fetch_next_earnings_date")
+    @patch("api.management.commands.put_checker.Command._fetch_price_and_rsi")
+    def test_no_roi_candidates_raises_command_error(
+        self,
+        mock_pnr: MagicMock,
+        mock_earnings: MagicMock,
+        mock_ensure_exp: MagicMock,
+        mock_fetch_opts: MagicMock,
+        mock_rfr: MagicMock,
+    ) -> None:
+        """CommandError is raised when no put option meets the ROI threshold."""
+        mock_pnr.return_value = (Decimal("100.00"), Decimal("45.00"))
+        mock_earnings.return_value = None
+        mock_ensure_exp.return_value = self._option_exp_in_window()
+        # bid=0.01, ask=0.02 -> ROI=0.016% (well below the 2% threshold)
+        mock_fetch_opts.return_value = [self._put_option(strike=95.0, bid=0.01, ask=0.02)]
+        mock_rfr.return_value = Decimal("0.0450")
+
+        with self.assertRaises(CommandError):
+            call_command("put_checker")
+
+    # seeking_alpha_ticker_id persistence
+
+    @patch("api.management.commands.put_checker.Command._fetch_risk_free_rate")
+    @patch("api.management.commands.put_checker.Command._fetch_option_expirations")
+    @patch("api.management.commands.put_checker.Command._fetch_option_expirations_yfinance")
+    @patch("api.management.commands.put_checker.Command._fetch_next_earnings_date")
+    @patch("api.management.commands.put_checker.Command._fetch_price_and_rsi")
+    def test_seeking_alpha_ticker_id_saved_from_api(
+        self,
+        mock_pnr: MagicMock,
+        mock_earnings: MagicMock,
+        mock_exps_yf: MagicMock,
+        mock_exps_api: MagicMock,
+        mock_rfr: MagicMock,
+    ) -> None:
+        """When the Seeking Alpha expiration API returns a ticker_id it is saved on Symbol."""
+        exp_date = self._option_exp_in_window()
+        mock_pnr.return_value = (Decimal("100.00"), Decimal("45.00"))
+        mock_earnings.return_value = None
+        mock_exps_yf.return_value = []  # force rapidapi path
+        mock_exps_api.return_value = {
+            "ticker_id": 99999,
+            "dates": [exp_date.strftime("%m/%d/%Y")],
+        }
+        mock_rfr.return_value = Decimal("0.0450")
+
+        # The command resolves the expiration then fails fetching the option chain
+        # (no further network mocks); ticker_id should already be saved before that.
+        try:
+            call_command("put_checker")
+        except (CommandError, Exception):
+            pass
+
+        self.symbol.refresh_from_db()
+        self.assertEqual(self.symbol.seeking_alpha_ticker_id, 99999)
+
+
+class SymbolAPITestCase(APITestCase):
+    def setUp(self) -> None:
+        self.list_url = reverse("symbol-list")
+
+    def test_list_can_filter_by_option_volume_and_iv(self) -> None:
+        Symbol.objects.create(
+            ticker="LOW",
+            option_volume=100,
+            option_iv=Decimal("12.3400"),
+        )
+        Symbol.objects.create(
+            ticker="MATCH",
+            option_volume=500,
+            option_iv=Decimal("25.5000"),
+        )
+        Symbol.objects.create(
+            ticker="HIGH",
+            option_volume=1000,
+            option_iv=Decimal("44.0000"),
+        )
+
+        response = self.client.get(
+            self.list_url,
+            {
+                "min_option_volume": "400",
+                "max_option_volume": "900",
+                "min_option_iv": "20",
+                "max_option_iv": "30",
+            },
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual([item["ticker"] for item in response.data], ["MATCH"])
+
+
+class TradingViewScrapeCommandTests(APITestCase):
+    def setUp(self) -> None:
+        self.symbol = Symbol.objects.create(
+            ticker="AAPL",
+            exchange="NASDAQ",
+            score=80,
+            price=Decimal("100.00"),
+        )
+        self.command = TradingViewCommand()
+
+    def _expiration_int(self, days: int = 30) -> int:
+        return int((date.today() + timedelta(days=days)).strftime("%Y%m%d"))
+
+    def _option_row(
+        self,
+        *,
+        strike: str,
+        bid: str,
+        ask: str,
+        delta: str,
+        option_symbol: str,
+        volume: str = "150",
+        iv: str = "24.1250",
+    ) -> dict[str, object]:
+        return {
+            "option_symbol": option_symbol,
+            "option_type": "put",
+            "strike_price": strike,
+            "strike": strike,
+            "bid": bid,
+            "ask": ask,
+            "delta": delta,
+            "volume": volume,
+            "iv": iv,
+        }
+
+    def test_get_monthly_rsi_uses_tradingview_symbol_endpoint(self) -> None:
+        session = MagicMock()
+        session.request.return_value = MagicMock(
+            json=MagicMock(return_value={"RSI|1M": 57.32}),
+            status_code=200,
+        )
+
+        rsi = TradingViewOptions(session=session).get_monthly_rsi("NASDAQ", "AAPL")
+
+        self.assertEqual(rsi, 57.32)
+        session.request.assert_called_once_with(
+            "GET",
+            "https://scanner.tradingview.com/symbol",
+            params={
+                "symbol": "NASDAQ:AAPL",
+                "fields": "RSI|1M",
+                "no_404": "true",
+                "label-product": "popup-technicals",
+            },
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Accept": "application/json",
+                "Referer": "https://www.tradingview.com/symbols/NASDAQ-AAPL/technicals/",
+            },
+            timeout=30,
+        )
+
+    @patch("api.management.commands.trading_view_scrape.time.sleep")
+    def test_tradingview_client_retries_after_429(self, mock_sleep: MagicMock) -> None:
+        session = MagicMock()
+        rate_limiter = MagicMock()
+        too_many_requests = MagicMock(status_code=429, headers={"Retry-After": "2"})
+        success = MagicMock(status_code=200, headers={})
+        success.json.return_value = {"symbols": [{"f": ["100.00", 100]}]}
+        session.request.side_effect = [too_many_requests, success]
+
+        price = TradingViewOptions(session=session, rate_limiter=rate_limiter).get_underlying_price(
+            "NASDAQ", "AAPL"
+        )
+
+        self.assertEqual(price, "100.00")
+        self.assertEqual(session.request.call_count, 2)
+        self.assertEqual(rate_limiter.wait.call_count, 2)
+        mock_sleep.assert_called_once_with(2.0)
+
+    def test_handle_rejects_non_positive_worker_count(self) -> None:
+        with self.assertRaisesMessage(CommandError, "--workers must be at least 1."):
+            call_command("trading_view_scrape", "--workers", "0")
+
+    def test_handle_rejects_non_positive_max_rps(self) -> None:
+        with self.assertRaisesMessage(CommandError, "--max-rps must be greater than 0."):
+            call_command("trading_view_scrape", "--max-rps", "0")
+
+    @patch("api.management.commands.trading_view_scrape.Command._process_symbol")
+    def test_handle_processes_symbols_with_worker_pool(
+        self, mock_process_symbol: MagicMock
+    ) -> None:
+        Symbol.objects.create(ticker="MSFT", exchange="NASDAQ", score=81)
+        mock_process_symbol.return_value = (True, False)
+        stdout = StringIO()
+        stderr = StringIO()
+
+        call_command("trading_view_scrape", "--workers", "1", stdout=stdout, stderr=stderr)
+
+        self.assertEqual(mock_process_symbol.call_count, 2)
+        self.assertEqual(
+            sorted(call.kwargs["symbol"].ticker for call in mock_process_symbol.call_args_list),
+            ["AAPL", "MSFT"],
+        )
+        for process_call in mock_process_symbol.call_args_list:
+            self.assertIn("reporter", process_call.kwargs)
+            self.assertTrue(process_call.kwargs["fetch_rsi"])
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertIn(
+            "Processed 2 symbols | updated 2 | cleared 0 | errors 0",
+            stdout.getvalue(),
+        )
+
+    def test_process_symbol_updates_rsi_from_tradingview(self) -> None:
+        expiration = self._expiration_int()
+        client = MagicMock()
+        client.get_underlying_price.return_value = "100.00"
+        client.get_monthly_rsi.return_value = "55.75"
+        client.get_expirations.return_value = [expiration]
+        client.get_chain.return_value = [
+            self._option_row(
+                strike="95",
+                bid="3.40",
+                ask="3.60",
+                delta="-0.34",
+                option_symbol="AAPL_MAIN",
+            )
+        ]
+
+        changed, was_cleared = self.command._process_symbol(
+            client=client,
+            symbol=self.symbol,
+            exchange="NASDAQ",
+            min_dte=25,
+            max_dte=40,
+            delta_min=Decimal("-0.37"),
+            delta_max=Decimal("-0.24"),
+            roi_threshold=Decimal("2"),
+            fetch_rsi=True,
+        )
+
+        self.assertTrue(changed)
+        self.assertFalse(was_cleared)
+
+        self.symbol.refresh_from_db()
+        self.assertEqual(self.symbol.rsi, Decimal("55.75"))
+        self.assertEqual(self.symbol.option_volume, 150)
+        self.assertEqual(self.symbol.option_iv, Decimal("24.1250"))
+        client.get_monthly_rsi.assert_called_once_with(exchange="NASDAQ", ticker="AAPL")
+
+    def test_process_symbol_keeps_smaller_abs_delta_alternatives(self) -> None:
+        expiration = self._expiration_int()
+        client = MagicMock()
+        client.get_underlying_price.return_value = "100.00"
+        client.get_monthly_rsi.return_value = "55.75"
+        client.get_expirations.return_value = [expiration]
+        client.get_chain.return_value = [
+            self._option_row(
+                strike="95",
+                bid="3.40",
+                ask="3.60",
+                delta="-0.34",
+                option_symbol="AAPL_MAIN",
+            ),
+            self._option_row(
+                strike="94",
+                bid="2.80",
+                ask="3.00",
+                delta="-0.31",
+                option_symbol="AAPL_ALT_1",
+            ),
+            self._option_row(
+                strike="93",
+                bid="2.20",
+                ask="2.40",
+                delta="-0.28",
+                option_symbol="AAPL_ALT_2",
+            ),
+            self._option_row(
+                strike="92",
+                bid="3.00",
+                ask="3.20",
+                delta="-0.36",
+                option_symbol="AAPL_RISKIER",
+            ),
+        ]
+
+        changed, was_cleared = self.command._process_symbol(
+            client=client,
+            symbol=self.symbol,
+            exchange="NASDAQ",
+            min_dte=25,
+            max_dte=40,
+            delta_min=Decimal("-0.37"),
+            delta_max=Decimal("-0.24"),
+            roi_threshold=Decimal("2"),
+            fetch_rsi=True,
+        )
+
+        self.assertTrue(changed)
+        self.assertFalse(was_cleared)
+
+        self.symbol.refresh_from_db()
+        self.assertEqual(self.symbol.option_data["option_symbol"], "AAPL_MAIN")
+        self.assertEqual(self.symbol.option_data["strike_price"], 95.0)
+        self.assertEqual(self.symbol.option_volume, 150)
+        self.assertEqual(self.symbol.option_iv, Decimal("24.1250"))
+        self.assertEqual(
+            [item["option_symbol"] for item in self.symbol.option_data["alternatives"]],
+            ["AAPL_ALT_1", "AAPL_ALT_2"],
+        )
+        self.assertEqual(
+            [item["delta"] for item in self.symbol.option_data["alternatives"]],
+            [-0.31, -0.28],
+        )
+
+    def test_process_symbol_clears_option_volume_and_iv_without_roi_candidate(self) -> None:
+        expiration = self._expiration_int()
+        self.symbol.option_volume = 750
+        self.symbol.option_iv = Decimal("33.3300")
+        self.symbol.option_data = {"option_symbol": "OLD"}
+        self.symbol.roi = Decimal("3.10")
+        self.symbol.save(
+            update_fields=["option_volume", "option_iv", "option_data", "roi", "updated_at"]
+        )
+
+        client = MagicMock()
+        client.get_underlying_price.return_value = "100.00"
+        client.get_monthly_rsi.return_value = "55.75"
+        client.get_expirations.return_value = [expiration]
+        client.get_chain.return_value = [
+            self._option_row(
+                strike="95",
+                bid="0.10",
+                ask="0.20",
+                delta="-0.34",
+                option_symbol="AAPL_LOW_ROI",
+            )
+        ]
+
+        changed, was_cleared = self.command._process_symbol(
+            client=client,
+            symbol=self.symbol,
+            exchange="NASDAQ",
+            min_dte=25,
+            max_dte=40,
+            delta_min=Decimal("-0.37"),
+            delta_max=Decimal("-0.24"),
+            roi_threshold=Decimal("2"),
+            fetch_rsi=True,
+        )
+
+        self.assertTrue(changed)
+        self.assertTrue(was_cleared)
+
+        self.symbol.refresh_from_db()
+        self.assertIsNone(self.symbol.option_volume)
+        self.assertIsNone(self.symbol.option_iv)
+        self.assertIsNone(self.symbol.option_data)
+        self.assertIsNone(self.symbol.roi)
+
+    def test_process_symbol_can_skip_rsi_fetch_and_preserve_existing_value(self) -> None:
+        expiration = self._expiration_int()
+        self.symbol.rsi = Decimal("41.25")
+        self.symbol.save(update_fields=["rsi", "updated_at"])
+
+        client = MagicMock()
+        client.get_underlying_price.return_value = "100.00"
+        client.get_expirations.return_value = [expiration]
+        client.get_chain.return_value = [
+            self._option_row(
+                strike="95",
+                bid="3.40",
+                ask="3.60",
+                delta="-0.34",
+                option_symbol="AAPL_MAIN",
+            )
+        ]
+
+        changed, was_cleared = self.command._process_symbol(
+            client=client,
+            symbol=self.symbol,
+            exchange="NASDAQ",
+            min_dte=25,
+            max_dte=40,
+            delta_min=Decimal("-0.37"),
+            delta_max=Decimal("-0.24"),
+            roi_threshold=Decimal("2"),
+            fetch_rsi=False,
+        )
+
+        self.assertTrue(changed)
+        self.assertFalse(was_cleared)
+
+        self.symbol.refresh_from_db()
+        self.assertEqual(self.symbol.rsi, Decimal("41.25"))
+        client.get_monthly_rsi.assert_not_called()
+
+    @patch("api.management.commands.trading_view_scrape.yf")
+    def test_process_symbol_backfills_missing_volume_from_yfinance(
+        self, mock_yf: MagicMock
+    ) -> None:
+        expiration = self._expiration_int()
+        expiration_date = datetime.strptime(str(expiration), "%Y%m%d").date()
+        client = MagicMock()
+        client.get_underlying_price.return_value = "100.00"
+        client.get_monthly_rsi.return_value = "55.75"
+        client.get_expirations.return_value = [expiration]
+        client.get_chain.return_value = [
+            self._option_row(
+                strike="95",
+                bid="3.40",
+                ask="3.60",
+                delta="-0.34",
+                option_symbol="AAPL_MAIN",
+                volume=None,
+            )
+        ]
+
+        mock_yf.Ticker.return_value.option_chain.return_value = MagicMock(
+            puts=MagicMock(to_dict=MagicMock(return_value=[{"strike": 95, "volume": 321}])),
+            calls=MagicMock(to_dict=MagicMock(return_value=[])),
+        )
+
+        changed, was_cleared = self.command._process_symbol(
+            client=client,
+            symbol=self.symbol,
+            exchange="NASDAQ",
+            min_dte=25,
+            max_dte=40,
+            delta_min=Decimal("-0.37"),
+            delta_max=Decimal("-0.24"),
+            roi_threshold=Decimal("2"),
+            fetch_rsi=True,
+        )
+
+        self.assertTrue(changed)
+        self.assertFalse(was_cleared)
+
+        self.symbol.refresh_from_db()
+        self.assertEqual(self.symbol.option_volume, 321)
+        self.assertEqual(self.symbol.option_data["volume"], 321)
+        mock_yf.Ticker.assert_called_once_with("AAPL")
+        mock_yf.Ticker.return_value.option_chain.assert_called_once_with(
+            expiration_date.isoformat()
+        )
+
+    @patch("api.management.commands.trading_view_scrape.yf")
+    def test_process_symbol_skips_yfinance_when_tradingview_volume_exists(
+        self, mock_yf: MagicMock
+    ) -> None:
+        expiration = self._expiration_int()
+        client = MagicMock()
+        client.get_underlying_price.return_value = "100.00"
+        client.get_monthly_rsi.return_value = "55.75"
+        client.get_expirations.return_value = [expiration]
+        client.get_chain.return_value = [
+            self._option_row(
+                strike="95",
+                bid="3.40",
+                ask="3.60",
+                delta="-0.34",
+                option_symbol="AAPL_MAIN",
+                volume="150",
+            )
+        ]
+
+        changed, was_cleared = self.command._process_symbol(
+            client=client,
+            symbol=self.symbol,
+            exchange="NASDAQ",
+            min_dte=25,
+            max_dte=40,
+            delta_min=Decimal("-0.37"),
+            delta_max=Decimal("-0.24"),
+            roi_threshold=Decimal("2"),
+            fetch_rsi=True,
+        )
+
+        self.assertTrue(changed)
+        self.assertFalse(was_cleared)
+        mock_yf.Ticker.assert_not_called()
+
+    def test_symbol_serializer_returns_raw_option_data_only(self) -> None:
+        self.symbol.option_volume = 321
+        self.symbol.option_iv = Decimal("18.7500")
+        self.symbol.option_data = {
+            "option_symbol": "AAPL_MAIN",
+            "strike_price": 95.0,
+            "bid": 3.4,
+            "ask": 3.6,
+            "volume": 321,
+            "iv": 18.75,
+            "mid": 3.5,
+            "alternatives": [
+                {
+                    "option_symbol": "AAPL_ALT_1",
+                    "strike_price": 94.0,
+                    "bid": 2.8,
+                    "ask": 3.0,
+                    "volume": 210,
+                    "iv": 20.1,
+                    "mid": 2.9,
+                }
+            ],
+        }
+        self.symbol.save(update_fields=["option_volume", "option_iv", "option_data", "updated_at"])
+
+        data = SymbolSerializer(self.symbol).data
+
+        self.assertNotIn("strike_price", data)
+        self.assertNotIn("bid", data)
+        self.assertNotIn("ask", data)
+        self.assertNotIn("mid", data)
+        self.assertNotIn("alternatives", data)
+        self.assertEqual(data["option_volume"], 321)
+        self.assertEqual(data["option_iv"], "18.7500")
+        self.assertEqual(data["option_data"]["strike_price"], 95.0)
+        self.assertEqual(data["option_data"]["bid"], 3.4)
+        self.assertEqual(data["option_data"]["ask"], 3.6)
+        self.assertEqual(data["option_data"]["volume"], 321)
+        self.assertEqual(data["option_data"]["iv"], 18.75)
+        self.assertEqual(data["option_data"]["mid"], 3.5)
+        self.assertEqual(len(data["option_data"]["alternatives"]), 1)
+        self.assertEqual(data["option_data"]["alternatives"][0]["strike_price"], 94.0)
+        self.assertEqual(data["option_data"]["alternatives"][0]["bid"], 2.8)
+        self.assertEqual(data["option_data"]["alternatives"][0]["ask"], 3.0)
+        self.assertEqual(data["option_data"]["alternatives"][0]["volume"], 210)
+        self.assertEqual(data["option_data"]["alternatives"][0]["iv"], 20.1)
+        self.assertEqual(data["option_data"]["alternatives"][0]["mid"], 2.9)
+
+
+class AIAgentsPotentialCommandTestCase(APITestCase):
+    def test_extract_json_payload_accepts_code_fenced_json(self) -> None:
+        payload = ai_agents_potential_command.extract_json_payload(
+            '```json\n{"summary":"Compact view","bull_points":["A"],"risk_points":[],"score_alignment":"supports"}\n```'
+        )
+
+        self.assertEqual(payload["summary"], "Compact view")
+        self.assertEqual(payload["score_alignment"], "supports")
+
+    @patch("api.management.commands.ai_agents_potential.OpenAI")
+    @patch("api.management.commands.ai_agents_potential.generate_text")
+    def test_command_outputs_frontend_json_and_saves_report(
+        self,
+        mock_generate_text: MagicMock,
+        mock_openai: MagicMock,
+    ) -> None:
+        mock_openai.return_value = MagicMock()
+
+        def fake_generate_text(*, prompt: str, **kwargs: Any) -> str:
+            if "BUSINESS POTENTIAL" in prompt:
+                return json.dumps(
+                    {
+                        "summary": "High switching costs and sticky customer relationships support the moat.",
+                        "bull_points": ["Pricing power intact", "Recurring enterprise demand"],
+                        "risk_points": ["Execution matters"],
+                        "score_alignment": "supports",
+                    }
+                )
+            if "SECTOR AND INDUSTRY GROWTH POTENTIAL" in prompt:
+                return json.dumps(
+                    {
+                        "summary": "End-market demand remains healthy with multi-year infrastructure spending.",
+                        "bull_points": ["Data center capex expanding", "Industry CAGR remains attractive"],
+                        "risk_points": ["Macro slowdown can compress budgets"],
+                        "score_alignment": "supports",
+                    }
+                )
+            if "context of ARTIFICIAL INTELLIGENCE" in prompt:
+                return json.dumps(
+                    {
+                        "summary": "AI demand is a clear tailwind, but faster product cycles raise competitive pressure.",
+                        "bull_points": ["AI workloads lift throughput demand"],
+                        "risk_points": ["AI-native challengers can narrow differentiation"],
+                        "score_alignment": "nuances",
+                    }
+                )
+
+            return json.dumps(
+                {
+                    "executive_summary": "Compelling setup driven by durable demand, AI tailwinds, and resilient positioning. Main watch item is execution under a faster innovation cycle.",
+                    "overall_stance": "bullish",
+                    "score_alignment": "supports",
+                    "confidence": 0.82,
+                    "insights": [
+                        {
+                            "key": "business_moat",
+                            "summary": "Sticky customer relationships and pricing power reinforce the moat.",
+                            "tone": "bull",
+                            "dot_color": "green",
+                            "tag": "Competitive moat",
+                        },
+                        {
+                            "key": "revenue_growth",
+                            "summary": "Infrastructure and enterprise spend support a healthy growth runway.",
+                            "tone": "bull",
+                            "dot_color": "blue",
+                            "tag": "Growth driver",
+                        },
+                        {
+                            "key": "ai_sector_tailwinds",
+                            "summary": "AI workloads and sector capex create sustained demand tailwinds.",
+                            "tone": "neutral",
+                            "dot_color": "teal",
+                            "tag": None,
+                        },
+                        {
+                            "key": "key_risks",
+                            "summary": "Execution risk and faster AI competition remain the main watchpoints.",
+                            "tone": "risk",
+                            "dot_color": "red",
+                            "tag": "Monitor closely",
+                        },
+                    ],
+                }
+            )
+
+        mock_generate_text.side_effect = fake_generate_text
+
+        stdout = StringIO()
+        stderr = StringIO()
+
+        call_command(
+            "ai_agents_potential",
+            "NVDA",
+            "--score",
+            "81",
+            "--format",
+            "json",
+            "--save-to-db",
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+        payload = json.loads(stdout.getvalue())
+
+        self.assertEqual(payload["ticker"], "NVDA")
+        self.assertEqual(payload["fundamental_score"], 81)
+        self.assertEqual(payload["overall_stance"], "bullish")
+        self.assertEqual(payload["score_alignment"], "supports")
+        self.assertEqual(len(payload["insights"]), 4)
+        self.assertEqual(payload["insights"][0]["key"], "business_moat")
+        self.assertEqual(payload["agents"][0]["key"], "business_potential")
+
+        report = DueDiligenceReport.objects.get(symbol="NVDA")
+        self.assertEqual(report.rating, "BUY")
+        self.assertEqual(report.report["report_kind"], "frontend_analysis_panel")
+        self.assertIn("Saved summarized report", stderr.getvalue())

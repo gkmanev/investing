@@ -16,6 +16,7 @@ from .models import (
     Investment,
     ScreenerFilter,
     ScreenerType,
+    Symbol,
 )
 from .serializers import (
     DueDiligenceReportSerializer,
@@ -23,10 +24,130 @@ from .serializers import (
     InvestmentSerializer,
     ScreenerFilterSerializer,
     ScreenerTypeSerializer,
+    SymbolSerializer,
 )
 
 
-class InvestmentViewSet(viewsets.ModelViewSet):
+class FilterMixin:
+    """Reusable query-param filtering helpers for ModelViewSets."""
+
+    def _apply_decimal_filter(
+        self,
+        queryset,
+        params: Mapping[str, str],
+        *,
+        field_name: str,
+        exact_param: str | None = None,
+        min_param: str | None = None,
+        max_param: str | None = None,
+    ):
+        exact_value = (
+            self._parse_decimal(params.get(exact_param), exact_param) if exact_param else None
+        )
+        min_value = self._parse_decimal(params.get(min_param), min_param) if min_param else None
+        max_value = self._parse_decimal(params.get(max_param), max_param) if max_param else None
+
+        if min_value is not None and max_value is not None and min_value > max_value:
+            raise ValidationError(
+                {max_param: "Maximum value must be greater than or equal to minimum value."}
+            )
+
+        if exact_value is not None:
+            queryset = queryset.filter(**{field_name: exact_value})
+        if min_value is not None:
+            queryset = queryset.filter(**{f"{field_name}__gte": min_value})
+        if max_value is not None:
+            queryset = queryset.filter(**{f"{field_name}__lte": max_value})
+        return queryset
+
+    def _apply_integer_min_filter(
+        self, queryset, params: Mapping[str, str], *, field_name: str, param_name: str
+    ):
+        value = self._parse_integer(params.get(param_name), param_name)
+        if value is None:
+            return queryset
+        return queryset.filter(**{f"{field_name}__gte": value})
+
+    def _apply_integer_exact_filter(
+        self, queryset, params: Mapping[str, str], *, field_name: str, param_name: str
+    ):
+        value = self._parse_integer(params.get(param_name), param_name)
+        if value is None:
+            return queryset
+        return queryset.filter(**{field_name: value})
+
+    def _apply_integer_range_filter(
+        self,
+        queryset,
+        params: Mapping[str, str],
+        *,
+        field_name: str,
+        min_param: str | None = None,
+        max_param: str | None = None,
+    ):
+        min_value = self._parse_integer(params.get(min_param), min_param) if min_param else None
+        max_value = self._parse_integer(params.get(max_param), max_param) if max_param else None
+
+        if min_value is not None and max_value is not None and min_value > max_value:
+            raise ValidationError(
+                {max_param: "Maximum value must be greater than or equal to minimum value."}
+            )
+
+        if min_value is not None:
+            queryset = queryset.filter(**{f"{field_name}__gte": min_value})
+        if max_value is not None:
+            queryset = queryset.filter(**{f"{field_name}__lte": max_value})
+        return queryset
+
+    def _apply_boolean_filter(
+        self, queryset, params: Mapping[str, str], *, field_name: str, param_name: str
+    ):
+        value = self._parse_boolean(params.get(param_name), param_name)
+        if value is None:
+            return queryset
+        return queryset.filter(**{field_name: value})
+
+    def _apply_cboe_filter(self, queryset, params: Mapping[str, str], *, param_name: str):
+        value = self._parse_boolean(params.get(param_name), param_name)
+        if value is None:
+            return queryset
+
+        cboe_symbols = CboeSecurity.objects.values_list("symbol", flat=True)
+        if value:
+            return queryset.filter(ticker__in=cboe_symbols)
+        return queryset.exclude(ticker__in=cboe_symbols)
+
+    def _parse_decimal(self, raw_value: str | None, field: str) -> Decimal | None:
+        if raw_value is None:
+            return None
+        try:
+            value = Decimal(raw_value)
+        except (InvalidOperation, TypeError):
+            raise ValidationError({field: "Enter a valid number."})
+        return value
+
+    def _parse_integer(self, raw_value: str | None, field: str) -> int | None:
+        if raw_value is None:
+            return None
+        try:
+            return int(raw_value)
+        except (TypeError, ValueError):
+            raise ValidationError({field: "Enter a valid integer."})
+
+    def _parse_boolean(self, raw_value: str | None, field: str) -> bool | None:
+        if raw_value is None:
+            return None
+
+        normalized_value = raw_value.strip().lower()
+        if normalized_value in {"true", "1", "yes", "y"}:
+            return True
+        if normalized_value in {"false", "0", "no", "n"}:
+            return False
+
+        raise ValidationError({field: "Enter a valid boolean."})
+
+
+class InvestmentViewSet(FilterMixin, viewsets.ModelViewSet):
     """CRUD viewset that also supports lightweight filtering."""
 
     queryset = Investment.objects.all()
@@ -77,18 +198,64 @@ class InvestmentViewSet(viewsets.ModelViewSet):
         queryset = self._apply_decimal_filter(
             queryset,
             params,
-            field_name="roi",
-            exact_param="roi",
-            min_param="min_roi",
-            max_param="max_roi",
+            field_name="market_cap",
+            min_param="min_market_cap",
+            max_param="max_market_cap",
         )
         queryset = self._apply_decimal_filter(
             queryset,
             params,
-            field_name="delta",
-            exact_param="delta",
-            min_param="min_delta",
-            max_param="max_delta",
+            field_name="rsi",
+            min_param="min_rsi",
+            max_param="max_rsi",
+        )
+        queryset = self._apply_integer_min_filter(
+            queryset, params, field_name="volume", param_name="min_volume"
+        )
+        queryset = self._apply_cboe_filter(queryset, params, param_name="cboe")
+
+        return queryset
+
+    def perform_create(self, serializer: InvestmentSerializer) -> None:
+        serializer.save()
+
+
+class SymbolViewSet(FilterMixin, viewsets.ModelViewSet):
+    """CRUD viewset for Symbol with query-param filtering."""
+
+    queryset = Symbol.objects.all()
+    serializer_class = SymbolSerializer
+
+    def get_queryset(self):  # type: ignore[override]
+        queryset = super().get_queryset()
+        params = self.request.query_params
+
+        ticker_query = params.get("ticker")
+        if ticker_query:
+            queryset = queryset.filter(ticker__icontains=ticker_query)
+
+        exchange = params.get("exchange")
+        if exchange:
+            queryset = queryset.filter(exchange__iexact=exchange)
+
+        classification = params.get("classification")
+        if classification:
+            queryset = queryset.filter(classification__iexact=classification)
+
+        liquidity = params.get("liquidity")
+        if liquidity:
+            queryset = queryset.filter(liquidity__iexact=liquidity)
+
+        queryset = self._apply_boolean_filter(
+            queryset, params, field_name="initial_suitability", param_name="initial_suitability"
+        )
+        queryset = self._apply_decimal_filter(
+            queryset,
+            params,
+            field_name="price",
+            exact_param="price",
+            min_param="min_price",
+            max_param="max_price",
         )
         queryset = self._apply_decimal_filter(
             queryset,
@@ -104,124 +271,36 @@ class InvestmentViewSet(viewsets.ModelViewSet):
             min_param="min_rsi",
             max_param="max_rsi",
         )
-        queryset = self._apply_integer_min_filter(
-            queryset, params, field_name="volume", param_name="min_volume"
-        )
-        queryset = self._apply_integer_exact_filter(
+        queryset = self._apply_decimal_filter(
             queryset,
             params,
-            field_name="options_suitability",
-            param_name="options_suitability",
+            field_name="roi",
+            min_param="min_roi",
+            max_param="max_roi",
         )
-        queryset = self._apply_boolean_filter(
+        queryset = self._apply_decimal_filter(
             queryset,
             params,
-            field_name="weekly_options",
-            param_name="weekly_options",
+            field_name="option_iv",
+            min_param="min_option_iv",
+            max_param="max_option_iv",
         )
-        queryset = self._apply_cboe_filter(queryset, params, param_name="cboe")
+        queryset = self._apply_integer_range_filter(
+            queryset,
+            params,
+            field_name="option_volume",
+            min_param="min_option_volume",
+            max_param="max_option_volume",
+        )
+        queryset = self._apply_integer_range_filter(
+            queryset,
+            params,
+            field_name="score",
+            min_param="min_score",
+            max_param="max_score",
+        )
 
         return queryset
-
-    def perform_create(self, serializer: InvestmentSerializer) -> None:
-        serializer.save()
-
-    def _apply_decimal_filter(
-        self,
-        queryset,
-        params: Mapping[str, str],
-        *,
-        field_name: str,
-        exact_param: str | None = None,
-        min_param: str | None = None,
-        max_param: str | None = None,
-    ):
-        exact_value = (
-            self._parse_decimal(params.get(exact_param), exact_param) if exact_param else None
-        )
-        min_value = self._parse_decimal(params.get(min_param), min_param) if min_param else None
-        max_value = self._parse_decimal(params.get(max_param), max_param) if max_param else None
-
-        if min_value is not None and max_value is not None and min_value > max_value:
-            raise ValidationError(
-                {max_param: "Maximum value must be greater than or equal to minimum value."}
-            )
-
-        if exact_value is not None:
-            queryset = queryset.filter(**{field_name: exact_value})
-        if min_value is not None:
-            queryset = queryset.filter(**{f"{field_name}__gte": min_value})
-        if max_value is not None:
-            queryset = queryset.filter(**{f"{field_name}__lte": max_value})
-        return queryset
-
-    def _apply_integer_min_filter(
-        self, queryset, params: Mapping[str, str], *, field_name: str, param_name: str
-    ):
-        value = self._parse_integer(params.get(param_name), param_name)
-        if value is None:
-            return queryset
-
-        return queryset.filter(**{f"{field_name}__gte": value})
-
-    def _apply_integer_exact_filter(
-        self, queryset, params: Mapping[str, str], *, field_name: str, param_name: str
-    ):
-        value = self._parse_integer(params.get(param_name), param_name)
-        if value is None:
-            return queryset
-
-        return queryset.filter(**{field_name: value})
-
-    def _apply_boolean_filter(
-        self, queryset, params: Mapping[str, str], *, field_name: str, param_name: str
-    ):
-        value = self._parse_boolean(params.get(param_name), param_name)
-        if value is None:
-            return queryset
-
-        return queryset.filter(**{field_name: value})
-
-    def _apply_cboe_filter(self, queryset, params: Mapping[str, str], *, param_name: str):
-        value = self._parse_boolean(params.get(param_name), param_name)
-        if value is None:
-            return queryset
-
-        cboe_symbols = CboeSecurity.objects.values_list("symbol", flat=True)
-        if value:
-            return queryset.filter(ticker__in=cboe_symbols)
-
-        return queryset.exclude(ticker__in=cboe_symbols)
-
-    def _parse_decimal(self, raw_value: str | None, field: str) -> Decimal | None:
-        if raw_value is None:
-            return None
-        try:
-            value = Decimal(raw_value)
-        except (InvalidOperation, TypeError):
-            raise ValidationError({field: "Enter a valid number."})
-        return value
-
-    def _parse_integer(self, raw_value: str | None, field: str) -> int | None:
-        if raw_value is None:
-            return None
-
-        try:
-            return int(raw_value)
-        except (TypeError, ValueError):
-            raise ValidationError({field: "Enter a valid integer."})
-
-    def _parse_boolean(self, raw_value: str | None, field: str) -> bool | None:
-        if raw_value is None:
-            return None
-
-        normalized_value = raw_value.strip().lower()
-        if normalized_value in {"true", "1", "yes", "y"}:
-            return True
-        if normalized_value in {"false", "0", "no", "n"}:
-            return False
-
-        raise ValidationError({field: "Enter a valid boolean."})
 
 
 class ScreenerTypeViewSet(viewsets.ModelViewSet):

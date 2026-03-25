@@ -28,6 +28,12 @@ SECRET_KEY = os.getenv(
 )
 
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+
+RAPIDAPI_KEY = os.getenv('RAPIDAPI_KEY')
+FINANCIAL_MODELING_API_KEY = os.getenv('FINANCIAL_MODELING_API_KEY')
+
+
+
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv("DEBUG", "False").lower() in {"1", "true", "yes"}
 APP_ENV = os.getenv("APP_ENV", "development").lower()

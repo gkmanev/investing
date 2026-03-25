@@ -29,16 +29,24 @@ CUSTOM_FILTER_PAYLOAD = {
     "cash_from_operations_as_reported": {"gte": 0},
 }
 
-# CUSTOM_FILTER_PAYLOAD_V2 = {
-#     **EXCHANGE_FILTER_PAYLOAD,
-#     "marketcap_display": {"gte": 5_000_000_000},
-#     "quant_rating": {"in": ["buy", "strong_buy"]},
-# }
+CUSTOM_FILTER_PAYLOAD_V2 = {
+    **EXCHANGE_FILTER_PAYLOAD,
+    "marketcap_display": {"gte": 5000000000},
+    "quant_rating": {"in": ["buy", "strong_buy"]},
+}
 
 CUSTOM_FILTER_PAYLOAD_V3 = {
     **EXCHANGE_FILTER_PAYLOAD,
     "marketcap_display": {"gte": 5000000000},
     "profitability_category": {"in": ["A+", "A", "A-", "B+", "B", "B-"]},
     "eps_revisions_category": {"in": ["A+", "A", "A-", "B+", "B", "B-"]},
-    # "momentum_category"     : {"in": ["A+", "A", "A-", "B+", "B","B-","C+","C"]}
+    "momentum_category"     : {"in": ["A+", "A", "A-", "B+", "B","B-","C+","C"]}
+}
+
+
+CUSTOM_FILTER_PAYLOAD_V4 = {
+    **EXCHANGE_FILTER_PAYLOAD,
+    "marketcap_display": {"gte": 5000000000},
+    "sell_side_rating": {"in": ["hold", "buy", "strong_buy"]},
+    "quant_rating": {"in": ["hold", "buy", "strong_buy"]},   
 }

@@ -1,57 +1,133 @@
 """
-Django management command for AI-powered Put-Selling Due Diligence
+Django management command for AI-powered Put-Selling Due Diligence (V2).
 
 Usage:
-    python manage.py analyze_stock GLW
-    python manage.py analyze_stock AAPL --save
+    python manage.py ai_agentV2 GLW
+    python manage.py ai_agentV2 AAPL MSFT --save
 """
 
 from django.core.management.base import BaseCommand, CommandError
 from django.conf import settings
-import requests
+import csv
+import http.client
 import json
+from pathlib import Path
 from typing import Dict, Any
 from openai import OpenAI
 
 
-class FinancialDDAgent:
+class FinancialDDAgentV2:
     """
     AI agent evaluating whether a company is suitable for
     selling cash-secured puts (wheel strategy).
     """
 
-    def __init__(self, base_url: str = None):
+    def __init__(self):
         api_key = getattr(settings, "OPENAI_API_KEY", None)
         self.client = OpenAI(api_key=api_key) if api_key else OpenAI()
 
-        self.base_url = base_url or getattr(
-            settings, "FINANCIAL_API_BASE_URL", settings.LOCAL_API_BASE_URL
-        )
         self.model = getattr(settings, "OPENAI_MODEL", "gpt-4o-mini")
+        self.rapidapi_host = getattr(
+            settings, "RAPIDAPI_HOST", "financial-modeling-prep.p.rapidapi.com"
+        )
+        self.rapidapi_key = getattr(
+            settings, "RAPIDAPI_KEY", "66dcbafb75msha536f3086b06788p1f5e7ajsnac1315877f0f"
+        )
 
     # ------------------------------------------------------------------
     # Data fetching
     # ------------------------------------------------------------------
+    def _fetch_json(self, path: str) -> Any:
+        headers = {
+            "x-rapidapi-key": self.rapidapi_key,
+            "x-rapidapi-host": self.rapidapi_host,
+            "Content-Type": "application/json",
+        }
+
+        conn = http.client.HTTPSConnection(self.rapidapi_host, timeout=30)
+        try:
+            conn.request("GET", path, headers=headers)
+            response = conn.getresponse()
+            body = response.read()
+        finally:
+            conn.close()
+
+        if response.status >= 400:
+            raise Exception(
+                f"RapidAPI request failed ({response.status}): {response.reason}"
+            )
+
+        if not body:
+            return None
+
+        return json.loads(body.decode("utf-8"))
+
     def fetch_financial_data(self, symbol: str) -> Dict[str, Any]:
-        endpoint = f"{self.base_url}/api/financial-statements/"
+        symbol = symbol.upper()
+        api_key_param = self.rapidapi_key
         statements = {
-            "balance_sheet": "balance-sheet",
-            "income_statement": "income-statement",
-            "cash_flow": "cash-flow-statement",
+            "balance_sheet": (
+                f"/v3/balance-sheet-statement/{symbol}?apikey={api_key_param}"
+            ),
+            "income_statement": (
+                f"/v3/income-statement/{symbol}?apikey={api_key_param}"
+            ),
+            "cash_flow": f"/v3/cash-flow-statement/{symbol}?apikey={api_key_param}",
         }
 
         financial_data: Dict[str, Any] = {}
 
-        for key, statement_type in statements.items():
-            params = {"symbol": symbol.upper(), "statement_type": statement_type}
-            response = requests.get(endpoint, params=params, timeout=30)
-            response.raise_for_status()
-            financial_data[key] = response.json()
+        for key, path in statements.items():
+            statement_data = self._fetch_json(path)
+            financial_data[key] = statement_data
 
         if not financial_data or not all(financial_data.values()):
             raise Exception("Incomplete financial data returned from API")
 
+        self._write_financial_csv(financial_data, Path("finV2.csv"))
+
         return financial_data
+
+    @staticmethod
+    def _format_head(data: Any) -> Any:
+        if isinstance(data, list):
+            return data[:1]
+        if isinstance(data, dict):
+            items = list(data.items())[:10]
+            return {key: value for key, value in items}
+        return data
+
+    @staticmethod
+    def _write_financial_csv(financial_data: Dict[str, Any], path: Path) -> None:
+        rows: list[dict[str, Any]] = []
+        for statement_type, data in financial_data.items():
+            if isinstance(data, list):
+                for entry in data:
+                    if isinstance(entry, dict):
+                        row = dict(entry)
+                        row["statement_type"] = statement_type
+                        rows.append(row)
+            elif isinstance(data, dict):
+                row = dict(data)
+                row["statement_type"] = statement_type
+                rows.append(row)
+
+        if not rows:
+            return
+
+        fieldnames: list[str] = []
+        seen = set()
+        for row in rows:
+            for key in row.keys():
+                if key in seen:
+                    continue
+                seen.add(key)
+                fieldnames.append(key)
+
+        with path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
 
     # ------------------------------------------------------------------
     # AI analysis
@@ -150,8 +226,7 @@ class FinancialDDAgent:
 
         prompt = f"""
 You are a financial analysis agent evaluating whether a company is suitable for
-SELLING CASH-SECURED PUTS where ASSIGNMENT IS ACCEPTABLE and the position may
-transition into COVERED CALLS (wheel strategy).
+long term investment.
 
 This is NOT a buy/sell stock rating task.
 
@@ -164,7 +239,7 @@ Key principles:
 - Cash generation > earnings
 - Cyclicality acceptable if cash flow recovers
 - Moderate leverage acceptable
-- Focus on survivability and assignment safety
+- Focus on survivability and long term holding the stock
 
 Scoring weights:
 - Cash Flow 40%
@@ -195,61 +270,64 @@ Financial Data:
 # Django command
 # ======================================================================
 class Command(BaseCommand):
-    help = "Evaluate a stock for put-selling (wheel strategy) suitability"
+    help = "Evaluate a stock for put-selling (wheel strategy) suitability (V2)"
 
     def add_arguments(self, parser):
-        parser.add_argument("symbol", type=str)
+        parser.add_argument("symbols", nargs="+", type=str)
         parser.add_argument("--save", action="store_true")
-        parser.add_argument("--base-url", type=str)
 
     def handle(self, *args, **options):
-        symbol = options["symbol"].upper()
+        symbols = [s.upper() for s in options["symbols"]]
         save_report = options["save"]
-        base_url = options.get("base_url")
 
-        self.stdout.write(self.style.SUCCESS("=" * 80))
-        self.stdout.write(self.style.SUCCESS(f" Evaluating {symbol} for put-selling "))
-        self.stdout.write(self.style.SUCCESS("=" * 80))
+        agent = FinancialDDAgentV2()
+        failures = []
 
-        try:
-            agent = FinancialDDAgent(base_url=base_url)
-            financial_data = agent.fetch_financial_data(symbol)
-            report = agent.analyze_with_model(symbol, financial_data)
+        for symbol in symbols:
+            self.stdout.write(self.style.SUCCESS("=" * 80))
+            self.stdout.write(self.style.SUCCESS(f" Evaluating {symbol} for put-selling "))
+            self.stdout.write(self.style.SUCCESS("=" * 80))
 
-            classification = report["classification"]
-            score = report["great_company_score"]
+            try:
+                financial_data = agent.fetch_financial_data(symbol)
+                report = agent.analyze_with_model(symbol, financial_data)
 
-            rating_map = {
-                "Wheel-Ready": "BUY",
-                "Watchlist": "HOLD",
-                "Avoid for Puts": "SELL",
-            }
+                classification = report["classification"]
+                score = report["great_company_score"]
 
-            rating = rating_map.get(classification, "HOLD")
-            confidence = round(score / 100, 2)
+                rating_map = {
+                    "Wheel-Ready": "BUY",
+                    "Watchlist": "HOLD",
+                    "Avoid for Puts": "SELL",
+                }
 
-            self.stdout.write("")
-            self.stdout.write(self.style.SUCCESS("Result"))
-            self.stdout.write(f"Classification : {classification}")
-            self.stdout.write(f"Score          : {score}")
-            self.stdout.write(f"Rating (DB)    : {rating}")
-            self.stdout.write("")
+                rating = rating_map.get(classification, "HOLD")
+                confidence = round(score / 100, 2)
 
-            if save_report:
-                from api.models import DueDiligenceReport
+                self.stdout.write("")
+                self.stdout.write(self.style.SUCCESS("Result"))
+                self.stdout.write(f"Classification : {classification}")
+                self.stdout.write(f"Score          : {score}")
+                self.stdout.write(f"Rating (DB)    : {rating}")
+                self.stdout.write("")
 
-                DueDiligenceReport.objects.create(
-                    symbol=symbol,
-                    rating=rating,
-                    confidence=confidence,
-                    model_name=agent.model,
-                    report=report,
-                    financial_data=financial_data,
-                )
+                if save_report:
+                    from api.models import DueDiligenceReport
 
-                self.stdout.write(self.style.SUCCESS("✔ Report saved to database"))
+                    DueDiligenceReport.objects.create(
+                        symbol=symbol,
+                        rating=rating,
+                        confidence=confidence,
+                        model_name=agent.model,
+                        report=report,
+                    )
 
-        except Exception as e:
-            raise CommandError(str(e))
+                    self.stdout.write(self.style.SUCCESS("Report saved to database"))
 
-        self.stdout.write(self.style.SUCCESS("=" * 80))
+            except Exception as e:
+                failures.append(f"{symbol}: {e}")
+
+            self.stdout.write(self.style.SUCCESS("=" * 80))
+
+        if failures:
+            raise CommandError("One or more symbols failed:\n" + "\n".join(failures))

@@ -6,6 +6,7 @@ from .models import (
     Investment,
     ScreenerFilter,
     ScreenerType,
+    Symbol,
 )
 
 
@@ -21,13 +22,10 @@ class InvestmentSerializer(serializers.ModelSerializer):
             "rsi",
             #"volume",
             #"market_cap",
-            "delta",
-            "bid_ask_spread",
-            "options_suitability",
             "option_exp",
-            "weekly_options",
+            "next_earnings_date",
             #"description",
-            "roi",
+            "option_data",
             "created_at",
             "updated_at",
         ]
@@ -102,6 +100,40 @@ class FinancialStatementSerializer(serializers.ModelSerializer):
         return cleaned.upper()
 
 
+class SymbolSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Symbol
+        fields = [
+            "id",
+            "ticker",
+            "exchange",
+            "market_cap",
+            "initial_suitability",
+            "score",
+            "classification",
+            "liquidity",
+            "price",
+            "dcf",
+            "rsi",
+            "technical_score",
+            "option_exp",
+            "option_volume",
+            "option_iv",
+            "next_earnings_date",
+            "option_data",
+            "roi",
+            "seeking_alpha_ticker_id",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+    def validate_ticker(self, value: str) -> str:
+        if not value.strip():
+            raise serializers.ValidationError("Ticker cannot be empty.")
+        return value.upper()
+
+
 class DueDiligenceReportSerializer(serializers.ModelSerializer):
     class Meta:
         model = DueDiligenceReport
@@ -112,7 +144,6 @@ class DueDiligenceReportSerializer(serializers.ModelSerializer):
             "confidence",
             "model_name",
             "report",
-            "financial_data",
             "created_at",
         ]
         read_only_fields = ["id", "created_at"]

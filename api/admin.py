@@ -11,8 +11,7 @@ class InvestmentAdmin(admin.ModelAdmin):
         "screener_type",
         "price",
         "market_cap",
-        "options_suitability",
-        "weekly_options",
+        "option_exp",
         "created_at",
     )
     search_fields = ("ticker", "category", "screener_type")

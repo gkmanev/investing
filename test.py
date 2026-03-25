@@ -1,13 +1,20 @@
-import pandas as pd
+import yfinance as yf
 
-url = "https://www.cboe.com/available_weeklys/get_csv_download/"
-df = pd.read_csv(url)
+symbol = "aa"
+ticker = yf.Ticker(symbol)
 
-# Show columns / first rows (format can change over time)
-print(df.columns)
-print(df.head())
+# Get all expiration dates
+expirations = ticker.options
+print("Expirations:", expirations)
 
-# Example: check if ticker appears anywhere in the CSV
-ticker = "AAPL"
-has_weeklys = df.astype(str).apply(lambda col: col.str.fullmatch(ticker, case=False, na=False)).any().any()
-print(ticker, "has weeklies?" , has_weeklys)
+# Chain for specific expiration
+exp_date = expirations[0]  # Nearest
+chain = ticker.option_chain(exp_date)
+calls = chain.calls
+puts = chain.puts
+
+# Print only strike, bid, ask for calls and puts (full or .head() for top rows)
+print("\nCalls (strike, bid, ask):")
+print(calls[['strike', 'bid', 'ask']])  # or .head() for preview
+print("\nPuts (strike, bid, ask):")
+print(puts[['strike', 'bid', 'ask']])  # or .head() for preview

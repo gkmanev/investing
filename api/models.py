@@ -38,21 +38,23 @@ class ScreenerFilter(models.Model):
 class Investment(models.Model):
     """Represents an investment option exposed through the API."""
 
-    ticker = models.CharField(max_length=50, unique=True)
+    ticker = models.CharField(max_length=50)
+    option_symbol = models.CharField(max_length=50, unique=True, null=True, blank=True)
     category = models.CharField(max_length=100)
     screener_type = models.CharField(max_length=255, blank=True, null=True)
     price = models.DecimalField(max_digits=20, decimal_places=4, null=True, blank=True)
-    roi = models.DecimalField(max_digits=7, decimal_places=2, null=True, blank=True)
-    delta = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
-    bid_ask_spread = models.DecimalField(
-        max_digits=10, decimal_places=4, null=True, blank=True
+    strike_price = models.DecimalField(
+        max_digits=20, decimal_places=4, null=True, blank=True
     )
+    bid = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
+    ask = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
+    mid = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
+    option_data = models.JSONField(null=True, blank=True)
     rsi = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     volume = models.BigIntegerField(null=True, blank=True)
     market_cap = models.DecimalField(max_digits=24, decimal_places=2, null=True, blank=True)
-    options_suitability = models.SmallIntegerField(null=True, blank=True)
     option_exp = models.DateField(null=True, blank=True)
-    weekly_options = models.BooleanField(null=True, blank=True)
+    next_earnings_date = models.DateField(null=True, blank=True)
     description = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -61,7 +63,7 @@ class Investment(models.Model):
         ordering = ["ticker"]
 
     def __str__(self) -> str:  # pragma: no cover - simple data representation
-        return self.ticker
+        return self.option_symbol or self.ticker
 
 
 class CboeSecurity(models.Model):
@@ -77,6 +79,49 @@ class CboeSecurity(models.Model):
 
     def __str__(self) -> str:  # pragma: no cover - simple data representation
         return self.symbol
+
+
+class Symbol(models.Model):
+    """Master list of exchange-listed symbols with market cap >= 5B."""
+
+    ticker = models.CharField(max_length=50, unique=True)
+    exchange = models.CharField(max_length=100, blank=True, default="")
+    market_cap = models.DecimalField(max_digits=24, decimal_places=2, null=True, blank=True)
+    LIQUIDITY_GOOD = "GOOD"
+    LIQUIDITY_WEAK = "WEAK"
+    LIQUIDITY_CHOICES = [
+        (LIQUIDITY_GOOD, "Good"),
+        (LIQUIDITY_WEAK, "Weak"),
+    ]
+
+    initial_suitability = models.BooleanField(null=True, blank=True, default=None)
+    score = models.IntegerField(null=True, blank=True)
+    classification = models.CharField(max_length=100, blank=True, null=True)
+    liquidity = models.CharField(
+        max_length=10,
+        choices=LIQUIDITY_CHOICES,
+        null=True,
+        blank=True,
+    )
+    price = models.DecimalField(max_digits=20, decimal_places=4, null=True, blank=True)
+    dcf = models.DecimalField(max_digits=20, decimal_places=4, null=True, blank=True)
+    rsi = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    technical_score = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    option_exp = models.DateField(null=True, blank=True)
+    option_volume = models.BigIntegerField(null=True, blank=True)
+    option_iv = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
+    next_earnings_date = models.DateField(null=True, blank=True)
+    option_data = models.JSONField(null=True, blank=True)
+    roi = models.DecimalField(max_digits=7, decimal_places=4, null=True, blank=True)
+    seeking_alpha_ticker_id = models.IntegerField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["ticker"]
+
+    def __str__(self) -> str:  # pragma: no cover - simple data representation
+        return self.ticker
 
 
 class FinancialStatement(models.Model):
@@ -114,7 +159,6 @@ class DueDiligenceReport(models.Model):
     confidence = models.FloatField(null=True, blank=True)
     model_name = models.CharField(max_length=64, blank=True, default="")
     report = models.JSONField()
-    financial_data = models.JSONField()
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

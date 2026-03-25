@@ -7,10 +7,12 @@ from .views import (
     InvestmentViewSet,
     ScreenerFilterViewSet,
     ScreenerTypeViewSet,
+    SymbolViewSet,
 )
 
 router = DefaultRouter()
 router.register("investments", InvestmentViewSet)
+router.register("symbols", SymbolViewSet)
 router.register("screener-types", ScreenerTypeViewSet)
 router.register("screener-filters", ScreenerFilterViewSet)
 router.register("financial-statements", FinancialStatementViewSet)
