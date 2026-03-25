@@ -69,7 +69,15 @@ CORS_ALLOWED_ORIGINS = [
     # optional if you also hit it from other places:
     "http://localhost:8000",
     "http://localhost:8080",
+    "https://putpulse.com",
+    "https://www.putpulse.com",
     "http://127.0.0.1:4173",
+]
+
+CSRF_TRUSTED_ORIGINS = [
+    "https://putpulse.com",
+    "https://www.putpulse.com",
+    "https://api.putpulse.com",
 ]
 
 # Application definition
@@ -85,6 +93,32 @@ INSTALLED_APPS = [
     "corsheaders",
     "api",
 ]
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+        },
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": "INFO",
+    },
+    "loggers": {
+        "django": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": True,
+        },
+        "django.request": {
+            "handlers": ["console"],
+            "level": "ERROR",
+            "propagate": False,
+        },
+    },
+}
 
 REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": [
