@@ -42,13 +42,26 @@ DEFAULT_APP_PORT = "8080" if IS_PRODUCTION else "8000"
 APP_PORT = int(os.getenv("PORT", DEFAULT_APP_PORT))
 LOCAL_API_BASE_URL = os.getenv("LOCAL_API_BASE_URL", f"http://127.0.0.1:{APP_PORT}")
 
+DEFAULT_ALLOWED_HOSTS = [
+    "api.putpulse.com",
+    ".railway.app",
+    "localhost",
+    "127.0.0.1",
+]
+
 allowed_hosts_env = os.getenv("ALLOWED_HOSTS")
 if allowed_hosts_env:
-    ALLOWED_HOSTS = [host.strip() for host in allowed_hosts_env.split(",") if host.strip()]
-elif DEBUG:
-    ALLOWED_HOSTS = ["127.0.0.1", "localhost"]
+    ALLOWED_HOSTS = DEFAULT_ALLOWED_HOSTS + [
+        host.strip()
+        for host in allowed_hosts_env.split(",")
+        if host.strip() and host.strip() not in DEFAULT_ALLOWED_HOSTS
+    ]
 else:
-    ALLOWED_HOSTS = ["*"]
+    ALLOWED_HOSTS = DEFAULT_ALLOWED_HOSTS.copy()
+
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+USE_X_FORWARDED_HOST = True
+SECURE_SSL_REDIRECT = False
 
 
 CORS_ALLOWED_ORIGINS = [
