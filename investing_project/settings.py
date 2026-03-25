@@ -201,6 +201,10 @@ else:
             "NAME": BASE_DIR / "db.sqlite3",
         }
     }
+if not DATABASE_URL and not os.getenv("PGHOST") and not os.getenv("POSTGRES_HOST"):
+    import sys
+    print("FATAL: No database configuration found. Refusing to start.", file=sys.stderr)
+    sys.exit(1)
 
 print("DB ENGINE:", DATABASES["default"]["ENGINE"])
 print("DB HOST:", DATABASES["default"].get("HOST"))
