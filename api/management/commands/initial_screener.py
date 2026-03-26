@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from decimal import Decimal, InvalidOperation
@@ -22,6 +23,7 @@ SCORE_MIN = 75  # minimum score to qualify for earnings screening
 YAHOO_QUOTE_URL = "https://query1.finance.yahoo.com/v7/finance/quote"
 FMP_EARNINGS_URL = "https://financialmodelingprep.com/stable/earnings"
 REQUEST_HEADERS = {"User-Agent": "Mozilla/5.0"}
+logger = logging.getLogger(__name__)
 
 
 def _coerce_unix_date(value: Any) -> Optional[date]:
@@ -34,7 +36,7 @@ def _coerce_unix_date(value: Any) -> Optional[date]:
         return None
 
 
-def _fetch_quote_earnings_dates(ticker: str) -> list[date]:
+def _fetch_quote_earnings_dates(ticker: str) -> tuple[list[date], str]:
     try:
         response = requests.get(
             YAHOO_QUOTE_URL,
@@ -42,37 +44,46 @@ def _fetch_quote_earnings_dates(ticker: str) -> list[date]:
             headers=REQUEST_HEADERS,
             timeout=30,
         )
-    except requests.RequestException:
-        return []
+    except requests.RequestException as exc:
+        logger.warning("Yahoo earnings lookup failed for %s: %s", ticker, exc)
+        return [], f"request_exception:{exc.__class__.__name__}"
 
     if response.status_code != 200:
-        return []
+        logger.warning(
+            "Yahoo earnings lookup returned %s for %s", response.status_code, ticker
+        )
+        return [], f"http_{response.status_code}"
 
     try:
         payload = response.json()
     except ValueError:
-        return []
+        logger.warning("Yahoo earnings lookup returned invalid JSON for %s", ticker)
+        return [], "invalid_json"
 
     quote_response = payload.get("quoteResponse")
     if not isinstance(quote_response, dict):
-        return []
+        return [], "missing_quote_response"
 
     results = quote_response.get("result")
     if not isinstance(results, list) or not results or not isinstance(results[0], dict):
-        return []
+        return [], "empty_result"
 
     quote = results[0]
     candidate_dates: list[date] = []
     for key in ("earningsTimestamp", "earningsTimestampStart", "earningsTimestampEnd"):
         parsed = _coerce_unix_date(quote.get(key))
         if parsed is not None:
-            candidate_dates.append(parsed)    
-    return candidate_dates
+            candidate_dates.append(parsed)
+
+    if not candidate_dates:
+        return [], "no_earnings_fields"
+
+    return candidate_dates, "ok"
 
 
-def _fetch_fmp_earnings_dates(ticker: str, api_key: str) -> list[date]:
+def _fetch_fmp_earnings_dates(ticker: str, api_key: str) -> tuple[list[date], str]:
     if not api_key:
-        return []
+        return [], "missing_api_key"
 
     try:
         response = requests.get(
@@ -80,16 +91,21 @@ def _fetch_fmp_earnings_dates(ticker: str, api_key: str) -> list[date]:
             params={"symbol": ticker, "apikey": api_key},
             timeout=30,
         )
-    except requests.RequestException:
-        return []
+    except requests.RequestException as exc:
+        logger.warning("FMP earnings lookup failed for %s: %s", ticker, exc)
+        return [], f"request_exception:{exc.__class__.__name__}"
 
     if response.status_code != 200:
-        return []
+        logger.warning(
+            "FMP earnings lookup returned %s for %s", response.status_code, ticker
+        )
+        return [], f"http_{response.status_code}"
 
     try:
         payload = response.json()
     except ValueError:
-        return []
+        logger.warning("FMP earnings lookup returned invalid JSON for %s", ticker)
+        return [], "invalid_json"
 
     if isinstance(payload, dict):
         rows = payload.get("data")
@@ -110,7 +126,10 @@ def _fetch_fmp_earnings_dates(ticker: str, api_key: str) -> list[date]:
         if parsed is not None:
             candidate_dates.append(parsed)
 
-    return candidate_dates
+    if not candidate_dates:
+        return [], "no_date_rows"
+
+    return candidate_dates, "ok"
 
 
 def _coerce_date_like(value: Any) -> Optional[date]:
@@ -133,14 +152,43 @@ def _coerce_date_like(value: Any) -> Optional[date]:
     return None
 
 
-def _fetch_next_earnings_date(ticker: str, fmp_api_key: str = "") -> Optional[date]:
+def _fetch_next_earnings_date(
+    ticker: str, fmp_api_key: str = ""
+) -> tuple[Optional[date], dict[str, Any]]:
     today = date.today()
-    candidate_dates = _fetch_quote_earnings_dates(ticker)
+    quote_dates, quote_status = _fetch_quote_earnings_dates(ticker)
+    candidate_dates = quote_dates
+    source = "yahoo" if candidate_dates else "none"
+    fmp_status = "not_needed"
+
     if not candidate_dates:
-        candidate_dates = _fetch_fmp_earnings_dates(ticker, fmp_api_key)
+        candidate_dates, fmp_status = _fetch_fmp_earnings_dates(ticker, fmp_api_key)
+        if candidate_dates:
+            source = "fmp"
 
     upcoming = sorted({v for v in candidate_dates if v >= today})
-    return upcoming[0] if upcoming else None
+    if not upcoming and candidate_dates:
+        logger.info(
+            "Earnings dates for %s were present but not upcoming: %s (today=%s)",
+            ticker,
+            ", ".join(sorted({v.isoformat() for v in candidate_dates})),
+            today.isoformat(),
+        )
+
+    if not upcoming:
+        logger.info(
+            "No upcoming earnings date for %s (yahoo=%s, fmp=%s)",
+            ticker,
+            quote_status,
+            fmp_status,
+        )
+
+    return upcoming[0] if upcoming else None, {
+        "source": source,
+        "quote_status": quote_status,
+        "fmp_status": fmp_status,
+        "candidate_dates": sorted({v.isoformat() for v in candidate_dates}),
+    }
 
 
 def _fetch_price_and_rsi(ticker: str) -> tuple[Decimal | None, Decimal | None]:
@@ -265,7 +313,7 @@ def _process_symbol(
     if market_data_fields:
         symbol.save(update_fields=market_data_fields + ["updated_at"])
 
-    next_date = _fetch_next_earnings_date(symbol.ticker, fmp_api_key)
+    next_date, earnings_debug = _fetch_next_earnings_date(symbol.ticker, fmp_api_key)
     earnings_updated = False
     if next_date is not None and next_date != symbol.next_earnings_date:
         Symbol.objects.filter(ticker=symbol.ticker).update(next_earnings_date=next_date)
@@ -276,6 +324,7 @@ def _process_symbol(
         "market_data_updated": bool(market_data_fields),
         "next_date": next_date,
         "earnings_updated": earnings_updated,
+        "earnings_debug": earnings_debug,
     }
 
 
@@ -314,7 +363,7 @@ class Command(BaseCommand):
         fmp_api_key = getattr(settings, "FINANCIAL_MODELING_API_KEY", "")
         if not fmp_api_key:
             self.stderr.write(
-                "FINANCIAL_MODELING_API_KEY is not configured; DCF skipped."
+                "FINANCIAL_MODELING_API_KEY is not configured; DCF skipped and FMP earnings fallback disabled."
             )
 
         self.stdout.write(
@@ -344,15 +393,26 @@ class Command(BaseCommand):
                 if result["market_data_updated"]:
                     market_data_updated += 1
                 if result["next_date"] is None:
+                    debug = result["earnings_debug"]
+                    candidate_dates = debug["candidate_dates"]
+                    detail = (
+                        f"yahoo={debug['quote_status']}, "
+                        f"fmp={debug['fmp_status']}, "
+                        f"source={debug['source']}"
+                    )
+                    if candidate_dates:
+                        detail += f", candidates={','.join(candidate_dates)}"
                     with print_lock:
                         self.stderr.write(
-                            f"  {ticker}: No upcoming earnings date found."
+                            f"  {ticker}: No upcoming earnings date found ({detail})."
                         )
                 elif result["earnings_updated"]:
                     earnings_updated += 1
+                    debug = result["earnings_debug"]
                     with print_lock:
                         self.stdout.write(
-                            f"  {ticker}: next_earnings_date={result['next_date']}"
+                            f"  {ticker}: next_earnings_date={result['next_date']} "
+                            f"(source={debug['source']})"
                         )
 
         self.stdout.write(
