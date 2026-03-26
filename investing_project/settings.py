@@ -195,17 +195,19 @@ elif os.getenv("POSTGRES_HOST"):
             "PORT": os.getenv("POSTGRES_PORT", "5432"),
         }
     }
-else:
+elif APP_ENV == "development":
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.sqlite3",
             "NAME": BASE_DIR / "db.sqlite3",
         }
     }
-if not DATABASE_URL and not os.getenv("PGHOST") and not os.getenv("POSTGRES_HOST"):
-    import sys
-    print("FATAL: No database configuration found. Refusing to start.", file=sys.stderr)
-    sys.exit(1)
+else:
+    raise RuntimeError(
+        "No database configuration found. Set DATABASE_URL, provide "
+        "PGHOST/PGDATABASE/PGUSER/PGPASSWORD, provide POSTGRES_* variables, "
+        "or use APP_ENV=development for local SQLite."
+    )
 
 print("DB ENGINE:", DATABASES["default"]["ENGINE"])
 print("DB HOST:", DATABASES["default"].get("HOST"))

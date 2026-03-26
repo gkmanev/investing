@@ -13,6 +13,7 @@ Usage:
     python manage.py ai_agentV3 GLW
     python manage.py ai_agentV3 AAPL MSFT --save
     python manage.py ai_agentV3 NVDA --export results.json
+    python manage.py ai_agentV3 --all --update-scored
 """
 
 import csv
@@ -546,6 +547,12 @@ class Command(BaseCommand):
             help="Save reports to database",
         )
         parser.add_argument(
+            "--update-scored",
+            action="store_true",
+            dest="update_scored",
+            help="Reprocess symbols that already have a score and overwrite existing values",
+        )
+        parser.add_argument(
             "--export",
             type=str,
             metavar="FILEPATH",
@@ -574,12 +581,22 @@ class Command(BaseCommand):
         if options["verbose"]:
             logging.basicConfig(level=logging.INFO)
 
+        update_scored = options["update_scored"]
+
         if options["all_symbols"]:
             from api.models import Symbol as SymbolModel
-            symbols = list(
-                SymbolModel.objects.filter(score__isnull=True).values_list("ticker", flat=True)
+            queryset = (
+                SymbolModel.objects.all()
+                if update_scored
+                else SymbolModel.objects.filter(score__isnull=True)
             )
-            self.stdout.write(f"Loaded {len(symbols)} unprocessed symbols from database")
+            symbols = list(queryset.values_list("ticker", flat=True))
+            if update_scored:
+                self.stdout.write(
+                    f"Loaded {len(symbols)} symbols from database (including already scored)"
+                )
+            else:
+                self.stdout.write(f"Loaded {len(symbols)} unprocessed symbols from database")
         else:
             symbols = [s.upper() for s in options["symbols"]]
             if symbols and symbols[0] == "SYMBOLS":
@@ -627,7 +644,7 @@ class Command(BaseCommand):
                 # Skip if already scored
                 from api.models import Symbol as SymbolModel
                 existing = SymbolModel.objects.filter(ticker=symbol, score__isnull=False).first()
-                if existing:
+                if existing and not update_scored:
                     self.stdout.write(
                         self.style.WARNING(
                             f"⏭  {symbol} already scored ({existing.score}), skipping\n"
