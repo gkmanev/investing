@@ -13,6 +13,12 @@ RUN apt-get update \
 
 COPY . .
 
+RUN addgroup --system appuser \
+    && adduser --system --ingroup appuser --home /home/appuser appuser \
+    && chown -R appuser:appuser /app
+
+USER appuser
+
 EXPOSE 8080
 
 CMD ["sh", "./scripts/start-service.sh"]
