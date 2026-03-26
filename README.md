@@ -42,7 +42,21 @@ Set `ALLOWED_HOSTS` to include your VM IP (for example, `209.38.208.230`) and up
 docker compose up -d --build
 ```
 
+This now starts four containers:
+
+- `web` for Django + Gunicorn
+- `celery_worker` for asynchronous tasks
+- `celery_beat` for scheduled tasks
+- `redis` as the Celery broker/result backend
+
 The API will be available at `http://209.38.208.230:8080/api/investments/`.
+
+If you want to override the broker location, set:
+
+```bash
+CELERY_BROKER_URL=redis://redis:6379/0
+CELERY_RESULT_BACKEND=redis://redis:6379/0
+```
 
 To view logs:
 
