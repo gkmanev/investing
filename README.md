@@ -58,6 +58,27 @@ CELERY_BROKER_URL=redis://redis:6379/0
 CELERY_RESULT_BACKEND=redis://redis:6379/0
 ```
 
+## Railway services
+
+The Docker image now auto-selects its role from `SERVICE_ROLE` or, on Railway, from
+`RAILWAY_SERVICE_NAME`.
+
+Use three separate Railway services from the same image:
+
+- Web service: set `SERVICE_ROLE=web`
+- Celery worker service: set `SERVICE_ROLE=worker`
+- Celery beat service: set `SERVICE_ROLE=beat`
+
+Recommended environment for Railway:
+
+```bash
+CELERY_WORKER_CONCURRENCY=2
+```
+
+`celery beat` uses the Django database scheduler, so it must start only after the
+`django_celery_beat` tables exist. With this image, the web service runs migrations
+and the beat service waits for those tables instead of crashing during startup.
+
 To view logs:
 
 ```bash

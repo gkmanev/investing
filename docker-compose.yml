@@ -3,15 +3,12 @@ version: "3.9"
 services:
   web:
     build: .
-    command: >
-      sh -c "sh ./scripts/wait-for-db.sh &&
-             python manage.py migrate &&
-             gunicorn investing_project.wsgi:application --bind 0.0.0.0:${PORT:-8080}"
     ports:
       - "${PORT:-8080}:${PORT:-8080}"
     env_file:
       - .env
     environment:
+      SERVICE_ROLE: web
       APP_ENV: ${APP_ENV:-production}
       PORT: ${PORT:-8080}
       POSTGRES_DB: ${POSTGRES_DB:-investing}
@@ -30,12 +27,10 @@ services:
 
   celery_worker:
     build: .
-    command: >
-      sh -c "sh ./scripts/wait-for-db.sh &&
-             celery -A investing_project worker --loglevel=info"
     env_file:
       - .env
     environment:
+      SERVICE_ROLE: worker
       APP_ENV: ${APP_ENV:-production}
       POSTGRES_DB: ${POSTGRES_DB:-investing}
       POSTGRES_USER: ${POSTGRES_USER:-investing}
@@ -44,6 +39,7 @@ services:
       POSTGRES_PORT: ${POSTGRES_PORT:-5432}
       CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
       CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/0}
+      CELERY_WORKER_CONCURRENCY: ${CELERY_WORKER_CONCURRENCY:-2}
     depends_on:
       db:
         condition: service_healthy
@@ -53,12 +49,10 @@ services:
 
   celery_beat:
     build: .
-    command: >
-      sh -c "sh ./scripts/wait-for-db.sh &&
-             celery -A investing_project beat --loglevel=info --scheduler django_celery_beat.schedulers:DatabaseScheduler"
     env_file:
       - .env
     environment:
+      SERVICE_ROLE: beat
       APP_ENV: ${APP_ENV:-production}
       POSTGRES_DB: ${POSTGRES_DB:-investing}
       POSTGRES_USER: ${POSTGRES_USER:-investing}
