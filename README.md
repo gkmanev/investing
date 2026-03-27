@@ -25,6 +25,32 @@ python manage.py runserver
 
 The API will be available at `http://127.0.0.1:8000/api/investments/`.
 
+## Authentication
+
+The API now supports JWT authentication for frontend apps with email verification.
+
+Endpoints:
+
+- `POST /api/auth/register/` creates a new inactive user and sends a verification email when `AUTH_ALLOW_PUBLIC_REGISTRATION=True`
+- `POST /api/auth/login/` with `{"identifier": "<username-or-email>", "password": "<password>"}` after the email is verified
+- `POST /api/auth/verify-email/` with `{"token": "<uuid-from-email-link>"}`
+- `POST /api/auth/resend-verification/` with `{"identifier": "<username-or-email>"}`
+- `POST /api/auth/refresh/` uses the refresh token from an `HttpOnly` cookie
+- `POST /api/auth/logout/` clears the refresh cookie and blacklists the token
+- `GET /api/auth/me/` returns the authenticated user
+
+Frontend flow:
+
+1. Call `POST /api/auth/register/`
+2. Registration returns a verification-required response and sends an email
+3. Open the frontend verification page from the email link and call `POST /api/auth/verify-email/`
+4. Store the returned access token in memory
+5. Send `Authorization: Bearer <access-token>` on authenticated API requests
+6. Send requests with credentials enabled so the refresh cookie is included
+7. On reload or `401`, call `POST /api/auth/refresh/` to get a new access token
+
+Write operations on the existing API viewsets are restricted to staff users. Read operations remain public.
+
 ## Deploying with Docker Compose
 
 1. Copy the example environment file and update values:

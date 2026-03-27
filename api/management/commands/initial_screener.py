@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from decimal import Decimal, InvalidOperation
@@ -24,6 +26,25 @@ YAHOO_QUOTE_URL = "https://query1.finance.yahoo.com/v7/finance/quote"
 FMP_EARNINGS_URL = "https://financialmodelingprep.com/stable/earnings"
 REQUEST_HEADERS = {"User-Agent": "Mozilla/5.0"}
 logger = logging.getLogger(__name__)
+
+
+def _configure_yfinance_cache() -> None:
+    """Best-effort cache setup to avoid noisy tz-cache errors on ephemeral hosts."""
+    if not hasattr(yf, "set_tz_cache_location"):
+        return
+
+    cache_dir = os.path.join(tempfile.gettempdir(), "py-yfinance")
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        yf.set_tz_cache_location(cache_dir)
+    except Exception as exc:
+        logger.warning("Failed to configure yfinance tz cache at %s: %s", cache_dir, exc)
+
+
+def _mask_secret(value: str) -> str:
+    if len(value) <= 8:
+        return "*" * len(value)
+    return f"{value[:4]}...{value[-4:]}"
 
 
 def _coerce_unix_date(value: Any) -> Optional[date]:
@@ -349,6 +370,7 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options) -> None:
+        _configure_yfinance_cache()
         symbols = list(Symbol.objects.filter(score__gte=SCORE_MIN).order_by("ticker"))
         if not symbols:
             self.stdout.write("No symbols matched the initial screener criteria.")
@@ -360,10 +382,15 @@ class Command(BaseCommand):
             self.stdout.write(f"--limit: processing first {len(symbols)} tickers.")
 
         total = len(symbols)
-        fmp_api_key = getattr(settings, "FINANCIAL_MODELING_API_KEY", "")
+        fmp_api_key = (getattr(settings, "FINANCIAL_MODELING_API_KEY", "") or "").strip()
         if not fmp_api_key:
             self.stderr.write(
                 "FINANCIAL_MODELING_API_KEY is not configured; DCF skipped and FMP earnings fallback disabled."
+            )
+        else:
+            self.stdout.write(
+                "FINANCIAL_MODELING_API_KEY detected "
+                f"(len={len(fmp_api_key)}, masked={_mask_secret(fmp_api_key)})."
             )
 
         self.stdout.write(

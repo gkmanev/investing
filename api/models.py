@@ -1,3 +1,6 @@
+import uuid
+
+from django.conf import settings
 from django.db import models
 
 
@@ -166,3 +169,22 @@ class DueDiligenceReport(models.Model):
 
     def __str__(self) -> str:  # pragma: no cover - simple data representation
         return f"{self.symbol} {self.rating} ({self.created_at:%Y-%m-%d})"
+
+
+class EmailVerificationToken(models.Model):
+    """Single-use email verification token for a user account."""
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="email_verification_tokens",
+        on_delete=models.CASCADE,
+    )
+    token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False, db_index=True)
+    expires_at = models.DateTimeField(db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:  # pragma: no cover - simple data representation
+        return f"{self.user} email verification token"

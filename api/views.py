@@ -18,6 +18,7 @@ from .models import (
     ScreenerType,
     Symbol,
 )
+from .permissions import IsStaffOrReadOnly
 from .serializers import (
     DueDiligenceReportSerializer,
     FinancialStatementSerializer,
@@ -152,6 +153,7 @@ class InvestmentViewSet(FilterMixin, viewsets.ModelViewSet):
 
     queryset = Investment.objects.all()
     serializer_class = InvestmentSerializer
+    permission_classes = [IsStaffOrReadOnly]
 
     def list(self, request, *args, **kwargs):  # type: ignore[override]
         screener_type = request.query_params.get("screener_type") or request.query_params.get(
@@ -225,6 +227,7 @@ class SymbolViewSet(FilterMixin, viewsets.ModelViewSet):
 
     queryset = Symbol.objects.all()
     serializer_class = SymbolSerializer
+    permission_classes = [IsStaffOrReadOnly]
 
     def get_queryset(self):  # type: ignore[override]
         queryset = super().get_queryset()
@@ -306,16 +309,19 @@ class SymbolViewSet(FilterMixin, viewsets.ModelViewSet):
 class ScreenerTypeViewSet(viewsets.ModelViewSet):
     queryset = ScreenerType.objects.prefetch_related("filters").all()
     serializer_class = ScreenerTypeSerializer
+    permission_classes = [IsStaffOrReadOnly]
 
 
 class ScreenerFilterViewSet(viewsets.ModelViewSet):
     queryset = ScreenerFilter.objects.select_related("screener_type").all()
     serializer_class = ScreenerFilterSerializer
+    permission_classes = [IsStaffOrReadOnly]
 
 
 class FinancialStatementViewSet(viewsets.ModelViewSet):
     queryset = FinancialStatement.objects.all()
     serializer_class = FinancialStatementSerializer
+    permission_classes = [IsStaffOrReadOnly]
 
     def get_queryset(self):  # type: ignore[override]
         queryset = super().get_queryset()
@@ -343,6 +349,7 @@ class FinancialStatementViewSet(viewsets.ModelViewSet):
 class DueDiligenceReportViewSet(viewsets.ModelViewSet):
     queryset = DueDiligenceReport.objects.all()
     serializer_class = DueDiligenceReportSerializer
+    permission_classes = [IsStaffOrReadOnly]
 
     def get_queryset(self):  # type: ignore[override]
         queryset = super().get_queryset()

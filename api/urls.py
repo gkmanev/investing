@@ -1,6 +1,15 @@
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
+from .auth_views import (
+    LoginView,
+    LogoutView,
+    MeView,
+    RefreshView,
+    RegisterView,
+    ResendVerificationView,
+    VerifyEmailView,
+)
 from .views import (
     DueDiligenceReportViewSet,
     FinancialStatementViewSet,
@@ -18,4 +27,17 @@ router.register("screener-filters", ScreenerFilterViewSet)
 router.register("financial-statements", FinancialStatementViewSet)
 router.register("due-diligence-reports", DueDiligenceReportViewSet)
 
-urlpatterns = [path("", include(router.urls))]
+urlpatterns = [
+    path("auth/register/", RegisterView.as_view(), name="auth-register"),
+    path("auth/login/", LoginView.as_view(), name="auth-login"),
+    path("auth/verify-email/", VerifyEmailView.as_view(), name="auth-verify-email"),
+    path(
+        "auth/resend-verification/",
+        ResendVerificationView.as_view(),
+        name="auth-resend-verification",
+    ),
+    path("auth/refresh/", RefreshView.as_view(), name="auth-refresh"),
+    path("auth/logout/", LogoutView.as_view(), name="auth-logout"),
+    path("auth/me/", MeView.as_view(), name="auth-me"),
+    path("", include(router.urls)),
+]

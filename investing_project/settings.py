@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/4.2/ref/settings/
 """
 import os
+from datetime import timedelta
 import dj_database_url
 from pathlib import Path
 from dotenv import load_dotenv
@@ -48,6 +49,7 @@ DEFAULT_ALLOWED_HOSTS = [
     ".railway.app",
     "localhost",
     "127.0.0.1",
+    "testserver",
 ]
 
 allowed_hosts_env = os.getenv("ALLOWED_HOSTS")
@@ -74,6 +76,7 @@ CORS_ALLOWED_ORIGINS = [
     "https://www.putpulse.com",
     "http://127.0.0.1:4173",
 ]
+CORS_ALLOW_CREDENTIALS = True
 
 CSRF_TRUSTED_ORIGINS = [
     "https://putpulse.com",
@@ -91,6 +94,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "rest_framework",
+    "rest_framework_simplejwt.token_blacklist",
     "corsheaders",
     "django_celery_beat",
     "api",
@@ -123,6 +127,9 @@ LOGGING = {
 }
 
 REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
+    ],
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
         "rest_framework.renderers.BrowsableAPIRenderer",
@@ -132,6 +139,51 @@ REST_FRAMEWORK = {
         "rest_framework.parsers.FormParser",
     ],
 }
+
+AUTH_REFRESH_COOKIE_NAME = os.getenv("AUTH_REFRESH_COOKIE_NAME", "refresh_token")
+AUTH_REFRESH_COOKIE_SECURE = os.getenv(
+    "AUTH_REFRESH_COOKIE_SECURE", str(IS_PRODUCTION)
+).lower() in {"1", "true", "yes"}
+AUTH_REFRESH_COOKIE_SAMESITE = os.getenv("AUTH_REFRESH_COOKIE_SAMESITE", "Lax")
+AUTH_REFRESH_COOKIE_PATH = os.getenv("AUTH_REFRESH_COOKIE_PATH", "/api/auth/")
+AUTH_REFRESH_COOKIE_DOMAIN = os.getenv("AUTH_REFRESH_COOKIE_DOMAIN") or None
+AUTH_ALLOW_PUBLIC_REGISTRATION = os.getenv(
+    "AUTH_ALLOW_PUBLIC_REGISTRATION", "False"
+).lower() in {"1", "true", "yes"}
+AUTH_EMAIL_VERIFICATION_HOURS = int(os.getenv("AUTH_EMAIL_VERIFICATION_HOURS", "24"))
+FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:4173")
+AUTH_VERIFY_EMAIL_PATH = os.getenv("AUTH_VERIFY_EMAIL_PATH", "/verify-email")
+AUTH_RESEND_COOLDOWN_SECONDS = int(os.getenv("AUTH_RESEND_COOLDOWN_SECONDS", "60"))
+
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(
+        minutes=int(os.getenv("AUTH_ACCESS_TOKEN_MINUTES", "15"))
+    ),
+    "REFRESH_TOKEN_LIFETIME": timedelta(
+        days=int(os.getenv("AUTH_REFRESH_TOKEN_DAYS", "7"))
+    ),
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
+    "UPDATE_LAST_LOGIN": True,
+    "AUTH_HEADER_TYPES": ("Bearer",),
+}
+
+EMAIL_BACKEND = os.getenv(
+    "EMAIL_BACKEND",
+    (
+        "django.core.mail.backends.console.EmailBackend"
+        if DEBUG
+        else "django.core.mail.backends.smtp.EmailBackend"
+    ),
+)
+EMAIL_HOST = os.getenv("EMAIL_HOST", "")
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
+EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
+EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "True").lower() in {"1", "true", "yes"}
+EMAIL_USE_SSL = os.getenv("EMAIL_USE_SSL", "False").lower() in {"1", "true", "yes"}
+EMAIL_TIMEOUT = int(os.getenv("EMAIL_TIMEOUT", "20"))
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "admin@putpulse.com")
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",

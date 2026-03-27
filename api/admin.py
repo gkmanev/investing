@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Investment, ScreenerFilter, ScreenerType
+from .models import EmailVerificationToken, Investment, ScreenerFilter, ScreenerType
 
 
 @admin.register(Investment)
@@ -32,3 +32,9 @@ class ScreenerFilterAdmin(admin.ModelAdmin):
     list_display = ("label", "screener_type", "display_order", "created_at")
     list_filter = ("screener_type",)
     search_fields = ("label", "screener_type__name")
+
+
+@admin.register(EmailVerificationToken)
+class EmailVerificationTokenAdmin(admin.ModelAdmin):
+    list_display = ("user", "token", "expires_at", "created_at")
+    search_fields = ("user__username", "user__email")
