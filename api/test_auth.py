@@ -1,16 +1,19 @@
+import uuid
 from datetime import timedelta
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core import mail
-from django.test import override_settings
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from .auth_email import send_verification_email
 from .models import EmailVerificationToken, Investment
 
 
@@ -343,3 +346,35 @@ class StaffWritePermissionsAPITestCase(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data["name"], "Momentum")
+
+
+class AuthEmailTestCase(TestCase):
+    @override_settings(
+        RESEND_API_KEY="test-resend-key",
+        RESEND_API_URL="https://api.resend.com/emails",
+        RESEND_FROM_EMAIL="admin@putpulse.com",
+        FRONTEND_BASE_URL="https://putpulse.com",
+        AUTH_VERIFY_EMAIL_PATH="/verify-email",
+        AUTH_EMAIL_VERIFICATION_HOURS=24,
+        EMAIL_TIMEOUT=20,
+    )
+    @patch("api.auth_email.requests.post")
+    def test_send_verification_email_uses_resend_when_configured(self, mock_post) -> None:
+        mock_response = mock_post.return_value
+        user = SimpleNamespace(username="alice", email="alice@example.com")
+        token_obj = SimpleNamespace(token=uuid.UUID("11111111-1111-1111-1111-111111111111"))
+
+        send_verification_email(user=user, token_obj=token_obj)
+
+        mock_post.assert_called_once()
+        _, kwargs = mock_post.call_args
+        self.assertEqual(kwargs["headers"]["Authorization"], "Bearer test-resend-key")
+        self.assertEqual(kwargs["json"]["from"], "admin@putpulse.com")
+        self.assertEqual(kwargs["json"]["to"], ["alice@example.com"])
+        self.assertEqual(kwargs["json"]["subject"], "Verify your PutPulse account")
+        self.assertIn(
+            "https://putpulse.com/verify-email?token=11111111-1111-1111-1111-111111111111",
+            kwargs["json"]["text"],
+        )
+        self.assertEqual(kwargs["timeout"], 20)
+        mock_response.raise_for_status.assert_called_once_with()

@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 from urllib.parse import urlencode
 
+import requests
 from django.conf import settings
 from django.core.mail import send_mail
 from django.template.loader import render_to_string
 from django.utils import timezone
 
 from .models import EmailVerificationToken
+
+
+logger = logging.getLogger(__name__)
 
 
 def create_email_verification_token(*, user):
@@ -39,6 +44,25 @@ def send_verification_email(*, user, token_obj: EmailVerificationToken) -> None:
             "expiry_hours": settings.AUTH_EMAIL_VERIFICATION_HOURS,
         },
     )
+    if settings.RESEND_API_KEY:
+        response = requests.post(
+            settings.RESEND_API_URL,
+            headers={
+                "Authorization": f"Bearer {settings.RESEND_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "from": settings.RESEND_FROM_EMAIL,
+                "to": [user.email],
+                "subject": subject,
+                "text": message,
+            },
+            timeout=settings.EMAIL_TIMEOUT,
+        )
+        response.raise_for_status()
+        logger.info("Sent verification email via Resend to %s", user.email)
+        return
+
     send_mail(
         subject=subject,
         message=message,

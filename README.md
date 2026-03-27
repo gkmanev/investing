@@ -51,6 +51,11 @@ Frontend flow:
 
 Write operations on the existing API viewsets are restricted to staff users. Read operations remain public.
 
+Email delivery:
+
+- If `RESEND_API_KEY` is configured, verification emails are sent through the Resend HTTPS API.
+- If `RESEND_API_KEY` is not configured, the project falls back to Django's configured email backend.
+
 ## Deploying with Docker Compose
 
 1. Copy the example environment file and update values:
