@@ -1,4 +1,5 @@
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -80,6 +81,27 @@ class AuthAPITestCase(APITestCase):
         self.assertFalse(user.is_active)
         self.assertEqual(EmailVerificationToken.objects.filter(user=user).count(), 1)
         self.assertEqual(len(mail.outbox), 1)
+
+    @override_settings(AUTH_ALLOW_PUBLIC_REGISTRATION=True)
+    @patch("api.auth_views.send_verification_email", side_effect=RuntimeError("smtp down"))
+    def test_register_returns_503_when_email_delivery_fails(self, _send_email) -> None:
+        response = self.client.post(
+            self.register_url,
+            {
+                "username": "newuser",
+                "email": "newuser@example.com",
+                "password": "StrongPass123!",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertEqual(
+            response.data["detail"],
+            "We could not send the verification email right now. Please try again shortly.",
+        )
+        self.assertFalse(User.objects.filter(username="newuser").exists())
+        self.assertEqual(EmailVerificationToken.objects.count(), 0)
 
     def test_login_accepts_email_and_returns_access_and_refresh_cookie(self) -> None:
         _, password = self.create_user()
@@ -237,6 +259,30 @@ class AuthAPITestCase(APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
+    @override_settings(AUTH_RESEND_COOLDOWN_SECONDS=0)
+    @patch("api.auth_views.send_verification_email", side_effect=RuntimeError("smtp down"))
+    def test_resend_verification_returns_503_when_email_delivery_fails(self, _send_email) -> None:
+        user, _ = self.create_user(is_active=False)
+        old_token = EmailVerificationToken.objects.create(
+            user=user,
+            expires_at=timezone.now() + timedelta(hours=24),
+        )
+
+        response = self.client.post(
+            self.resend_verification_url,
+            {"identifier": user.email},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertEqual(
+            response.data["detail"],
+            "We could not send the verification email right now. Please try again shortly.",
+        )
+        tokens = list(EmailVerificationToken.objects.filter(user=user))
+        self.assertEqual(len(tokens), 1)
+        self.assertEqual(tokens[0].token, old_token.token)
 
 
 class StaffWritePermissionsAPITestCase(APITestCase):

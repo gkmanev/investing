@@ -171,9 +171,9 @@ SIMPLE_JWT = {
 EMAIL_BACKEND = os.getenv(
     "EMAIL_BACKEND",
     (
-        "django.core.mail.backends.console.EmailBackend"
-        if DEBUG
-        else "django.core.mail.backends.smtp.EmailBackend"
+        "django.core.mail.backends.smtp.EmailBackend"
+        if IS_PRODUCTION
+        else "django.core.mail.backends.console.EmailBackend"
     ),
 )
 EMAIL_HOST = os.getenv("EMAIL_HOST", "")

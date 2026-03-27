@@ -1,3 +1,5 @@
+import logging
+
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
@@ -23,6 +25,7 @@ from .models import EmailVerificationToken
 
 
 User = get_user_model()
+logger = logging.getLogger(__name__)
 
 
 def _build_auth_payload(user) -> tuple[dict, str]:
@@ -66,10 +69,25 @@ class RegisterView(APIView):
 
         serializer = RegisterSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        with transaction.atomic():
-            user = serializer.save()
-            token_obj = create_email_verification_token(user=user)
-            send_verification_email(user=user, token_obj=token_obj)
+        try:
+            with transaction.atomic():
+                user = serializer.save()
+                token_obj = create_email_verification_token(user=user)
+                send_verification_email(user=user, token_obj=token_obj)
+        except Exception:
+            logger.exception(
+                "Registration email delivery failed for username=%s",
+                serializer.validated_data.get("username"),
+            )
+            return Response(
+                {
+                    "detail": (
+                        "We could not send the verification email right now. "
+                        "Please try again shortly."
+                    )
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
         return Response(
             {
@@ -157,8 +175,24 @@ class ResendVerificationView(APIView):
                 status=status.HTTP_429_TOO_MANY_REQUESTS,
             )
 
-        token_obj = create_email_verification_token(user=user)
-        send_verification_email(user=user, token_obj=token_obj)
+        try:
+            with transaction.atomic():
+                token_obj = create_email_verification_token(user=user)
+                send_verification_email(user=user, token_obj=token_obj)
+        except Exception:
+            logger.exception(
+                "Verification email resend failed for user_id=%s",
+                user.id,
+            )
+            return Response(
+                {
+                    "detail": (
+                        "We could not send the verification email right now. "
+                        "Please try again shortly."
+                    )
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
         return Response({"detail": generic_message}, status=status.HTTP_200_OK)
 

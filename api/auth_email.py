@@ -21,7 +21,7 @@ def create_email_verification_token(*, user):
 
 def build_verification_url(*, token: str) -> str:
     query = urlencode({"token": token})
-    base_url = settings.FRONTEND_BASE_URL.rstrip("/")
+    base_url = settings.FRONTEND_BASE_URL.strip().rstrip("/")
     path = settings.AUTH_VERIFY_EMAIL_PATH
     if not path.startswith("/"):
         path = f"/{path}"
