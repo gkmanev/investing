@@ -1,6 +1,13 @@
 from django.contrib import admin
 
-from .models import EmailVerificationToken, Investment, ScreenerFilter, ScreenerType
+from .models import (
+    DailyBriefEdition,
+    DailyBriefSubscription,
+    EmailVerificationToken,
+    Investment,
+    ScreenerFilter,
+    ScreenerType,
+)
 
 
 @admin.register(Investment)
@@ -38,3 +45,33 @@ class ScreenerFilterAdmin(admin.ModelAdmin):
 class EmailVerificationTokenAdmin(admin.ModelAdmin):
     list_display = ("user", "token", "expires_at", "created_at")
     search_fields = ("user__username", "user__email")
+
+
+@admin.register(DailyBriefSubscription)
+class DailyBriefSubscriptionAdmin(admin.ModelAdmin):
+    list_display = (
+        "user",
+        "status",
+        "is_active",
+        "source",
+        "subscribed_at",
+        "unsubscribed_at",
+    )
+    list_filter = ("status", "source", "is_active", "subscribed_at")
+    search_fields = ("user__username", "user__email")
+
+
+@admin.register(DailyBriefEdition)
+class DailyBriefEditionAdmin(admin.ModelAdmin):
+    list_display = ("edition_date", "recipient_count", "sent_at", "created_at")
+    list_filter = ("edition_date", "sent_at")
+    readonly_fields = (
+        "edition_date",
+        "subject",
+        "body_text",
+        "top_symbols",
+        "recipient_count",
+        "sent_at",
+        "created_at",
+        "updated_at",
+    )

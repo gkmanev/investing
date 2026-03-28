@@ -19,10 +19,22 @@ class UserSerializer(serializers.ModelSerializer):
 class RegisterSerializer(serializers.ModelSerializer):
     email = serializers.EmailField(required=True)
     password = serializers.CharField(write_only=True, trim_whitespace=False)
+    daily_brief_opt_in = serializers.BooleanField(
+        required=False,
+        default=False,
+        write_only=True,
+    )
 
     class Meta:
         model = User
-        fields = ["username", "email", "password", "first_name", "last_name"]
+        fields = [
+            "username",
+            "email",
+            "password",
+            "first_name",
+            "last_name",
+            "daily_brief_opt_in",
+        ]
 
     def validate_username(self, value: str) -> str:
         cleaned = value.strip()
@@ -45,6 +57,7 @@ class RegisterSerializer(serializers.ModelSerializer):
         return value
 
     def create(self, validated_data):
+        validated_data.pop("daily_brief_opt_in", False)
         password = validated_data.pop("password")
         user = User(**validated_data, is_active=False)
         user.set_password(password)

@@ -32,12 +32,16 @@ The API now supports JWT authentication for frontend apps with email verificatio
 Endpoints:
 
 - `POST /api/auth/register/` creates a new inactive user and sends a verification email when `AUTH_ALLOW_PUBLIC_REGISTRATION=True`
+  - Accepts optional `daily_brief_opt_in: true|false` for Daily Top 3 signup intent
 - `POST /api/auth/login/` with `{"identifier": "<username-or-email>", "password": "<password>"}` after the email is verified
 - `POST /api/auth/verify-email/` with `{"token": "<uuid-from-email-link>"}`
 - `POST /api/auth/resend-verification/` with `{"identifier": "<username-or-email>"}`
 - `POST /api/auth/refresh/` uses the refresh token from an `HttpOnly` cookie
 - `POST /api/auth/logout/` clears the refresh cookie and blacklists the token
 - `GET /api/auth/me/` returns the authenticated user
+- `GET /api/daily-brief-subscription/` returns the authenticated user's Daily Top 3 subscription status
+- `POST /api/daily-brief-subscription/subscribe/` activates or queues the Daily Top 3 subscription
+- `POST /api/daily-brief-subscription/unsubscribe/` disables the Daily Top 3 subscription
 
 Frontend flow:
 
@@ -55,6 +59,8 @@ Email delivery:
 
 - If `RESEND_API_KEY` is configured, verification emails are sent through the Resend HTTPS API.
 - If `RESEND_API_KEY` is not configured, the project falls back to Django's configured email backend.
+- Daily Top 3 delivery is scheduled through Celery Beat using `api.tasks.send_daily_top_3_edition`.
+- Adjust the UTC send time with `DAILY_BRIEF_SEND_HOUR_UTC` and `DAILY_BRIEF_SEND_MINUTE_UTC`.
 
 ## Deploying with Docker Compose
 

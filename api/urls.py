@@ -10,6 +10,11 @@ from .auth_views import (
     ResendVerificationView,
     VerifyEmailView,
 )
+from .daily_brief_views import (
+    DailyBriefSubscribeView,
+    DailyBriefSubscriptionView,
+    DailyBriefUnsubscribeView,
+)
 from .views import (
     DueDiligenceReportViewSet,
     FinancialStatementViewSet,
@@ -39,5 +44,20 @@ urlpatterns = [
     path("auth/refresh/", RefreshView.as_view(), name="auth-refresh"),
     path("auth/logout/", LogoutView.as_view(), name="auth-logout"),
     path("auth/me/", MeView.as_view(), name="auth-me"),
+    path(
+        "daily-brief-subscription/",
+        DailyBriefSubscriptionView.as_view(),
+        name="daily-brief-subscription",
+    ),
+    path(
+        "daily-brief-subscription/subscribe/",
+        DailyBriefSubscribeView.as_view(),
+        name="daily-brief-subscription-subscribe",
+    ),
+    path(
+        "daily-brief-subscription/unsubscribe/",
+        DailyBriefUnsubscribeView.as_view(),
+        name="daily-brief-subscription-unsubscribe",
+    ),
     path("", include(router.urls)),
 ]

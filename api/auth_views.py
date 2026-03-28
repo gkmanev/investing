@@ -21,6 +21,10 @@ from .auth_serializers import (
     UserSerializer,
     VerifyEmailSerializer,
 )
+from .daily_brief_services import (
+    activate_pending_subscription_after_verification,
+    subscribe_user,
+)
 from .models import EmailVerificationToken
 
 
@@ -69,9 +73,12 @@ class RegisterView(APIView):
 
         serializer = RegisterSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        daily_brief_opt_in = serializer.validated_data.get("daily_brief_opt_in", False)
         try:
             with transaction.atomic():
                 user = serializer.save()
+                if daily_brief_opt_in:
+                    subscribe_user(user, source="signup")
                 token_obj = create_email_verification_token(user=user)
                 send_verification_email(user=user, token_obj=token_obj)
         except Exception:
@@ -127,6 +134,7 @@ class VerifyEmailView(APIView):
         user = token_obj.user
         user.is_active = True
         user.save(update_fields=["is_active"])
+        activate_pending_subscription_after_verification(user)
         EmailVerificationToken.objects.filter(user=user).delete()
 
         payload, refresh_token = _build_auth_payload(user)

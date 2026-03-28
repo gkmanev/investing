@@ -11,9 +11,12 @@ https://docs.djangoproject.com/en/4.2/ref/settings/
 """
 import os
 from datetime import timedelta
+
 import dj_database_url
+from celery.schedules import crontab
 from pathlib import Path
 from dotenv import load_dotenv
+
 load_dotenv()
 
 
@@ -320,3 +323,14 @@ CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 CELERY_WORKER_CONCURRENCY = int(os.getenv("CELERY_WORKER_CONCURRENCY", "2"))
+DAILY_BRIEF_SEND_HOUR_UTC = int(os.getenv("DAILY_BRIEF_SEND_HOUR_UTC", "12"))
+DAILY_BRIEF_SEND_MINUTE_UTC = int(os.getenv("DAILY_BRIEF_SEND_MINUTE_UTC", "0"))
+CELERY_BEAT_SCHEDULE = {
+    "send-daily-top-3-edition": {
+        "task": "api.tasks.send_daily_top_3_edition",
+        "schedule": crontab(
+            hour=DAILY_BRIEF_SEND_HOUR_UTC,
+            minute=DAILY_BRIEF_SEND_MINUTE_UTC,
+        ),
+    }
+}

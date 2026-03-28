@@ -3,6 +3,30 @@
 from django.db import migrations, models
 
 
+def alter_options_suitability_forward(apps, schema_editor):
+    if schema_editor.connection.vendor != "postgresql":
+        return
+
+    schema_editor.execute(
+        'ALTER TABLE "api_investment" '
+        'ALTER COLUMN "options_suitability" TYPE smallint '
+        'USING CASE WHEN "options_suitability" THEN 1 ELSE 0 END, '
+        'ALTER COLUMN "options_suitability" DROP NOT NULL'
+    )
+
+
+def alter_options_suitability_reverse(apps, schema_editor):
+    if schema_editor.connection.vendor != "postgresql":
+        return
+
+    schema_editor.execute(
+        'ALTER TABLE "api_investment" '
+        'ALTER COLUMN "options_suitability" TYPE boolean '
+        'USING ("options_suitability" = 1), '
+        'ALTER COLUMN "options_suitability" SET NOT NULL'
+    )
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -10,19 +34,13 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.RunSQL(
-            sql=(
-                'ALTER TABLE "api_investment" '
-                'ALTER COLUMN "options_suitability" TYPE smallint '
-                'USING CASE WHEN "options_suitability" THEN 1 ELSE 0 END, '
-                'ALTER COLUMN "options_suitability" DROP NOT NULL'
-            ),
-            reverse_sql=(
-                'ALTER TABLE "api_investment" '
-                'ALTER COLUMN "options_suitability" TYPE boolean '
-                'USING ("options_suitability" = 1), '
-                'ALTER COLUMN "options_suitability" SET NOT NULL'
-            ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunPython(
+                    alter_options_suitability_forward,
+                    alter_options_suitability_reverse,
+                )
+            ],
             state_operations=[
                 migrations.AlterField(
                     model_name="investment",

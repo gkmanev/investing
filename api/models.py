@@ -188,3 +188,67 @@ class EmailVerificationToken(models.Model):
 
     def __str__(self) -> str:  # pragma: no cover - simple data representation
         return f"{self.user} email verification token"
+
+
+class DailyBriefSubscription(models.Model):
+    """Tracks a user's Daily Top 3 email subscription state."""
+
+    class Status(models.TextChoices):
+        PENDING_VERIFICATION = "pending_verification", "Pending verification"
+        ACTIVE = "active", "Active"
+        UNSUBSCRIBED = "unsubscribed", "Unsubscribed"
+
+    class Source(models.TextChoices):
+        UNKNOWN = "", "Unknown"
+        SIGNUP = "signup", "Signup"
+        DAILY_BRIEF_CTA = "daily_brief_cta", "Daily brief CTA"
+        PROFILE = "profile", "Profile"
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        related_name="daily_brief_subscription",
+        on_delete=models.CASCADE,
+    )
+    status = models.CharField(
+        max_length=32,
+        choices=Status.choices,
+        default=Status.UNSUBSCRIBED,
+        db_index=True,
+    )
+    is_active = models.BooleanField(default=False, db_index=True)
+    source = models.CharField(
+        max_length=32,
+        choices=Source.choices,
+        blank=True,
+        default=Source.UNKNOWN,
+        db_index=True,
+    )
+    subscribed_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    unsubscribed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-subscribed_at", "user_id"]
+
+    def __str__(self) -> str:  # pragma: no cover - simple data representation
+        return f"{self.user} daily brief ({self.status})"
+
+
+class DailyBriefEdition(models.Model):
+    """Stores the single Daily Top 3 edition generated for a calendar day."""
+
+    edition_date = models.DateField(unique=True, db_index=True)
+    subject = models.CharField(max_length=255)
+    body_text = models.TextField()
+    top_symbols = models.JSONField(default=list, blank=True)
+    recipient_count = models.PositiveIntegerField(default=0)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-edition_date"]
+
+    def __str__(self) -> str:  # pragma: no cover - simple data representation
+        return f"Daily brief edition {self.edition_date:%Y-%m-%d}"

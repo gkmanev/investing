@@ -20,6 +20,10 @@ from .models import EmailVerificationToken, Investment
 User = get_user_model()
 
 
+@override_settings(
+    AUTH_ALLOW_PUBLIC_REGISTRATION=False,
+    RESEND_API_KEY=None,
+)
 class AuthAPITestCase(APITestCase):
     def setUp(self) -> None:
         self.login_url = reverse("auth-login")
