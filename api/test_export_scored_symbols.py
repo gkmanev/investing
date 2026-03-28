@@ -1,5 +1,4 @@
 import csv
-from decimal import Decimal
 from io import StringIO
 from pathlib import Path
 import tempfile
@@ -15,22 +14,22 @@ class ExportScoredSymbolsCommandTests(APITestCase):
         Symbol.objects.create(
             ticker="MSFT",
             exchange="NASDAQ",
-            market_cap=Decimal("2500000000000.00"),
+            market_cap="2500000000000.00",
             score=91,
             classification="Great",
-            technical_score=Decimal("88.50"),
+            technical_score="Strong Buy",
         )
         Symbol.objects.create(
             ticker="AAPL",
             exchange="NASDAQ",
-            market_cap=Decimal("3000000000000.00"),
+            market_cap="3000000000000.00",
             score=85,
             classification="Strong",
         )
         Symbol.objects.create(
             ticker="TSLA",
             exchange="NASDAQ",
-            market_cap=Decimal("800000000000.00"),
+            market_cap="800000000000.00",
         )
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -51,5 +50,5 @@ class ExportScoredSymbolsCommandTests(APITestCase):
 
         self.assertEqual([row["ticker"] for row in rows], ["AAPL", "MSFT"])
         self.assertEqual(rows[0]["score"], "85")
-        self.assertEqual(rows[1]["technical_score"], "88.50")
+        self.assertEqual(rows[1]["technical_score"], "Strong Buy")
         self.assertIn("Exported 2 scored symbols", stdout.getvalue())

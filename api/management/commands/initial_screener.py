@@ -24,8 +24,10 @@ MAX_WORKERS = 8  # concurrent tickers processed at once
 SCORE_MIN = 75  # minimum score to qualify for earnings screening
 YAHOO_QUOTE_URL = "https://query1.finance.yahoo.com/v7/finance/quote"
 FMP_EARNINGS_URL = "https://financialmodelingprep.com/stable/earnings"
+TV_SCANNER_URL = "https://scanner.tradingview.com/america/scan"
 REQUEST_HEADERS = {"User-Agent": "Mozilla/5.0"}
 logger = logging.getLogger(__name__)
+TECHNICAL_SCORE_MISSING = object()
 
 
 def _configure_yfinance_cache() -> None:
@@ -312,10 +314,100 @@ def _fetch_dcf(ticker: str, api_key: str) -> Decimal | None:
     return None
 
 
+def map_tv_score(score: Any) -> str | None:
+    numeric_score = _coerce_decimal(score)
+    if numeric_score is None:
+        return None
+    if numeric_score >= Decimal("0.5"):
+        return Symbol.TechnicalScore.STRONG_BUY
+    if numeric_score >= Decimal("0.1"):
+        return Symbol.TechnicalScore.BUY
+    if numeric_score > Decimal("-0.1"):
+        return Symbol.TechnicalScore.NEUTRAL
+    if numeric_score > Decimal("-0.5"):
+        return Symbol.TechnicalScore.SELL
+    return Symbol.TechnicalScore.STRONG_SELL
+
+
+def _coerce_decimal(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+
+
+def fetch_technical_scores(tickers: list[str]) -> dict[str, Decimal]:
+    if not tickers:
+        return {}
+
+    payload = {
+        "filter": [
+            {
+                "left": "name",
+                "operation": "in_range",
+                "right": tickers,
+            }
+        ],
+        "columns": ["name", "Recommend.All|1M"],
+        "range": [0, len(tickers) * 4],
+    }
+
+    response = requests.post(
+        TV_SCANNER_URL,
+        headers={"Content-Type": "text/plain", **REQUEST_HEADERS},
+        json=payload,
+        timeout=20,
+    )
+    response.raise_for_status()
+
+    data = response.json()
+    scores: dict[str, Decimal] = {}
+
+    for item in data.get("data", []):
+        values = item.get("d", [])
+        if len(values) < 2:
+            continue
+
+        name, score = values[0], values[1]
+        parsed_score = _coerce_decimal(score)
+        if name and parsed_score is not None and name not in scores:
+            scores[str(name).upper()] = parsed_score
+
+    return scores
+
+
+def fetch_tv_technicals(tickers: list[str]) -> dict[str, str | None]:
+    raw_scores = fetch_technical_scores(tickers)
+    return {
+        ticker: map_tv_score(score)
+        for ticker, score in raw_scores.items()
+    }
+
+
+def _fetch_all_tv_technicals(tickers: list[str], *, batch_size: int = 200) -> dict[str, str | None]:
+    technicals: dict[str, str | None] = {}
+    for start in range(0, len(tickers), batch_size):
+        batch = tickers[start : start + batch_size]
+        if not batch:
+            continue
+        try:
+            technicals.update(fetch_tv_technicals(batch))
+        except requests.RequestException as exc:
+            logger.warning(
+                "TradingView technicals lookup failed for batch starting at %s: %s",
+                batch[0],
+                exc,
+            )
+    return technicals
+
+
 def _process_symbol(
     symbol: Symbol,
     fmp_api_key: str,
     force: bool,
+    technical_rating: object,
 ) -> dict[str, Any]:
     """Fetch all data for a single symbol and persist updates. Returns a result summary."""
     price, rsi = _fetch_price_and_rsi(symbol.ticker)
@@ -331,6 +423,9 @@ def _process_symbol(
     if rsi is not None and rsi != symbol.rsi:
         symbol.rsi = rsi
         market_data_fields.append("rsi")
+    if technical_rating is not TECHNICAL_SCORE_MISSING and technical_rating != symbol.technical_score:
+        symbol.technical_score = technical_rating
+        market_data_fields.append("technical_score")
     if market_data_fields:
         symbol.save(update_fields=market_data_fields + ["updated_at"])
 
@@ -343,6 +438,11 @@ def _process_symbol(
     return {
         "ticker": symbol.ticker,
         "market_data_updated": bool(market_data_fields),
+        "technical_rating": (
+            technical_rating
+            if technical_rating is not TECHNICAL_SCORE_MISSING
+            else None
+        ),
         "next_date": next_date,
         "earnings_updated": earnings_updated,
         "earnings_debug": earnings_debug,
@@ -383,6 +483,7 @@ class Command(BaseCommand):
 
         total = len(symbols)
         fmp_api_key = (getattr(settings, "FINANCIAL_MODELING_API_KEY", "") or "").strip()
+        technicals_by_ticker = _fetch_all_tv_technicals([symbol.ticker for symbol in symbols])
         if not fmp_api_key:
             self.stderr.write(
                 "FINANCIAL_MODELING_API_KEY is not configured; DCF skipped and FMP earnings fallback disabled."
@@ -395,7 +496,7 @@ class Command(BaseCommand):
 
         self.stdout.write(
             "Screening "
-            f"{total} symbols (score >= {SCORE_MIN}) for earnings date, DCF, and price/RSI..."
+            f"{total} symbols (score >= {SCORE_MIN}) for earnings date, DCF, price/RSI, and TradingView technicals..."
         )
 
         earnings_updated = 0
@@ -404,7 +505,13 @@ class Command(BaseCommand):
 
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             futures = {
-                executor.submit(_process_symbol, sym, fmp_api_key, options["force"]): sym
+                executor.submit(
+                    _process_symbol,
+                    sym,
+                    fmp_api_key,
+                    options["force"],
+                    technicals_by_ticker.get(sym.ticker, TECHNICAL_SCORE_MISSING),
+                ): sym
                 for sym in symbols
             }
             for future in as_completed(futures):
@@ -441,12 +548,17 @@ class Command(BaseCommand):
                             f"  {ticker}: next_earnings_date={result['next_date']} "
                             f"(source={debug['source']})"
                         )
+                elif result["technical_rating"] is not None:
+                    with print_lock:
+                        self.stdout.write(
+                            f"  {ticker}: technical_score={result['technical_rating']}"
+                        )
 
         self.stdout.write(
             self.style.SUCCESS(
                 "\nDone. Updated "
                 f"{earnings_updated}/{total} symbols with a next earnings date; "
-                "updated market data (price/DCF/RSI) "
+                "updated market data (price/DCF/RSI/technicals) "
                 f"for {market_data_updated} symbols."
             )
         )

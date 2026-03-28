@@ -192,10 +192,91 @@ class DailyBriefDeliveryTestCase(APITestCase):
             unsubscribed_at=timezone.now(),
         )
 
-        Symbol.objects.create(ticker="NVDA", score=96, classification="Great")
-        Symbol.objects.create(ticker="MSFT", score=93, classification="Great")
-        Symbol.objects.create(ticker="META", score=91, classification="Strong")
-        Symbol.objects.create(ticker="AAPL", score=88, classification="Strong")
+        Symbol.objects.create(
+            ticker="NVDA",
+            score=96,
+            classification="Great",
+            rsi="55.00",
+            roi="6.20",
+            price="120.00",
+            technical_score="88.00",
+            option_data={
+                "tvTechnicals": "Strong Buy",
+                "spreadValue": 0.8,
+                "rawStrike": 110,
+                "rawPrice": 120,
+                "delta": -0.31,
+                "roi": 6.2,
+            },
+        )
+        Symbol.objects.create(
+            ticker="MSFT",
+            score=93,
+            classification="Great",
+            rsi="48.00",
+            roi="7.10",
+            price="330.00",
+            technical_score="81.00",
+            option_data={
+                "tvTechnicals": "Buy",
+                "spreadValue": 0.5,
+                "rawStrike": 300,
+                "rawPrice": 330,
+                "delta": -0.29,
+                "roi": 7.1,
+            },
+        )
+        Symbol.objects.create(
+            ticker="META",
+            score=91,
+            classification="Strong",
+            rsi="61.00",
+            roi="5.40",
+            price="510.00",
+            technical_score="74.00",
+            option_data={
+                "tvTechnicals": "Buy",
+                "spreadValue": 1.1,
+                "rawStrike": 470,
+                "rawPrice": 510,
+                "delta": -0.30,
+                "roi": 5.4,
+            },
+        )
+        Symbol.objects.create(
+            ticker="AAPL",
+            score=88,
+            classification="Strong",
+            rsi="52.00",
+            roi="4.10",
+            price="210.00",
+            technical_score="70.00",
+            option_data={
+                "tvTechnicals": "Strong Buy",
+                "spreadValue": 0.9,
+                "rawStrike": 190,
+                "rawPrice": 210,
+                "delta": -0.31,
+                "roi": 4.1,
+            },
+        )
+        Symbol.objects.create(
+            ticker="AMZN",
+            score=99,
+            classification="Great",
+            rsi="49.00",
+            roi="9.90",
+            price="200.00",
+            technical_score="95.00",
+            option_data={
+                "tvTechnicals": "Hold",
+                "spreadValue": 0.4,
+                "rawStrike": 180,
+                "rawPrice": 200,
+                "delta": -0.20,
+                "roi": 9.9,
+            },
+        )
 
         first_result = send_daily_brief_to_active_subscribers(
             target_date=date(2026, 3, 28),
@@ -216,8 +297,12 @@ class DailyBriefDeliveryTestCase(APITestCase):
             set(mail.outbox[0].bcc),
             {active_one.email, active_two.email},
         )
-        self.assertIn("NVDA", mail.outbox[0].body)
+        self.assertIn("1. MSFT", mail.outbox[0].body)
+        self.assertIn("2. NVDA", mail.outbox[0].body)
         self.assertIn("MSFT", mail.outbox[0].body)
+        self.assertIn("3. META", mail.outbox[0].body)
+        self.assertIn("NVDA", mail.outbox[0].body)
         self.assertIn("META", mail.outbox[0].body)
         self.assertNotIn("AAPL", mail.outbox[0].body)
+        self.assertNotIn("AMZN", mail.outbox[0].body)
         self.assertNotIn(settings.DEFAULT_FROM_EMAIL, set(mail.outbox[0].bcc))

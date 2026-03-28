@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from decimal import Decimal, InvalidOperation
 
 import requests
 from django.conf import settings
@@ -13,6 +14,7 @@ from .models import DailyBriefEdition, DailyBriefSubscription, Symbol
 
 
 logger = logging.getLogger(__name__)
+DAILY_BRIEF_ALLOWED_TECHNICALS = {"buy", "strong_buy"}
 
 
 def get_or_create_subscription(user) -> DailyBriefSubscription:
@@ -115,15 +117,171 @@ def _format_decimal(value) -> str | None:
     return str(value)
 
 
-def _build_top_symbols_payload(limit: int = 3) -> list[dict[str, str | int | None]]:
-    symbols = list(
-        Symbol.objects.filter(score__isnull=False).order_by(
-            "-score",
-            "-technical_score",
-            "-market_cap",
-            "ticker",
-        )[:limit]
+def _to_decimal(value) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+
+
+def _normalize_signal(value) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower().replace("-", "_").replace(" ", "_")
+    return normalized or None
+
+
+def _get_option_data_value(option_data: dict, *keys: str):
+    for key in keys:
+        if key in option_data and option_data[key] is not None:
+            return option_data[key]
+    return None
+
+
+def _extract_technical_signal(symbol: Symbol) -> str | None:
+    option_data = symbol.option_data or {}
+    signal = _normalize_signal(
+        _get_option_data_value(
+            option_data,
+            "tvTechnicals",
+            "tv_technicals",
+            "technicals",
+            "recommendation",
+        )
     )
+    if signal is not None:
+        return signal
+    return _normalize_signal(symbol.technical_score)
+
+
+def _extract_spread_value(symbol: Symbol) -> Decimal | None:
+    option_data = symbol.option_data or {}
+    spread_value = _to_decimal(
+        _get_option_data_value(
+            option_data,
+            "spreadValue",
+            "spread_value",
+            "bidAskSpread",
+            "bid_ask_spread",
+        )
+    )
+    if spread_value is not None:
+        return abs(spread_value)
+
+    bid_value = _to_decimal(_get_option_data_value(option_data, "bid"))
+    ask_value = _to_decimal(_get_option_data_value(option_data, "ask"))
+    if bid_value is None or ask_value is None:
+        return None
+    return abs(ask_value - bid_value)
+
+
+def _extract_strike_value(symbol: Symbol) -> Decimal | None:
+    option_data = symbol.option_data or {}
+    return _to_decimal(
+        _get_option_data_value(
+            option_data,
+            "rawStrike",
+            "raw_strike",
+            "strike_price",
+            "strike",
+        )
+    )
+
+
+def _extract_price_value(symbol: Symbol) -> Decimal | None:
+    option_data = symbol.option_data or {}
+    return _to_decimal(
+        _get_option_data_value(
+            option_data,
+            "rawPrice",
+            "raw_price",
+            "stockPrice",
+            "stock_price",
+            "underlyingPrice",
+            "underlying_price",
+        )
+    ) or _to_decimal(symbol.price)
+
+
+def _extract_delta_percent(symbol: Symbol) -> Decimal | None:
+    option_data = symbol.option_data or {}
+    delta_value = _to_decimal(_get_option_data_value(option_data, "delta", "rawDelta"))
+    if delta_value is None:
+        return None
+    delta_value = abs(delta_value)
+    if delta_value <= Decimal("1"):
+        return delta_value * Decimal("100")
+    return delta_value
+
+
+def _extract_roi_value(symbol: Symbol) -> Decimal | None:
+    roi_value = _to_decimal(symbol.roi)
+    if roi_value is not None:
+        return roi_value
+
+    option_data = symbol.option_data or {}
+    return _to_decimal(_get_option_data_value(option_data, "roi"))
+
+
+def _is_daily_brief_candidate(symbol: Symbol) -> bool:
+    if symbol.score is None or symbol.score <= 80:
+        return False
+    if symbol.rsi is None or not (Decimal("30") <= symbol.rsi <= Decimal("70")):
+        return False
+    if _extract_technical_signal(symbol) not in DAILY_BRIEF_ALLOWED_TECHNICALS:
+        return False
+
+    spread_value = _extract_spread_value(symbol)
+    if spread_value is None or spread_value >= Decimal("1.5"):
+        return False
+
+    strike_value = _extract_strike_value(symbol)
+    price_value = _extract_price_value(symbol)
+    if strike_value is None or price_value is None or strike_value >= price_value:
+        return False
+
+    delta_percent = _extract_delta_percent(symbol)
+    if delta_percent is None or delta_percent >= Decimal("32"):
+        return False
+
+    return _extract_roi_value(symbol) is not None
+
+
+def _build_top_symbols_payload(limit: int = 3) -> list[dict[str, str | int | None]]:
+    candidates = list(
+        Symbol.objects.filter(
+            score__gt=80,
+            rsi__gte=30,
+            rsi__lte=70,
+            option_data__isnull=False,
+        )
+    )
+
+    filtered_symbols: list[Symbol] = []
+    seen_tickers: set[str] = set()
+    for symbol in candidates:
+        if symbol.ticker in seen_tickers:
+            continue
+        if not _is_daily_brief_candidate(symbol):
+            continue
+        seen_tickers.add(symbol.ticker)
+        filtered_symbols.append(symbol)
+
+    filtered_symbols.sort(
+        key=lambda symbol: (
+            -(_extract_roi_value(symbol) or Decimal("0")),
+            -(symbol.score or 0),
+            0
+            if _extract_technical_signal(symbol) == "strong_buy"
+            else 1
+            if _extract_technical_signal(symbol) == "buy"
+            else 2,
+            symbol.ticker,
+        )
+    )
+    symbols = filtered_symbols[:limit]
     return [
         {
             "ticker": symbol.ticker,

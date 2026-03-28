@@ -87,6 +87,13 @@ class CboeSecurity(models.Model):
 class Symbol(models.Model):
     """Master list of exchange-listed symbols with market cap >= 5B."""
 
+    class TechnicalScore(models.TextChoices):
+        STRONG_BUY = "Strong Buy", "Strong Buy"
+        BUY = "Buy", "Buy"
+        NEUTRAL = "Neutral", "Neutral"
+        SELL = "Sell", "Sell"
+        STRONG_SELL = "Strong Sell", "Strong Sell"
+
     ticker = models.CharField(max_length=50, unique=True)
     exchange = models.CharField(max_length=100, blank=True, default="")
     market_cap = models.DecimalField(max_digits=24, decimal_places=2, null=True, blank=True)
@@ -109,7 +116,12 @@ class Symbol(models.Model):
     price = models.DecimalField(max_digits=20, decimal_places=4, null=True, blank=True)
     dcf = models.DecimalField(max_digits=20, decimal_places=4, null=True, blank=True)
     rsi = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
-    technical_score = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    technical_score = models.CharField(
+        max_length=16,
+        choices=TechnicalScore.choices,
+        null=True,
+        blank=True,
+    )
     option_exp = models.DateField(null=True, blank=True)
     option_volume = models.BigIntegerField(null=True, blank=True)
     option_iv = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
