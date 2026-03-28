@@ -61,6 +61,7 @@ Email delivery:
 - If `RESEND_API_KEY` is not configured, the project falls back to Django's configured email backend.
 - Daily Top 3 delivery is scheduled through Celery Beat using `api.tasks.send_daily_top_3_edition`.
 - Adjust the UTC send time with `DAILY_BRIEF_SEND_HOUR_UTC` and `DAILY_BRIEF_SEND_MINUTE_UTC`.
+- For Railway testing, you can manually preview or send with `python manage.py send_daily_brief --dry-run --limit 3` and `python manage.py send_daily_brief --limit 3`.
 
 ## Deploying with Docker Compose
 

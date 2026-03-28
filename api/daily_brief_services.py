@@ -169,6 +169,24 @@ def get_or_create_daily_brief_edition(*, target_date=None) -> DailyBriefEdition:
     return edition
 
 
+def get_active_daily_brief_recipient_list(*, limit: int | None = None) -> list[str]:
+    queryset = (
+        DailyBriefSubscription.objects.filter(
+            status=DailyBriefSubscription.Status.ACTIVE,
+            is_active=True,
+            user__is_active=True,
+            user__email__isnull=False,
+        )
+        .exclude(user__email="")
+        .select_related("user")
+        .order_by("user__email")
+        .values_list("user__email", flat=True)
+    )
+    if limit is not None:
+        queryset = queryset[:limit]
+    return list(queryset)
+
+
 def _send_daily_brief_email(*, edition: DailyBriefEdition, recipient_list: list[str]) -> int:
     if not recipient_list:
         return 0
@@ -204,14 +222,19 @@ def _send_daily_brief_email(*, edition: DailyBriefEdition, recipient_list: list[
     return len(recipient_list)
 
 
-def send_daily_brief_to_active_subscribers(*, target_date=None) -> dict[str, int | str | bool]:
+def send_daily_brief_to_active_subscribers(
+    *,
+    target_date=None,
+    limit: int | None = None,
+    force: bool = False,
+) -> dict[str, int | str | bool]:
     edition_date = target_date or timezone.now().date()
 
     with transaction.atomic():
         edition = get_or_create_daily_brief_edition(target_date=edition_date)
         edition = DailyBriefEdition.objects.select_for_update().get(pk=edition.pk)
 
-        if edition.sent_at is not None:
+        if edition.sent_at is not None and not force:
             logger.info("Daily brief edition %s already sent", edition.edition_date)
             return {
                 "edition_date": edition.edition_date.isoformat(),
@@ -219,18 +242,7 @@ def send_daily_brief_to_active_subscribers(*, target_date=None) -> dict[str, int
                 "already_sent": True,
             }
 
-        recipient_list = list(
-            DailyBriefSubscription.objects.filter(
-                status=DailyBriefSubscription.Status.ACTIVE,
-                is_active=True,
-                user__is_active=True,
-                user__email__isnull=False,
-            )
-            .exclude(user__email="")
-            .select_related("user")
-            .order_by("user__email")
-            .values_list("user__email", flat=True)
-        )
+        recipient_list = get_active_daily_brief_recipient_list(limit=limit)
 
         recipient_count = _send_daily_brief_email(
             edition=edition,
