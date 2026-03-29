@@ -325,4 +325,4 @@ CELERY_WORKER_CONCURRENCY = int(os.getenv("CELERY_WORKER_CONCURRENCY", "2"))
 # DatabaseScheduler reads its periodic task rows from django-celery-beat.
 # The schedule itself is synced into the database by `sync_daily_brief_schedule`.
 DAILY_BRIEF_SEND_HOUR_UTC = int(os.getenv("DAILY_BRIEF_SEND_HOUR_UTC", "16"))
-DAILY_BRIEF_SEND_MINUTE_UTC = int(os.getenv("DAILY_BRIEF_SEND_MINUTE_UTC", "0"))
+DAILY_BRIEF_SEND_MINUTE_UTC = int(os.getenv("DAILY_BRIEF_SEND_MINUTE_UTC", "50"))
