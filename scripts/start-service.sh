@@ -34,6 +34,7 @@ sh ./scripts/wait-for-db.sh
 case "${SERVICE_ROLE}" in
   web)
     python manage.py migrate --noinput
+    python manage.py sync_daily_brief_schedule
     exec gunicorn investing_project.wsgi:application --bind "0.0.0.0:${PORT:-8080}" --access-logfile - --error-logfile -
     ;;
   worker)
@@ -45,6 +46,7 @@ case "${SERVICE_ROLE}" in
     else
       wait_for_table "django_celery_beat_periodictask"
     fi
+    python manage.py sync_daily_brief_schedule
     exec celery -A investing_project beat --loglevel="${CELERY_LOGLEVEL}" --scheduler django_celery_beat.schedulers:DatabaseScheduler
     ;;
   *)

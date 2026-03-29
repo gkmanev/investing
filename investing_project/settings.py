@@ -13,7 +13,6 @@ import os
 from datetime import timedelta
 
 import dj_database_url
-from celery.schedules import crontab
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -323,14 +322,7 @@ CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 CELERY_WORKER_CONCURRENCY = int(os.getenv("CELERY_WORKER_CONCURRENCY", "2"))
+# DatabaseScheduler reads its periodic task rows from django-celery-beat.
+# The schedule itself is synced into the database by `sync_daily_brief_schedule`.
 DAILY_BRIEF_SEND_HOUR_UTC = int(os.getenv("DAILY_BRIEF_SEND_HOUR_UTC", "16"))
 DAILY_BRIEF_SEND_MINUTE_UTC = int(os.getenv("DAILY_BRIEF_SEND_MINUTE_UTC", "0"))
-CELERY_BEAT_SCHEDULE = {
-    "send-daily-top-3-edition": {
-        "task": "api.tasks.send_daily_top_3_edition",
-        "schedule": crontab(
-            hour=DAILY_BRIEF_SEND_HOUR_UTC,
-            minute=DAILY_BRIEF_SEND_MINUTE_UTC,
-        ),
-    }
-}

@@ -2,10 +2,12 @@ from datetime import date, timedelta
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
 from django.core import mail
-from django.test import override_settings
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
+from django_celery_beat.models import CrontabSchedule, PeriodicTask
 from rest_framework import status
 from rest_framework.test import APITestCase
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -15,6 +17,52 @@ from .models import DailyBriefEdition, DailyBriefSubscription, EmailVerification
 
 
 User = get_user_model()
+
+
+class DailyBriefScheduleCommandTestCase(TestCase):
+    @override_settings(
+        DAILY_BRIEF_SEND_HOUR_UTC=16,
+        DAILY_BRIEF_SEND_MINUTE_UTC=0,
+        CELERY_TIMEZONE="UTC",
+    )
+    def test_sync_daily_brief_schedule_creates_periodic_task(self) -> None:
+        call_command("sync_daily_brief_schedule")
+
+        task = PeriodicTask.objects.get(name="send-daily-top-3-edition")
+        self.assertEqual(task.task, "api.tasks.send_daily_top_3_edition")
+        self.assertTrue(task.enabled)
+        self.assertEqual(task.crontab.hour, "16")
+        self.assertEqual(task.crontab.minute, "0")
+        self.assertEqual(str(task.crontab.timezone), "UTC")
+
+    @override_settings(
+        DAILY_BRIEF_SEND_HOUR_UTC=18,
+        DAILY_BRIEF_SEND_MINUTE_UTC=45,
+        CELERY_TIMEZONE="UTC",
+    )
+    def test_sync_daily_brief_schedule_updates_existing_periodic_task(self) -> None:
+        stale_schedule = CrontabSchedule.objects.create(
+            minute="0",
+            hour="16",
+            day_of_week="*",
+            day_of_month="*",
+            month_of_year="*",
+            timezone="UTC",
+        )
+        PeriodicTask.objects.create(
+            name="send-daily-top-3-edition",
+            task="api.tasks.send_daily_top_3_edition",
+            crontab=stale_schedule,
+            enabled=False,
+        )
+
+        call_command("sync_daily_brief_schedule")
+
+        task = PeriodicTask.objects.get(name="send-daily-top-3-edition")
+        self.assertTrue(task.enabled)
+        self.assertEqual(task.crontab.hour, "18")
+        self.assertEqual(task.crontab.minute, "45")
+        self.assertEqual(str(task.crontab.timezone), "UTC")
 
 
 @override_settings(RESEND_API_KEY=None)
