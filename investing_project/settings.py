@@ -323,8 +323,8 @@ CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 CELERY_WORKER_CONCURRENCY = int(os.getenv("CELERY_WORKER_CONCURRENCY", "2"))
-DAILY_BRIEF_SEND_HOUR_UTC = int(os.getenv("DAILY_BRIEF_SEND_HOUR_UTC", "11"))
-DAILY_BRIEF_SEND_MINUTE_UTC = int(os.getenv("DAILY_BRIEF_SEND_MINUTE_UTC", "42"))
+DAILY_BRIEF_SEND_HOUR_UTC = int(os.getenv("DAILY_BRIEF_SEND_HOUR_UTC", "16"))
+DAILY_BRIEF_SEND_MINUTE_UTC = int(os.getenv("DAILY_BRIEF_SEND_MINUTE_UTC", "0"))
 CELERY_BEAT_SCHEDULE = {
     "send-daily-top-3-edition": {
         "task": "api.tasks.send_daily_top_3_edition",
