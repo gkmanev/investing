@@ -60,6 +60,8 @@ Email delivery:
 - If `RESEND_API_KEY` is configured, verification emails are sent through the Resend HTTPS API.
 - If `RESEND_API_KEY` is not configured, the project falls back to Django's configured email backend.
 - Daily Top 3 delivery is scheduled through Celery Beat using `api.tasks.send_daily_top_3_edition`.
+- `trading_view_scrape` is scheduled through Celery Beat every 45 minutes from 13:00 UTC through 19:45 UTC using `api.tasks.run_trading_view_scrape`.
+- `initial_screener` is scheduled daily at 12:30 UTC using `api.tasks.run_initial_screener`.
 - Adjust the UTC send time with `DAILY_BRIEF_SEND_HOUR_UTC` and `DAILY_BRIEF_SEND_MINUTE_UTC`.
 - For Railway testing, you can manually preview or send with `python manage.py send_daily_brief --dry-run --limit 3` and `python manage.py send_daily_brief --limit 3`.
 

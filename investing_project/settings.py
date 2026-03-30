@@ -323,6 +323,6 @@ CELERY_TIMEZONE = TIME_ZONE
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 CELERY_WORKER_CONCURRENCY = int(os.getenv("CELERY_WORKER_CONCURRENCY", "2"))
 # DatabaseScheduler reads its periodic task rows from django-celery-beat.
-# The schedule itself is synced into the database by `sync_daily_brief_schedule`.
+# The schedule itself is synced into the database by the sync_*_schedule commands.
 DAILY_BRIEF_SEND_HOUR_UTC = int(os.getenv("DAILY_BRIEF_SEND_HOUR_UTC", "17"))
 DAILY_BRIEF_SEND_MINUTE_UTC = int(os.getenv("DAILY_BRIEF_SEND_MINUTE_UTC", "30"))
