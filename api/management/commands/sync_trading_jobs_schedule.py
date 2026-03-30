@@ -41,7 +41,7 @@ class Command(BaseCommand):
 
         trading_slots = self._build_trading_view_slots(
             start_hour=14,
-            start_minute=10,
+            start_minute=26,
             end_hour=20,
             end_minute=0,
             interval_minutes=45,
