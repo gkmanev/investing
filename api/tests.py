@@ -22,6 +22,7 @@ from api.management.commands.fetch_profile_data import (
 )
 from api.management.commands.trading_view_scrape import (
     Command as TradingViewCommand,
+    RequestRateLimiter,
     TradingViewOptions,
 )
 
@@ -1917,7 +1918,21 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.assertEqual(price, "100.00")
         self.assertEqual(session.request.call_count, 2)
         self.assertEqual(rate_limiter.wait.call_count, 2)
+        rate_limiter.backoff.assert_called_once_with(2.0)
         mock_sleep.assert_called_once_with(2.0)
+
+    @patch("api.management.commands.trading_view_scrape.time.sleep")
+    @patch("api.management.commands.trading_view_scrape.time.monotonic")
+    def test_request_rate_limiter_backoff_blocks_subsequent_requests(
+        self, mock_monotonic: MagicMock, mock_sleep: MagicMock
+    ) -> None:
+        mock_monotonic.side_effect = [10.0, 11.0, 12.0]
+        rate_limiter = RequestRateLimiter(2.0)
+
+        rate_limiter.backoff(2.0)
+        rate_limiter.wait()
+
+        mock_sleep.assert_called_once_with(1.0)
 
     def test_handle_rejects_non_positive_worker_count(self) -> None:
         with self.assertRaisesMessage(CommandError, "--workers must be at least 1."):
@@ -1988,6 +2003,30 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.assertEqual(self.symbol.option_volume, 150)
         self.assertEqual(self.symbol.option_iv, Decimal("24.1250"))
         client.get_monthly_rsi.assert_called_once_with(exchange="NASDAQ", ticker="AAPL")
+
+    def test_process_symbol_reports_429_with_operator_guidance(self) -> None:
+        client = MagicMock()
+        response = MagicMock(status_code=429)
+        client.get_underlying_price.side_effect = requests.HTTPError(
+            "429 Client Error",
+            response=response,
+        )
+
+        with self.assertRaisesMessage(
+            CommandError,
+            "TradingView request failed for NASDAQ:AAPL: rate limited by TradingView (HTTP 429). Try lowering --max-rps or using --skip-rsi.",
+        ):
+            self.command._process_symbol(
+                client=client,
+                symbol=self.symbol,
+                exchange="NASDAQ",
+                min_dte=25,
+                max_dte=40,
+                delta_min=Decimal("-0.37"),
+                delta_max=Decimal("-0.24"),
+                roi_threshold=Decimal("2"),
+                fetch_rsi=True,
+            )
 
     def test_process_symbol_keeps_smaller_abs_delta_alternatives(self) -> None:
         expiration = self._expiration_int()

@@ -40,7 +40,7 @@ class Command(BaseCommand):
         self._validate_timezone(timezone_name)
 
         trading_slots = self._build_trading_view_slots(
-            start_hour=13,
+            start_hour=14,
             start_minute=0,
             end_hour=20,
             end_minute=0,

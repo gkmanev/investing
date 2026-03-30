@@ -26,8 +26,8 @@ PUT_DELTA_MIN = Decimal("-0.37")
 PUT_DELTA_MAX = Decimal("-0.24")
 ROI_THRESHOLD = Decimal("2")
 MAX_WORKERS = 4
-DEFAULT_MAX_REQUESTS_PER_SECOND = 4.0
-MAX_RETRIES = 4
+DEFAULT_MAX_REQUESTS_PER_SECOND = 2.0
+MAX_RETRIES = 6
 BACKOFF_SECONDS = 1.5
 EXCHANGE_ALIASES = {
     "NMS": "NASDAQ",
@@ -55,17 +55,28 @@ class RequestRateLimiter:
         self.interval = 1 / requests_per_second
         self._lock = threading.Lock()
         self._next_allowed = 0.0
+        self._cooldown_until = 0.0
 
     def wait(self) -> None:
         while True:
             delay = 0.0
             with self._lock:
                 now = time.monotonic()
-                if now >= self._next_allowed:
+                next_allowed = max(self._next_allowed, self._cooldown_until)
+                if now >= next_allowed:
                     self._next_allowed = now + self.interval
                     return
-                delay = self._next_allowed - now
+                delay = next_allowed - now
             time.sleep(delay)
+
+    def backoff(self, delay_seconds: float) -> None:
+        if delay_seconds <= 0:
+            return
+        with self._lock:
+            self._cooldown_until = max(
+                self._cooldown_until,
+                time.monotonic() + delay_seconds,
+            )
 
 
 class TradingViewOptions:
@@ -103,7 +114,7 @@ class TradingViewOptions:
                     return max(float(retry_after), BACKOFF_SECONDS)
                 except ValueError:
                     pass
-        return BACKOFF_SECONDS * attempt
+        return BACKOFF_SECONDS * (2 ** (attempt - 1))
 
     def _request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
         response: requests.Response | None = None
@@ -116,7 +127,10 @@ class TradingViewOptions:
                 return response
             if attempt == MAX_RETRIES:
                 response.raise_for_status()
-            time.sleep(self._retry_delay(response, attempt))
+            retry_delay = self._retry_delay(response, attempt)
+            if self.rate_limiter is not None:
+                self.rate_limiter.backoff(retry_delay)
+            time.sleep(retry_delay)
 
         assert response is not None
         response.raise_for_status()
@@ -526,7 +540,13 @@ class Command(BaseCommand):
                 max_dte=max_dte,
             )
         except requests.RequestException as exc:
-            raise CommandError(f"TradingView request failed for {exchange}:{symbol.ticker}: {exc}") from exc
+            raise CommandError(
+                self._format_tradingview_request_error(
+                    exchange=exchange,
+                    ticker=symbol.ticker,
+                    exc=exc,
+                )
+            ) from exc
         except (KeyError, TypeError, ValueError) as exc:
             raise CommandError(
                 f"TradingView returned invalid data for {exchange}:{symbol.ticker}."
@@ -562,7 +582,12 @@ class Command(BaseCommand):
             )
         except requests.RequestException as exc:
             raise CommandError(
-                f"TradingView chain request failed for {exchange}:{symbol.ticker} {selected}."
+                self._format_tradingview_request_error(
+                    exchange=exchange,
+                    ticker=symbol.ticker,
+                    exc=exc,
+                    context=f"chain {selected}",
+                )
             ) from exc
         except (KeyError, TypeError, ValueError) as exc:
             raise CommandError(
@@ -642,6 +667,26 @@ class Command(BaseCommand):
             reporter(message)
             return
         self.stdout.write(message)
+
+    @staticmethod
+    def _format_tradingview_request_error(
+        *,
+        exchange: str,
+        ticker: str,
+        exc: requests.RequestException,
+        context: str | None = None,
+    ) -> str:
+        prefix = f"TradingView request failed for {exchange}:{ticker}"
+        if context:
+            prefix = f"{prefix} ({context})"
+
+        response = getattr(exc, "response", None)
+        if response is not None and response.status_code == 429:
+            return (
+                f"{prefix}: rate limited by TradingView (HTTP 429). "
+                "Try lowering --max-rps or using --skip-rsi."
+            )
+        return f"{prefix}: {exc}"
 
     def _populate_missing_option_volume(
         self,
