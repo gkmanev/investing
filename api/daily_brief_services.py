@@ -114,7 +114,13 @@ def activate_pending_subscription_after_verification(user) -> DailyBriefSubscrip
 def _format_decimal(value) -> str | None:
     if value is None:
         return None
-    return str(value)
+    decimal_value = _to_decimal(value)
+    if decimal_value is None:
+        return str(value)
+    formatted = format(decimal_value, "f")
+    if "." in formatted:
+        formatted = formatted.rstrip("0").rstrip(".")
+    return formatted
 
 
 def _to_decimal(value) -> Decimal | None:
@@ -216,6 +222,13 @@ def _extract_delta_percent(symbol: Symbol) -> Decimal | None:
     return delta_value
 
 
+def _extract_chance_of_profit_percent(symbol: Symbol) -> Decimal | None:
+    delta_percent = _extract_delta_percent(symbol)
+    if delta_percent is None:
+        return None
+    return Decimal("100") - delta_percent
+
+
 def _extract_roi_value(symbol: Symbol) -> Decimal | None:
     roi_value = _to_decimal(symbol.roi)
     if roi_value is not None:
@@ -287,10 +300,13 @@ def _build_top_symbols_payload(limit: int = 3) -> list[dict[str, str | int | Non
             "ticker": symbol.ticker,
             "score": symbol.score,
             "classification": symbol.classification,
-            "price": _format_decimal(symbol.price),
-            "technical_score": _format_decimal(symbol.technical_score),
+            "technicals": (_extract_technical_signal(symbol) or "").replace("_", " ").title()
+            or None,
+            "price": _format_decimal(_extract_price_value(symbol)),
+            "strike": _format_decimal(_extract_strike_value(symbol)),
+            "chance_of_profit": _format_decimal(_extract_chance_of_profit_percent(symbol)),
             "market_cap": _format_decimal(symbol.market_cap),
-            "roi": _format_decimal(symbol.roi),
+            "roi": _format_decimal(_extract_roi_value(symbol)),
         }
         for symbol in symbols
     ]

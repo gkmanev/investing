@@ -42,11 +42,11 @@ PANEL_INSIGHT_SPECS = [
         "tag": "Growth driver",
     },
     {
-        "key": "ai_sector_tailwinds",
-        "title": "AI & sector tailwinds",
-        "dot_color": "teal",
-        "tone": "neutral",
-        "tag": None,
+        "key": "ai_disruption_risk",
+        "title": "AI disruption risk",
+        "dot_color": "amber",
+        "tone": "risk",
+        "tag": "Disruption watch",
     },
     {
         "key": "key_risks",
@@ -140,18 +140,18 @@ AGENTS = [
     },
     {
         "id": 2,
-        "key": "ai_tailwinds",
-        "label": "Agent 03 - AI context and tailwinds",
+        "key": "ai_disruption_risk",
+        "label": "Agent 03 - AI disruption risk",
         "prompt": lambda ticker, score, ctx: (
             f"You are a senior technology and equity analyst. Research the stock {ticker} "
-            f"and analyze its position in the context of ARTIFICIAL INTELLIGENCE.\n\n{ctx}\n\n"
+            f"and analyze its DISRUPTION RISK FROM AI AND AI AGENTS.\n\n{ctx}\n\n"
             "Focus on:\n"
-            "1. How AI is affecting this company's core business\n"
-            "2. The company's own AI products, investments, or strategy\n"
-            "3. AI-driven demand opportunities for this sector\n"
-            "4. Competitive threats from AI-native players\n\n"
+            "1. How AI or AI agents could reduce demand for the company's core products or seats\n"
+            "2. Whether AI lowers barriers to entry or weakens pricing power and differentiation\n"
+            "3. Whether customer budgets may shift toward AI infrastructure or automation instead\n"
+            "4. What defenses or offsets the company has against AI-native or agentic disruption\n\n"
             + (
-                f"Assess how AI dynamics might shift or reinforce "
+                f"Assess whether AI disruption risk might weaken or reinforce "
                 f"a fundamental score of {score}/100.\n\n"
                 if score is not None
                 else ""
@@ -435,7 +435,7 @@ def build_fallback_panel(
     by_key = {result["key"]: result for result in results}
     business = by_key.get("business_potential")
     sector = by_key.get("sector_growth")
-    ai = by_key.get("ai_tailwinds")
+    ai = by_key.get("ai_disruption_risk")
 
     def first_available(*values: str) -> str:
         for value in values:
@@ -472,16 +472,16 @@ def build_fallback_panel(
             "tag": "Growth driver",
         },
         {
-            "key": "ai_sector_tailwinds",
-            "title": "AI & sector tailwinds",
+            "key": "ai_disruption_risk",
+            "title": "AI disruption risk",
             "summary": first_available(
                 ai["summary"] if ai else "",
-                *(sector["bull_points"] if sector else []),
-                sector["summary"] if sector else "",
+                *(ai["risk_points"] if ai else []),
+                *(ai["bull_points"] if ai else []),
             ),
-            "tone": "neutral",
-            "dot_color": "teal",
-            "tag": None,
+            "tone": "risk",
+            "dot_color": "amber",
+            "tag": "Disruption watch",
         },
         {
             "key": "key_risks",
@@ -686,7 +686,7 @@ def run_synthesis(
         '      "tag": "short label or null"\n'
         "    },\n"
         "    {\n"
-        '      "key": "ai_sector_tailwinds",\n'
+        '      "key": "ai_disruption_risk",\n'
         '      "summary": "max 220 chars",\n'
         '      "tone": "bull|neutral|risk",\n'
         '      "dot_color": "green|blue|teal|red|amber",\n'
@@ -704,6 +704,7 @@ def run_synthesis(
         "Requirements:\n"
         "- Exactly four insights with those keys in that order.\n"
         "- Make the wording dense, specific, and ready to render in a small UI card.\n"
+        "- The AI insight must assess disruption risk from AI and AI agents, not generic tailwinds.\n"
         "- No markdown and no extra keys."
     )
     text = generate_text(
@@ -737,7 +738,7 @@ def save_due_diligence_report(panel: dict[str, Any], model_name: str) -> None:
 class Command(BaseCommand):
     help = (
         "Run parallel AI research agents on a stock ticker. "
-        "Analyzes business potential, sector growth, and AI tailwinds, "
+        "Analyzes business potential, sector growth, and AI disruption risk, "
         "factoring in your existing fundamental score."
     )
 

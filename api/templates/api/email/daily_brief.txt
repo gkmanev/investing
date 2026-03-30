@@ -3,7 +3,7 @@ PutPulse Daily Top 3 for {{ edition_date|date:"Y-m-d" }}
 {% if top_symbols %}
 {% for symbol in top_symbols %}
 {{ forloop.counter }}. {{ symbol.ticker }}
-Score: {{ symbol.score }}{% if symbol.classification %} | Classification: {{ symbol.classification }}{% endif %}{% if symbol.price %} | Price: {{ symbol.price }}{% endif %}{% if symbol.technical_score %} | Technical score: {{ symbol.technical_score }}{% endif %}{% if symbol.roi %} | ROI: {{ symbol.roi }}{% endif %}
+Score: {{ symbol.score }}{% if symbol.classification %} | Classification: {{ symbol.classification }}{% endif %}{% if symbol.technicals %} | Technicals: {{ symbol.technicals }}{% endif %}{% if symbol.price and symbol.strike %} | Price/Strike: {{ symbol.price }}/{{ symbol.strike }}{% elif symbol.price %} | Price: {{ symbol.price }}{% elif symbol.strike %} | Strike: {{ symbol.strike }}{% endif %}{% if symbol.chance_of_profit %} | Chance of profit: {{ symbol.chance_of_profit }}%{% endif %}{% if symbol.roi %} | ROI: {{ symbol.roi }}{% endif %}
 {% endfor %}
 {% else %}
 No scored symbols were available for today's edition.

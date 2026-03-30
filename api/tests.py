@@ -2308,19 +2308,19 @@ class AIAgentsPotentialCommandTestCase(APITestCase):
                         "score_alignment": "supports",
                     }
                 )
-            if "context of ARTIFICIAL INTELLIGENCE" in prompt:
+            if "DISRUPTION RISK FROM AI AND AI AGENTS" in prompt:
                 return json.dumps(
                     {
-                        "summary": "AI demand is a clear tailwind, but faster product cycles raise competitive pressure.",
-                        "bull_points": ["AI workloads lift throughput demand"],
-                        "risk_points": ["AI-native challengers can narrow differentiation"],
+                        "summary": "AI agents could compress seat demand and speed competition, though scale still matters.",
+                        "bull_points": ["Embedded workflows raise switching costs"],
+                        "risk_points": ["AI agents can replace seat-based workflows"],
                         "score_alignment": "nuances",
                     }
                 )
 
             return json.dumps(
                 {
-                    "executive_summary": "Compelling setup driven by durable demand, AI tailwinds, and resilient positioning. Main watch item is execution under a faster innovation cycle.",
+                    "executive_summary": "Compelling setup driven by durable demand and resilient positioning, but AI agents add a real disruption watchpoint. Main question is whether differentiation survives lower software barriers.",
                     "overall_stance": "bullish",
                     "score_alignment": "supports",
                     "confidence": 0.82,
@@ -2340,11 +2340,11 @@ class AIAgentsPotentialCommandTestCase(APITestCase):
                             "tag": "Growth driver",
                         },
                         {
-                            "key": "ai_sector_tailwinds",
-                            "summary": "AI workloads and sector capex create sustained demand tailwinds.",
-                            "tone": "neutral",
-                            "dot_color": "teal",
-                            "tag": None,
+                            "key": "ai_disruption_risk",
+                            "summary": "AI agents may pressure seat growth and invite faster entrants despite incumbency advantages.",
+                            "tone": "risk",
+                            "dot_color": "amber",
+                            "tag": "Disruption watch",
                         },
                         {
                             "key": "key_risks",
@@ -2382,6 +2382,7 @@ class AIAgentsPotentialCommandTestCase(APITestCase):
         self.assertEqual(payload["score_alignment"], "supports")
         self.assertEqual(len(payload["insights"]), 4)
         self.assertEqual(payload["insights"][0]["key"], "business_moat")
+        self.assertEqual(payload["insights"][2]["key"], "ai_disruption_risk")
         self.assertEqual(payload["agents"][0]["key"], "business_potential")
 
         report = DueDiligenceReport.objects.get(symbol="NVDA")
