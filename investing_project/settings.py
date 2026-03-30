@@ -325,5 +325,11 @@ CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 CELERY_WORKER_CONCURRENCY = int(os.getenv("CELERY_WORKER_CONCURRENCY", "2"))
 # DatabaseScheduler reads its periodic task rows from django-celery-beat.
 # The schedule itself is synced into the database by the sync_*_schedule commands.
+TRADING_VIEW_SCRAPE_START_TIME_UTC = os.getenv("TRADING_VIEW_SCRAPE_START_TIME_UTC", "13:00")
+TRADING_VIEW_SCRAPE_END_TIME_UTC = os.getenv("TRADING_VIEW_SCRAPE_END_TIME_UTC", "20:00")
+TRADING_VIEW_SCRAPE_INTERVAL_MINUTES = int(
+    os.getenv("TRADING_VIEW_SCRAPE_INTERVAL_MINUTES", "45")
+)
+INITIAL_SCREENER_TIME_UTC = os.getenv("INITIAL_SCREENER_TIME_UTC", "12:30")
 DAILY_BRIEF_SEND_HOUR_UTC = int(os.getenv("DAILY_BRIEF_SEND_HOUR_UTC", "17"))
 DAILY_BRIEF_SEND_MINUTE_UTC = int(os.getenv("DAILY_BRIEF_SEND_MINUTE_UTC", "30"))
