@@ -1,3 +1,6 @@
+import json
+from unittest.mock import patch
+
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django_celery_beat.models import CrontabSchedule, PeriodicTask
@@ -34,6 +37,10 @@ class TradingJobsScheduleCommandTestCase(TestCase):
             self.assertEqual(task.crontab.hour, hour)
             self.assertEqual(task.crontab.minute, minute)
             self.assertEqual(str(task.crontab.timezone), "UTC")
+            if task_name == "trading-view-scrape-1300-utc":
+                self.assertEqual(json.loads(task.kwargs), {"skip_rsi": False})
+            else:
+                self.assertEqual(json.loads(task.kwargs), {"skip_rsi": True})
 
         initial_screener_task = PeriodicTask.objects.get(name="initial-screener-daily")
         self.assertEqual(initial_screener_task.task, "api.tasks.run_initial_screener")
@@ -41,6 +48,7 @@ class TradingJobsScheduleCommandTestCase(TestCase):
         self.assertEqual(initial_screener_task.crontab.hour, "12")
         self.assertEqual(initial_screener_task.crontab.minute, "30")
         self.assertEqual(str(initial_screener_task.crontab.timezone), "UTC")
+        self.assertEqual(json.loads(initial_screener_task.kwargs), {})
 
     def test_sync_trading_jobs_schedule_updates_existing_tasks_and_removes_stale_ones(self) -> None:
         stale_schedule = CrontabSchedule.objects.create(
@@ -76,6 +84,7 @@ class TradingJobsScheduleCommandTestCase(TestCase):
         self.assertTrue(updated_trading_task.enabled)
         self.assertEqual(updated_trading_task.crontab.hour, "13")
         self.assertEqual(updated_trading_task.crontab.minute, "0")
+        self.assertEqual(json.loads(updated_trading_task.kwargs), {"skip_rsi": False})
         self.assertFalse(
             PeriodicTask.objects.filter(name="trading-view-scrape-2045-utc").exists()
         )
@@ -84,6 +93,7 @@ class TradingJobsScheduleCommandTestCase(TestCase):
         self.assertTrue(updated_initial_screener.enabled)
         self.assertEqual(updated_initial_screener.crontab.hour, "12")
         self.assertEqual(updated_initial_screener.crontab.minute, "30")
+        self.assertEqual(json.loads(updated_initial_screener.kwargs), {})
 
     def test_sync_trading_jobs_schedule_accepts_custom_start_time(self) -> None:
         call_command(
@@ -113,3 +123,15 @@ class TradingJobsScheduleCommandTestCase(TestCase):
             self.assertEqual(task.task, "api.tasks.run_trading_view_scrape")
             self.assertEqual(task.crontab.hour, hour)
             self.assertEqual(task.crontab.minute, minute)
+            if task_name == "trading-view-scrape-1447-utc":
+                self.assertEqual(json.loads(task.kwargs), {"skip_rsi": False})
+            else:
+                self.assertEqual(json.loads(task.kwargs), {"skip_rsi": True})
+
+    @patch("api.tasks.call_command")
+    def test_run_trading_view_scrape_passes_skip_rsi_option(self, mock_call_command) -> None:
+        from api.tasks import run_trading_view_scrape
+
+        run_trading_view_scrape(skip_rsi=True)
+
+        mock_call_command.assert_called_once_with("trading_view_scrape", skip_rsi=True)

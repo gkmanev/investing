@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -100,7 +101,7 @@ class Command(BaseCommand):
         created_trading = 0
         updated_trading = 0
 
-        for hour, minute in trading_slots:
+        for index, (hour, minute) in enumerate(trading_slots):
             task_name = f"{TRADING_VIEW_TASK_NAME_PREFIX}{hour:02d}{minute:02d}-utc"
             trading_names.add(task_name)
             _, _, task_created = self._upsert_crontab_task(
@@ -109,6 +110,7 @@ class Command(BaseCommand):
                 hour=hour,
                 minute=minute,
                 timezone_name=timezone_name,
+                kwargs={"skip_rsi": index > 0},
             )
             if task_created:
                 created_trading += 1
@@ -127,6 +129,7 @@ class Command(BaseCommand):
             hour=initial_screener_hour,
             minute=initial_screener_minute,
             timezone_name=timezone_name,
+            kwargs=None,
         )
 
         initial_action = "Created" if initial_screener_created else "Updated"
@@ -177,6 +180,7 @@ class Command(BaseCommand):
         hour: int,
         minute: int,
         timezone_name: str,
+        kwargs: dict[str, object] | None,
     ) -> tuple[CrontabSchedule, PeriodicTask, bool]:
         self._validate_time(hour=hour, minute=minute)
         schedule, _ = CrontabSchedule.objects.get_or_create(
@@ -197,6 +201,7 @@ class Command(BaseCommand):
                 "clocked": None,
                 "enabled": True,
                 "one_off": False,
+                "kwargs": json.dumps(kwargs or {}),
             },
         )
         return schedule, task, task_created

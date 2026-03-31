@@ -21,10 +21,10 @@ def send_daily_top_3_edition() -> None:
 
 
 @shared_task(ignore_result=True, name="api.tasks.run_trading_view_scrape")
-def run_trading_view_scrape() -> None:
-    logger.info("Starting trading_view_scrape task.")
-    call_command("trading_view_scrape")
-    logger.info("Finished trading_view_scrape task.")
+def run_trading_view_scrape(*, skip_rsi: bool = False) -> None:
+    logger.info("Starting trading_view_scrape task (skip_rsi=%s).", skip_rsi)
+    call_command("trading_view_scrape", skip_rsi=skip_rsi)
+    logger.info("Finished trading_view_scrape task (skip_rsi=%s).", skip_rsi)
 
 
 @shared_task(ignore_result=True, name="api.tasks.run_initial_screener")
