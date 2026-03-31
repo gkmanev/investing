@@ -20,7 +20,7 @@ from django.core.management.base import BaseCommand
 from api.models import Symbol
 
 
-#TEST IF THE LAST VERSION
+#TEST
 
 
 MAX_WORKERS = 8  # concurrent tickers processed at once
