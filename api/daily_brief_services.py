@@ -15,6 +15,7 @@ from .models import DailyBrief, DailyBriefEdition, DailyBriefSubscription, Symbo
 
 logger = logging.getLogger(__name__)
 DAILY_BRIEF_ALLOWED_TECHNICALS = {"buy", "strong_buy"}
+DAILY_BRIEF_MAX_ABS_DELTA = Decimal("0.3")
 
 
 def get_or_create_subscription(user) -> DailyBriefSubscription:
@@ -484,6 +485,12 @@ def select_daily_brief_symbol_candidate(symbol: Symbol) -> dict[str, object] | N
         return None
     if symbol.rsi is None or symbol.rsi >= Decimal("70"):
         return None
+    if (
+        symbol.option_exp is not None
+        and symbol.next_earnings_date is not None
+        and symbol.option_exp >= symbol.next_earnings_date
+    ):
+        return None
 
     best_candidate: dict[str, object] | None = None
     best_roi: Decimal | None = None
@@ -501,7 +508,12 @@ def select_daily_brief_symbol_candidate(symbol: Symbol) -> dict[str, object] | N
             is_alternative=is_alternative,
         )
         delta_value = _extract_candidate_delta(option_data)
-        if roi_value is None or roi_value < Decimal("3") or delta_value is None:
+        if (
+            roi_value is None
+            or roi_value < Decimal("3")
+            or delta_value is None
+            or abs(delta_value) > DAILY_BRIEF_MAX_ABS_DELTA
+        ):
             continue
 
         if (

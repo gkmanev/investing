@@ -211,6 +211,8 @@ class DailyBriefPopulationTestCase(TestCase):
         roi: str,
         delta: float,
         alternatives: list[dict] | None = None,
+        option_exp: date | None = date(2026, 4, 25),
+        next_earnings_date: date | None = date(2026, 5, 10),
     ) -> Symbol:
         option_data = {
             "option_symbol": f"{ticker}_MAIN",
@@ -230,6 +232,8 @@ class DailyBriefPopulationTestCase(TestCase):
             score=score,
             rsi=rsi,
             roi=roi,
+            option_exp=option_exp,
+            next_earnings_date=next_earnings_date,
             option_data=option_data,
         )
 
@@ -272,7 +276,7 @@ class DailyBriefPopulationTestCase(TestCase):
             score=91,
             rsi="61.00",
             roi="5.90",
-            delta=-0.19,
+            delta=-0.31,
         )
         self.create_symbol(
             ticker="AMZN",
@@ -288,6 +292,15 @@ class DailyBriefPopulationTestCase(TestCase):
             roi="8.50",
             delta=-0.20,
         )
+        self.create_symbol(
+            ticker="GOOG",
+            score=95,
+            rsi="50.00",
+            roi="8.80",
+            delta=-0.20,
+            option_exp=date(2026, 4, 25),
+            next_earnings_date=date(2026, 4, 20),
+        )
 
         call_command("populate_daily_brief", edition_date=target_date.isoformat())
         call_command("populate_daily_brief", edition_date=target_date.isoformat())
@@ -301,6 +314,8 @@ class DailyBriefPopulationTestCase(TestCase):
         self.assertEqual(briefs[1].option_data["option_symbol"], "AAPL_ALT_BEST")
         self.assertEqual(float(briefs[1].roi), 6.2)
         self.assertEqual(float(briefs[1].delta), -0.18)
+        self.assertFalse(DailyBrief.objects.filter(edition_date=target_date, ticker="NVDA").exists())
+        self.assertFalse(DailyBrief.objects.filter(edition_date=target_date, ticker="GOOG").exists())
         self.assertFalse(DailyBrief.objects.filter(edition_date=target_date, ticker="AMZN").exists())
         self.assertFalse(DailyBrief.objects.filter(edition_date=target_date, ticker="META").exists())
 
