@@ -245,16 +245,16 @@ class DailyBriefDeliveryTestCase(APITestCase):
             score=96,
             classification="Great",
             rsi="55.00",
-            roi="6.20",
+            roi="6.236",
             price="120.00",
             technical_score="88.00",
             option_data={
                 "tvTechnicals": "Strong Buy",
                 "spreadValue": 0.8,
-                "rawStrike": 110,
-                "rawPrice": 120,
-                "delta": -0.31,
-                "roi": 6.2,
+                "rawStrike": 110.004,
+                "rawPrice": 120.005,
+                "delta": -0.3051,
+                "roi": 6.236,
             },
         )
         Symbol.objects.create(
@@ -262,16 +262,16 @@ class DailyBriefDeliveryTestCase(APITestCase):
             score=93,
             classification="Great",
             rsi="48.00",
-            roi="7.10",
+            roi="7.105",
             price="330.00",
             technical_score="81.00",
             option_data={
                 "tvTechnicals": "Buy",
                 "spreadValue": 0.5,
-                "rawStrike": 300,
-                "rawPrice": 330,
-                "delta": -0.29,
-                "roi": 7.1,
+                "rawStrike": 300.124,
+                "rawPrice": 330.126,
+                "delta": -0.286,
+                "roi": 7.105,
             },
         )
         Symbol.objects.create(
@@ -353,11 +353,13 @@ class DailyBriefDeliveryTestCase(APITestCase):
         self.assertIn("META", mail.outbox[0].body)
         self.assertIn("Score: 93", mail.outbox[0].body)
         self.assertIn("Technicals: Buy", mail.outbox[0].body)
-        self.assertIn("Price/Strike: 330/300", mail.outbox[0].body)
-        self.assertIn("Chance of profit: 71%", mail.outbox[0].body)
+        self.assertIn("Price/Strike: 330.13/300.12", mail.outbox[0].body)
+        self.assertIn("Chance of profit: 71.40%", mail.outbox[0].body)
+        self.assertIn("ROI: 7.11", mail.outbox[0].body)
         self.assertIn("Technicals: Strong Buy", mail.outbox[0].body)
-        self.assertIn("Price/Strike: 120/110", mail.outbox[0].body)
-        self.assertIn("Chance of profit: 69%", mail.outbox[0].body)
+        self.assertIn("Price/Strike: 120.01/110.00", mail.outbox[0].body)
+        self.assertIn("Chance of profit: 69.49%", mail.outbox[0].body)
+        self.assertIn("ROI: 6.24", mail.outbox[0].body)
         self.assertNotIn("AAPL", mail.outbox[0].body)
         self.assertNotIn("AMZN", mail.outbox[0].body)
         self.assertNotIn(settings.DEFAULT_FROM_EMAIL, set(mail.outbox[0].bcc))

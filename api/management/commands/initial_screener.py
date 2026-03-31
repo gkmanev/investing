@@ -22,10 +22,33 @@ from api.models import Symbol
 MAX_WORKERS = 8  # concurrent tickers processed at once
 
 SCORE_MIN = 75  # minimum score to qualify for earnings screening
-YAHOO_QUOTE_URL = "https://query1.finance.yahoo.com/v7/finance/quote"
-FMP_EARNINGS_URL = "https://financialmodelingprep.com/stable/earnings"
 TV_SCANNER_URL = "https://scanner.tradingview.com/america/scan"
 REQUEST_HEADERS = {"User-Agent": "Mozilla/5.0"}
+TV_SCAN_HEADERS = {
+    "User-Agent": "Mozilla/5.0",
+    "Accept": "application/json, text/plain, */*",
+    "Content-Type": "application/json",
+    "Origin": "https://www.tradingview.com",
+    "Referer": "https://www.tradingview.com/",
+}
+DEFAULT_TV_EXCHANGE = "NASDAQ"
+TV_EXCHANGE_ALIASES = {
+    "NMS": "NASDAQ",
+    "NGM": "NASDAQ",
+    "NCM": "NASDAQ",
+    "NAS": "NASDAQ",
+    "NASDAQGS": "NASDAQ",
+    "NASDAQGM": "NASDAQ",
+    "NASDAQCM": "NASDAQ",
+    "NYQ": "NYSE",
+    "NYS": "NYSE",
+    "ASE": "AMEX",
+    "AMEX": "AMEX",
+    "PCX": "NYSEARCA",
+    "ARCX": "NYSEARCA",
+    "BTS": "BATS",
+    "BATS": "BATS",
+}
 logger = logging.getLogger(__name__)
 TECHNICAL_SCORE_MISSING = object()
 
@@ -49,115 +72,29 @@ def _mask_secret(value: str) -> str:
     return f"{value[:4]}...{value[-4:]}"
 
 
-def _coerce_unix_date(value: Any) -> Optional[date]:
-    if value is None:
-        return None
-
-    try:
-        return datetime.fromtimestamp(int(value)).date()
-    except (TypeError, ValueError, OSError, OverflowError):
-        return None
+def _normalize_tv_exchange(exchange: str | None) -> str:
+    normalized = (exchange or "").strip().upper()
+    if not normalized:
+        return DEFAULT_TV_EXCHANGE
+    return TV_EXCHANGE_ALIASES.get(normalized, normalized)
 
 
-def _fetch_quote_earnings_dates(ticker: str) -> tuple[list[date], str]:
-    try:
-        response = requests.get(
-            YAHOO_QUOTE_URL,
-            params={"symbols": ticker},
-            headers=REQUEST_HEADERS,
-            timeout=30,
-        )
-    except requests.RequestException as exc:
-        logger.warning("Yahoo earnings lookup failed for %s: %s", ticker, exc)
-        return [], f"request_exception:{exc.__class__.__name__}"
-
-    if response.status_code != 200:
-        logger.warning(
-            "Yahoo earnings lookup returned %s for %s", response.status_code, ticker
-        )
-        return [], f"http_{response.status_code}"
-
-    try:
-        payload = response.json()
-    except ValueError:
-        logger.warning("Yahoo earnings lookup returned invalid JSON for %s", ticker)
-        return [], "invalid_json"
-
-    quote_response = payload.get("quoteResponse")
-    if not isinstance(quote_response, dict):
-        return [], "missing_quote_response"
-
-    results = quote_response.get("result")
-    if not isinstance(results, list) or not results or not isinstance(results[0], dict):
-        return [], "empty_result"
-
-    quote = results[0]
-    candidate_dates: list[date] = []
-    for key in ("earningsTimestamp", "earningsTimestampStart", "earningsTimestampEnd"):
-        parsed = _coerce_unix_date(quote.get(key))
-        if parsed is not None:
-            candidate_dates.append(parsed)
-
-    if not candidate_dates:
-        return [], "no_earnings_fields"
-
-    return candidate_dates, "ok"
-
-
-def _fetch_fmp_earnings_dates(ticker: str, api_key: str) -> tuple[list[date], str]:
-    if not api_key:
-        return [], "missing_api_key"
-
-    try:
-        response = requests.get(
-            FMP_EARNINGS_URL,
-            params={"symbol": ticker, "apikey": api_key},
-            timeout=30,
-        )
-    except requests.RequestException as exc:
-        logger.warning("FMP earnings lookup failed for %s: %s", ticker, exc)
-        return [], f"request_exception:{exc.__class__.__name__}"
-
-    if response.status_code != 200:
-        logger.warning(
-            "FMP earnings lookup returned %s for %s", response.status_code, ticker
-        )
-        return [], f"http_{response.status_code}"
-
-    try:
-        payload = response.json()
-    except ValueError:
-        logger.warning("FMP earnings lookup returned invalid JSON for %s", ticker)
-        return [], "invalid_json"
-
-    if isinstance(payload, dict):
-        rows = payload.get("data")
-        if isinstance(rows, dict):
-            rows = [rows]
-        elif not isinstance(rows, list):
-            rows = [payload]
-    elif isinstance(payload, list):
-        rows = payload
-    else:
-        rows = []
-
-    candidate_dates: list[date] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        parsed = _coerce_date_like(row.get("date"))
-        if parsed is not None:
-            candidate_dates.append(parsed)
-
-    if not candidate_dates:
-        return [], "no_date_rows"
-
-    return candidate_dates, "ok"
+def _build_tv_symbol(ticker: str, exchange: str | None = None) -> str:
+    return f"{_normalize_tv_exchange(exchange)}:{ticker.upper()}"
 
 
 def _coerce_date_like(value: Any) -> Optional[date]:
     if value is None:
         return None
+
+    if isinstance(value, (int, float)):
+        try:
+            numeric = float(value)
+            if numeric > 10_000_000_000:
+                numeric /= 1000
+            return datetime.fromtimestamp(numeric).date()
+        except (TypeError, ValueError, OSError, OverflowError):
+            return None
 
     if isinstance(value, datetime):
         return value.date()
@@ -166,9 +103,16 @@ def _coerce_date_like(value: Any) -> Optional[date]:
         return value
 
     if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
+        except ValueError:
+            pass
         for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%m/%d/%Y"):
             try:
-                return datetime.strptime(value, fmt).date()
+                return datetime.strptime(text, fmt).date()
             except ValueError:
                 continue
 
@@ -176,40 +120,98 @@ def _coerce_date_like(value: Any) -> Optional[date]:
 
 
 def _fetch_next_earnings_date(
-    ticker: str, fmp_api_key: str = ""
+    ticker: str, exchange: str = ""
 ) -> tuple[Optional[date], dict[str, Any]]:
     today = date.today()
-    quote_dates, quote_status = _fetch_quote_earnings_dates(ticker)
-    candidate_dates = quote_dates
-    source = "yahoo" if candidate_dates else "none"
-    fmp_status = "not_needed"
+    requested_symbol = _build_tv_symbol(ticker, exchange)
+    payload = {
+        "symbols": {
+            "tickers": [requested_symbol],
+            "query": {"types": []},
+        },
+        "columns": ["earnings_release_next_date"],
+    }
 
-    if not candidate_dates:
-        candidate_dates, fmp_status = _fetch_fmp_earnings_dates(ticker, fmp_api_key)
-        if candidate_dates:
-            source = "fmp"
+    try:
+        response = requests.post(
+            TV_SCANNER_URL,
+            json=payload,
+            headers=TV_SCAN_HEADERS,
+            timeout=20,
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        logger.warning("TradingView earnings lookup failed for %s: %s", requested_symbol, exc)
+        return None, {
+            "source": "tradingview",
+            "status": f"request_exception:{exc.__class__.__name__}",
+            "requested_symbol": requested_symbol,
+            "returned_symbol": None,
+            "candidate_dates": [],
+        }
+
+    try:
+        payload = response.json()
+    except ValueError:
+        logger.warning(
+            "TradingView earnings lookup returned invalid JSON for %s",
+            requested_symbol,
+        )
+        return None, {
+            "source": "tradingview",
+            "status": "invalid_json",
+            "requested_symbol": requested_symbol,
+            "returned_symbol": None,
+            "candidate_dates": [],
+        }
+
+    rows = payload.get("data")
+    if not isinstance(rows, list) or not rows:
+        return None, {
+            "source": "tradingview",
+            "status": "empty_result",
+            "requested_symbol": requested_symbol,
+            "returned_symbol": None,
+            "candidate_dates": [],
+        }
+
+    returned_symbol = None
+    candidate_dates: list[date] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if returned_symbol is None and isinstance(row.get("s"), str):
+            returned_symbol = row["s"]
+        values = row.get("d")
+        if not isinstance(values, list) or not values:
+            continue
+        parsed = _coerce_date_like(values[0])
+        if parsed is not None:
+            candidate_dates.append(parsed)
+
+    status = "ok" if candidate_dates else "no_earnings_field"
 
     upcoming = sorted({v for v in candidate_dates if v >= today})
     if not upcoming and candidate_dates:
         logger.info(
-            "Earnings dates for %s were present but not upcoming: %s (today=%s)",
-            ticker,
+            "TradingView earnings dates for %s were present but not upcoming: %s (today=%s)",
+            requested_symbol,
             ", ".join(sorted({v.isoformat() for v in candidate_dates})),
             today.isoformat(),
         )
 
     if not upcoming:
         logger.info(
-            "No upcoming earnings date for %s (yahoo=%s, fmp=%s)",
-            ticker,
-            quote_status,
-            fmp_status,
+            "No upcoming TradingView earnings date for %s (status=%s)",
+            requested_symbol,
+            status,
         )
 
     return upcoming[0] if upcoming else None, {
-        "source": source,
-        "quote_status": quote_status,
-        "fmp_status": fmp_status,
+        "source": "tradingview",
+        "status": status,
+        "requested_symbol": requested_symbol,
+        "returned_symbol": returned_symbol,
         "candidate_dates": sorted({v.isoformat() for v in candidate_dates}),
     }
 
@@ -429,7 +431,7 @@ def _process_symbol(
     if market_data_fields:
         symbol.save(update_fields=market_data_fields + ["updated_at"])
 
-    next_date, earnings_debug = _fetch_next_earnings_date(symbol.ticker, fmp_api_key)
+    next_date, earnings_debug = _fetch_next_earnings_date(symbol.ticker, symbol.exchange)
     earnings_updated = False
     if next_date is not None and next_date != symbol.next_earnings_date:
         Symbol.objects.filter(ticker=symbol.ticker).update(next_earnings_date=next_date)
@@ -486,7 +488,7 @@ class Command(BaseCommand):
         technicals_by_ticker = _fetch_all_tv_technicals([symbol.ticker for symbol in symbols])
         if not fmp_api_key:
             self.stderr.write(
-                "FINANCIAL_MODELING_API_KEY is not configured; DCF skipped and FMP earnings fallback disabled."
+                "FINANCIAL_MODELING_API_KEY is not configured; DCF skipped."
             )
         else:
             self.stdout.write(
@@ -530,10 +532,13 @@ class Command(BaseCommand):
                     debug = result["earnings_debug"]
                     candidate_dates = debug["candidate_dates"]
                     detail = (
-                        f"yahoo={debug['quote_status']}, "
-                        f"fmp={debug['fmp_status']}, "
-                        f"source={debug['source']}"
+                        f"status={debug['status']}, "
+                        f"source={debug['source']}, "
+                        f"requested={debug['requested_symbol']}"
                     )
+                    returned_symbol = debug["returned_symbol"]
+                    if returned_symbol:
+                        detail += f", returned={returned_symbol}"
                     if candidate_dates:
                         detail += f", candidates={','.join(candidate_dates)}"
                     with print_lock:

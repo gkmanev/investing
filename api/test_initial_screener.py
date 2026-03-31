@@ -1,7 +1,8 @@
-from datetime import date
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
+import requests
 from django.test import TestCase
 
 from api.management.commands import initial_screener as initial_screener_command
@@ -9,6 +10,93 @@ from api.models import Symbol
 
 
 class InitialScreenerTechnicalsTestCase(TestCase):
+    @patch("api.management.commands.initial_screener.requests.post")
+    def test_fetch_next_earnings_date_uses_tradingview_scan_endpoint(
+        self, mock_post: MagicMock
+    ) -> None:
+        earliest = date.today() + timedelta(days=7)
+        later = date.today() + timedelta(days=14)
+        past = date.today() - timedelta(days=2)
+        earliest_ts = int(datetime.combine(earliest, datetime.min.time()).timestamp())
+        later_ts = int(datetime.combine(later, datetime.min.time()).timestamp())
+        past_ts = int(datetime.combine(past, datetime.min.time()).timestamp())
+
+        response = MagicMock(status_code=200)
+        response.json.return_value = {
+            "data": [
+                {"s": "NASDAQ:AAPL", "d": [later_ts]},
+                {"s": "NASDAQ:AAPL", "d": [earliest_ts]},
+                {"s": "NASDAQ:AAPL", "d": [past_ts]},
+            ]
+        }
+        mock_post.return_value = response
+
+        result, debug = initial_screener_command._fetch_next_earnings_date(
+            "AAPL", "NASDAQ"
+        )
+
+        self.assertEqual(result, earliest)
+        self.assertEqual(debug["source"], "tradingview")
+        self.assertEqual(debug["status"], "ok")
+        self.assertEqual(debug["requested_symbol"], "NASDAQ:AAPL")
+        self.assertEqual(debug["returned_symbol"], "NASDAQ:AAPL")
+        mock_post.assert_called_once_with(
+            initial_screener_command.TV_SCANNER_URL,
+            json={
+                "symbols": {"tickers": ["NASDAQ:AAPL"], "query": {"types": []}},
+                "columns": ["earnings_release_next_date"],
+            },
+            headers=initial_screener_command.TV_SCAN_HEADERS,
+            timeout=20,
+        )
+
+    @patch("api.management.commands.initial_screener.requests.post")
+    def test_fetch_next_earnings_date_returns_none_on_tradingview_error(
+        self, mock_post: MagicMock
+    ) -> None:
+        mock_post.side_effect = requests.RequestException("boom")
+
+        result, debug = initial_screener_command._fetch_next_earnings_date(
+            "AAPL", "NASDAQ"
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(debug["status"], "request_exception:RequestException")
+        self.assertEqual(debug["requested_symbol"], "NASDAQ:AAPL")
+
+    @patch("api.management.commands.initial_screener.requests.post")
+    def test_fetch_next_earnings_date_uses_exchange_aliases(
+        self, mock_post: MagicMock
+    ) -> None:
+        next_date = date.today() + timedelta(days=10)
+        response = MagicMock(status_code=200)
+        response.json.return_value = {
+            "data": [{"s": "NYSE:AAPL", "d": [next_date.isoformat()]}]
+        }
+        mock_post.return_value = response
+
+        result, debug = initial_screener_command._fetch_next_earnings_date(
+            "AAPL", "NYQ"
+        )
+
+        self.assertEqual(result, next_date)
+        self.assertEqual(debug["requested_symbol"], "NYSE:AAPL")
+
+    @patch("api.management.commands.initial_screener.requests.post")
+    def test_fetch_next_earnings_date_returns_none_when_tradingview_empty(
+        self, mock_post: MagicMock
+    ) -> None:
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"data": []}
+        mock_post.return_value = response
+
+        result, debug = initial_screener_command._fetch_next_earnings_date(
+            "AAPL", "NASDAQ"
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(debug["status"], "empty_result")
+
     @patch("api.management.commands.initial_screener.requests.post")
     def test_fetch_tv_technicals_maps_recommendation_scores(self, mock_post: MagicMock) -> None:
         response = MagicMock()
@@ -53,9 +141,10 @@ class InitialScreenerTechnicalsTestCase(TestCase):
         mock_fetch_next_earnings_date.return_value = (
             date(2026, 4, 30),
             {
-                "source": "yahoo",
-                "quote_status": "ok",
-                "fmp_status": "not_needed",
+                "source": "tradingview",
+                "status": "ok",
+                "requested_symbol": "NASDAQ:AAPL",
+                "returned_symbol": "NASDAQ:AAPL",
                 "candidate_dates": ["2026-04-30"],
             },
         )
@@ -94,9 +183,10 @@ class InitialScreenerTechnicalsTestCase(TestCase):
         mock_fetch_next_earnings_date.return_value = (
             None,
             {
-                "source": "none",
-                "quote_status": "empty_result",
-                "fmp_status": "not_needed",
+                "source": "tradingview",
+                "status": "empty_result",
+                "requested_symbol": "NASDAQ:MSFT",
+                "returned_symbol": None,
                 "candidate_dates": [],
             },
         )

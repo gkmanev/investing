@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 import requests
 from django.conf import settings
@@ -117,10 +117,8 @@ def _format_decimal(value) -> str | None:
     decimal_value = _to_decimal(value)
     if decimal_value is None:
         return str(value)
-    formatted = format(decimal_value, "f")
-    if "." in formatted:
-        formatted = formatted.rstrip("0").rstrip(".")
-    return formatted
+    rounded_value = decimal_value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return format(rounded_value, ".2f")
 
 
 def _to_decimal(value) -> Decimal | None:

@@ -31,84 +31,92 @@ from .serializers import SymbolSerializer
 
 
 class InitialScreenerHelpersTestCase(APITestCase):
-    @patch("api.management.commands.initial_screener.requests.get")
-    def test_fetch_next_earnings_date_uses_quote_endpoint_fields(
-        self, mock_get: MagicMock
+    @patch("api.management.commands.initial_screener.requests.post")
+    def test_fetch_next_earnings_date_uses_tradingview_scan_endpoint(
+        self, mock_post: MagicMock
     ) -> None:
         earliest = date.today() + timedelta(days=7)
         later = date.today() + timedelta(days=14)
         past = date.today() - timedelta(days=2)
+        earliest_ts = int(datetime.combine(earliest, datetime.min.time()).timestamp())
+        later_ts = int(datetime.combine(later, datetime.min.time()).timestamp())
+        past_ts = int(datetime.combine(past, datetime.min.time()).timestamp())
 
         response = MagicMock(status_code=200)
         response.json.return_value = {
-            "quoteResponse": {
-                "result": [
-                    {
-                        "earningsTimestamp": int(
-                            datetime.combine(later, datetime.min.time()).timestamp()
-                        ),
-                        "earningsTimestampStart": int(
-                            datetime.combine(earliest, datetime.min.time()).timestamp()
-                        ),
-                        "earningsTimestampEnd": int(
-                            datetime.combine(past, datetime.min.time()).timestamp()
-                        ),
-                    }
-                ]
-            }
+            "data": [
+                {"s": "NASDAQ:AAPL", "d": [later_ts]},
+                {"s": "NASDAQ:AAPL", "d": [earliest_ts]},
+                {"s": "NASDAQ:AAPL", "d": [past_ts]},
+            ]
         }
-        mock_get.return_value = response
+        mock_post.return_value = response
 
-        result = initial_screener_command._fetch_next_earnings_date("AAPL")
+        result, debug = initial_screener_command._fetch_next_earnings_date(
+            "AAPL", "NASDAQ"
+        )
 
         self.assertEqual(result, earliest)
-
-    @patch("api.management.commands.initial_screener.requests.get")
-    def test_fetch_next_earnings_date_returns_none_on_quote_error(
-        self, mock_get: MagicMock
-    ) -> None:
-        mock_get.side_effect = requests.RequestException("boom")
-
-        result = initial_screener_command._fetch_next_earnings_date("AAPL")
-
-        self.assertIsNone(result)
-
-    @patch("api.management.commands.initial_screener.requests.get")
-    def test_fetch_next_earnings_date_falls_back_to_fmp(
-        self, mock_get: MagicMock
-    ) -> None:
-        quote_response = MagicMock(status_code=200)
-        quote_response.json.return_value = {"quoteResponse": {"result": [{}]}}
-
-        fmp_date = date.today() + timedelta(days=10)
-        fmp_response = MagicMock(status_code=200)
-        fmp_response.json.return_value = [{"date": fmp_date.isoformat()}]
-
-        mock_get.side_effect = [quote_response, fmp_response]
-
-        result = initial_screener_command._fetch_next_earnings_date(
-            "AAPL", "test-api-key"
+        self.assertEqual(debug["source"], "tradingview")
+        self.assertEqual(debug["status"], "ok")
+        self.assertEqual(debug["requested_symbol"], "NASDAQ:AAPL")
+        self.assertEqual(debug["returned_symbol"], "NASDAQ:AAPL")
+        mock_post.assert_called_once_with(
+            initial_screener_command.TV_SCANNER_URL,
+            json={
+                "symbols": {"tickers": ["NASDAQ:AAPL"], "query": {"types": []}},
+                "columns": ["earnings_release_next_date"],
+            },
+            headers=initial_screener_command.TV_SCAN_HEADERS,
+            timeout=20,
         )
 
-        self.assertEqual(result, fmp_date)
-
-    @patch("api.management.commands.initial_screener.requests.get")
-    def test_fetch_next_earnings_date_returns_none_when_quote_and_fmp_empty(
-        self, mock_get: MagicMock
+    @patch("api.management.commands.initial_screener.requests.post")
+    def test_fetch_next_earnings_date_returns_none_on_tradingview_error(
+        self, mock_post: MagicMock
     ) -> None:
-        quote_response = MagicMock(status_code=200)
-        quote_response.json.return_value = {"quoteResponse": {"result": [{}]}}
+        mock_post.side_effect = requests.RequestException("boom")
 
-        fmp_response = MagicMock(status_code=200)
-        fmp_response.json.return_value = []
-
-        mock_get.side_effect = [quote_response, fmp_response]
-
-        result = initial_screener_command._fetch_next_earnings_date(
-            "AAPL", "test-api-key"
+        result, debug = initial_screener_command._fetch_next_earnings_date(
+            "AAPL", "NASDAQ"
         )
 
         self.assertIsNone(result)
+        self.assertEqual(debug["status"], "request_exception:RequestException")
+        self.assertEqual(debug["requested_symbol"], "NASDAQ:AAPL")
+
+    @patch("api.management.commands.initial_screener.requests.post")
+    def test_fetch_next_earnings_date_uses_exchange_aliases(
+        self, mock_post: MagicMock
+    ) -> None:
+        next_date = date.today() + timedelta(days=10)
+        response = MagicMock(status_code=200)
+        response.json.return_value = {
+            "data": [{"s": "NYSE:AAPL", "d": [next_date.isoformat()]}]
+        }
+        mock_post.return_value = response
+
+        result, debug = initial_screener_command._fetch_next_earnings_date(
+            "AAPL", "NYQ"
+        )
+
+        self.assertEqual(result, next_date)
+        self.assertEqual(debug["requested_symbol"], "NYSE:AAPL")
+
+    @patch("api.management.commands.initial_screener.requests.post")
+    def test_fetch_next_earnings_date_returns_none_when_tradingview_empty(
+        self, mock_post: MagicMock
+    ) -> None:
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"data": []}
+        mock_post.return_value = response
+
+        result, debug = initial_screener_command._fetch_next_earnings_date(
+            "AAPL", "NASDAQ"
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(debug["status"], "empty_result")
 
 
 class InvestmentAPITestCase(APITestCase):
