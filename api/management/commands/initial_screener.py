@@ -19,6 +19,10 @@ from django.core.management.base import BaseCommand
 
 from api.models import Symbol
 
+
+#TEST IF THE LAST VERSION
+
+
 MAX_WORKERS = 8  # concurrent tickers processed at once
 
 SCORE_MIN = 75  # minimum score to qualify for earnings screening
