@@ -139,6 +139,43 @@ class Symbol(models.Model):
         return self.ticker
 
 
+class DailyBrief(models.Model):
+    """Stores the ranked daily brief picks generated from Symbol snapshots."""
+
+    edition_date = models.DateField(db_index=True)
+    rank = models.PositiveSmallIntegerField()
+    symbol = models.ForeignKey(
+        Symbol,
+        related_name="daily_briefs",
+        on_delete=models.PROTECT,
+    )
+    ticker = models.CharField(max_length=50, db_index=True)
+    score = models.IntegerField(null=True, blank=True)
+    rsi = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    roi = models.DecimalField(max_digits=7, decimal_places=4, null=True, blank=True)
+    delta = models.DecimalField(max_digits=7, decimal_places=4, null=True, blank=True)
+    is_alternative = models.BooleanField(default=False, db_index=True)
+    option_data = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-edition_date", "rank", "ticker"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["edition_date", "rank"],
+                name="unique_daily_brief_rank_per_day",
+            ),
+            models.UniqueConstraint(
+                fields=["edition_date", "symbol"],
+                name="unique_daily_brief_symbol_per_day",
+            ),
+        ]
+
+    def __str__(self) -> str:  # pragma: no cover - simple data representation
+        return f"{self.edition_date:%Y-%m-%d} #{self.rank} {self.ticker}"
+
+
 class FinancialStatement(models.Model):
     """Stores a raw financial statement payload for a symbol."""
 

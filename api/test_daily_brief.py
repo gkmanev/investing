@@ -13,7 +13,7 @@ from rest_framework.test import APITestCase
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .daily_brief_services import subscribe_user
-from .models import DailyBriefEdition, DailyBriefSubscription, EmailVerificationToken, Symbol
+from .models import DailyBrief, DailyBriefEdition, DailyBriefSubscription, EmailVerificationToken, Symbol
 
 
 User = get_user_model()
@@ -199,6 +199,158 @@ class DailyBriefAPITestCase(APITestCase):
             first_response.data["subscribed_at"],
             second_response.data["subscribed_at"],
         )
+
+
+class DailyBriefPopulationTestCase(TestCase):
+    def create_symbol(
+        self,
+        *,
+        ticker: str,
+        score: int,
+        rsi: str,
+        roi: str,
+        delta: float,
+        alternatives: list[dict] | None = None,
+    ) -> Symbol:
+        option_data = {
+            "option_symbol": f"{ticker}_MAIN",
+            "strike_price": 95.0,
+            "bid": 3.4,
+            "ask": 3.6,
+            "mid": 3.5,
+            "delta": delta,
+            "roi": float(roi),
+        }
+        if alternatives is not None:
+            option_data["alternatives"] = alternatives
+
+        return Symbol.objects.create(
+            ticker=ticker,
+            exchange="NASDAQ",
+            score=score,
+            rsi=rsi,
+            roi=roi,
+            option_data=option_data,
+        )
+
+    def test_populate_daily_brief_ranks_symbols_using_alternatives(self) -> None:
+        target_date = date(2026, 3, 31)
+        self.create_symbol(
+            ticker="NFLX",
+            score=94,
+            rsi="55.00",
+            roi="7.10",
+            delta=-0.30,
+        )
+        self.create_symbol(
+            ticker="AAPL",
+            score=80,
+            rsi="69.99",
+            roi="2.80",
+            delta=-0.31,
+            alternatives=[
+                {
+                    "option_symbol": "AAPL_ALT_BEST",
+                    "strike_price": 94.0,
+                    "bid": 2.8,
+                    "ask": 3.0,
+                    "mid": 2.9,
+                    "delta": -0.18,
+                    "roi": 6.2,
+                }
+            ],
+        )
+        self.create_symbol(
+            ticker="MSFT",
+            score=92,
+            rsi="64.00",
+            roi="6.20",
+            delta=-0.25,
+        )
+        self.create_symbol(
+            ticker="NVDA",
+            score=91,
+            rsi="61.00",
+            roi="5.90",
+            delta=-0.19,
+        )
+        self.create_symbol(
+            ticker="AMZN",
+            score=88,
+            rsi="70.00",
+            roi="9.10",
+            delta=-0.22,
+        )
+        self.create_symbol(
+            ticker="META",
+            score=79,
+            rsi="40.00",
+            roi="8.50",
+            delta=-0.20,
+        )
+
+        call_command("populate_daily_brief", edition_date=target_date.isoformat())
+        call_command("populate_daily_brief", edition_date=target_date.isoformat())
+
+        briefs = list(DailyBrief.objects.filter(edition_date=target_date).order_by("rank"))
+        self.assertEqual(len(briefs), 3)
+        self.assertEqual([brief.ticker for brief in briefs], ["NFLX", "AAPL", "MSFT"])
+        self.assertEqual([brief.rank for brief in briefs], [1, 2, 3])
+        self.assertFalse(briefs[0].is_alternative)
+        self.assertTrue(briefs[1].is_alternative)
+        self.assertEqual(briefs[1].option_data["option_symbol"], "AAPL_ALT_BEST")
+        self.assertEqual(float(briefs[1].roi), 6.2)
+        self.assertEqual(float(briefs[1].delta), -0.18)
+        self.assertFalse(DailyBrief.objects.filter(edition_date=target_date, ticker="AMZN").exists())
+        self.assertFalse(DailyBrief.objects.filter(edition_date=target_date, ticker="META").exists())
+
+
+class DailyBriefTableAPITestCase(APITestCase):
+    def test_daily_brief_list_filters_by_date(self) -> None:
+        symbol = Symbol.objects.create(
+            ticker="AAPL",
+            exchange="NASDAQ",
+            score=90,
+            rsi="55.00",
+            roi="6.20",
+            option_data={"option_symbol": "AAPL_MAIN", "delta": -0.25, "roi": 6.2},
+        )
+        DailyBrief.objects.create(
+            edition_date=date(2026, 3, 31),
+            rank=1,
+            symbol=symbol,
+            ticker=symbol.ticker,
+            score=symbol.score,
+            rsi=symbol.rsi,
+            roi="6.20",
+            delta="-0.25",
+            is_alternative=False,
+            option_data={"option_symbol": "AAPL_MAIN", "delta": -0.25, "roi": 6.2},
+        )
+        DailyBrief.objects.create(
+            edition_date=date(2026, 3, 30),
+            rank=1,
+            symbol=symbol,
+            ticker=symbol.ticker,
+            score=symbol.score,
+            rsi=symbol.rsi,
+            roi="5.80",
+            delta="-0.30",
+            is_alternative=True,
+            option_data={"option_symbol": "AAPL_ALT", "delta": -0.30, "roi": 5.8},
+        )
+
+        response = self.client.get(
+            reverse("dailybrief-list"),
+            {"edition_date": "2026-03-31"},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["edition_date"], "2026-03-31")
+        self.assertEqual(response.data[0]["ticker"], "AAPL")
+        self.assertFalse(response.data[0]["is_alternative"])
+        self.assertEqual(response.data[0]["option_data"]["option_symbol"], "AAPL_MAIN")
 
 
 @override_settings(

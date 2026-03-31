@@ -11,6 +11,7 @@ from .auth_views import (
     VerifyEmailView,
 )
 from .daily_brief_views import (
+    DailyBriefViewSet,
     DailyBriefSubscribeView,
     DailyBriefSubscriptionView,
     DailyBriefUnsubscribeView,
@@ -31,6 +32,7 @@ router.register("screener-types", ScreenerTypeViewSet)
 router.register("screener-filters", ScreenerFilterViewSet)
 router.register("financial-statements", FinancialStatementViewSet)
 router.register("due-diligence-reports", DueDiligenceReportViewSet)
+router.register("daily-briefs", DailyBriefViewSet)
 
 urlpatterns = [
     path("auth/register/", RegisterView.as_view(), name="auth-register"),

@@ -1,6 +1,27 @@
 from rest_framework import serializers
 
-from .models import DailyBriefSubscription
+from .models import DailyBrief, DailyBriefSubscription
+
+
+class DailyBriefSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DailyBrief
+        fields = [
+            "id",
+            "edition_date",
+            "rank",
+            "symbol",
+            "ticker",
+            "score",
+            "rsi",
+            "roi",
+            "delta",
+            "is_alternative",
+            "option_data",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
 
 
 class DailyBriefSubscriptionSerializer(serializers.ModelSerializer):
