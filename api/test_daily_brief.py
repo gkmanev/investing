@@ -243,6 +243,7 @@ class DailyBriefPopulationTestCase(TestCase):
         rsi: str,
         roi: str,
         delta: float,
+        technical_signal: str = "Buy",
         alternatives: list[dict] | None = None,
         option_exp: date | None = date(2026, 4, 25),
         next_earnings_date: date | None = date(2026, 5, 10),
@@ -253,6 +254,7 @@ class DailyBriefPopulationTestCase(TestCase):
             "bid": 3.4,
             "ask": 3.6,
             "mid": 3.5,
+            "tvTechnicals": technical_signal,
             "delta": delta,
             "roi": float(roi),
         }
@@ -265,6 +267,7 @@ class DailyBriefPopulationTestCase(TestCase):
             score=score,
             rsi=rsi,
             roi=roi,
+            technical_score=technical_signal,
             option_exp=option_exp,
             next_earnings_date=next_earnings_date,
             option_data=option_data,
@@ -351,6 +354,51 @@ class DailyBriefPopulationTestCase(TestCase):
         self.assertFalse(DailyBrief.objects.filter(edition_date=target_date, ticker="GOOG").exists())
         self.assertFalse(DailyBrief.objects.filter(edition_date=target_date, ticker="AMZN").exists())
         self.assertFalse(DailyBrief.objects.filter(edition_date=target_date, ticker="META").exists())
+
+    def test_populate_daily_brief_excludes_non_buy_technicals(self) -> None:
+        target_date = date(2026, 4, 1)
+        app_symbol = self.create_symbol(
+            ticker="APP",
+            score=100,
+            rsi="51.37",
+            roi="6.49",
+            delta=-0.35955787747780066,
+            technical_signal="Sell",
+            alternatives=[
+                {
+                    "roi": 5.96,
+                    "delta": -0.3374412350622382,
+                    "strike_price": 370.0,
+                    "option_symbol": "OPRA:APP260501P370.0",
+                },
+                {
+                    "roi": 5.45,
+                    "delta": -0.3158248722098657,
+                    "strike_price": 365.0,
+                    "option_symbol": "OPRA:APP260501P365.0",
+                },
+                {
+                    "roi": 5.06,
+                    "delta": -0.29477371337573893,
+                    "strike_price": 360.0,
+                    "option_symbol": "OPRA:APP260501P360.0",
+                },
+            ],
+        )
+
+        self.create_symbol(
+            ticker="MSFT",
+            score=92,
+            rsi="64.00",
+            roi="6.20",
+            delta=-0.25,
+        )
+
+        call_command("populate_daily_brief", edition_date=target_date.isoformat())
+
+        briefs = list(DailyBrief.objects.filter(edition_date=target_date).order_by("rank"))
+        self.assertEqual([brief.ticker for brief in briefs], ["MSFT"])
+        self.assertFalse(DailyBrief.objects.filter(edition_date=target_date, ticker="APP").exists())
 
 
 class DailyBriefTableAPITestCase(APITestCase):
@@ -545,20 +593,16 @@ class DailyBriefDeliveryTestCase(APITestCase):
             set(mail.outbox[0].bcc),
             {active_one.email, active_two.email},
         )
-        self.assertIn("1. AMZN", mail.outbox[0].body)
-        self.assertIn("2. MSFT", mail.outbox[0].body)
-        self.assertIn("AMZN", mail.outbox[0].body)
-        self.assertIn("3. META", mail.outbox[0].body)
+        self.assertIn("1. MSFT", mail.outbox[0].body)
+        self.assertIn("2. META", mail.outbox[0].body)
         self.assertIn("META", mail.outbox[0].body)
-        self.assertIn("Technicals: Hold", mail.outbox[0].body)
-        self.assertIn("Price/Strike: 200.00/180.00", mail.outbox[0].body)
-        self.assertIn("Chance of profit: 80.00%", mail.outbox[0].body)
-        self.assertIn("ROI: 9.90", mail.outbox[0].body)
         self.assertIn("Score: 93", mail.outbox[0].body)
         self.assertIn("Technicals: Buy", mail.outbox[0].body)
         self.assertIn("Price/Strike: 330.13/300.12", mail.outbox[0].body)
         self.assertIn("Chance of profit: 71.40%", mail.outbox[0].body)
         self.assertIn("ROI: 7.11", mail.outbox[0].body)
+        self.assertNotIn("AMZN", mail.outbox[0].body)
+        self.assertNotIn("Technicals: Hold", mail.outbox[0].body)
         self.assertNotIn("AAPL", mail.outbox[0].body)
         self.assertNotIn("NVDA", mail.outbox[0].body)
         self.assertNotIn(settings.DEFAULT_FROM_EMAIL, set(mail.outbox[0].bcc))

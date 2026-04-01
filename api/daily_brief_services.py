@@ -553,6 +553,8 @@ def select_daily_brief_symbol_candidate(symbol: Symbol) -> dict[str, object] | N
         return None
     if symbol.rsi is None or symbol.rsi >= Decimal("70"):
         return None
+    if _extract_technical_signal(symbol) not in DAILY_BRIEF_ALLOWED_TECHNICALS:
+        return None
     if (
         symbol.option_exp is not None
         and symbol.next_earnings_date is not None
