@@ -172,6 +172,13 @@ class DailyBrief(models.Model):
             ),
         ]
 
+    @classmethod
+    def edition_rows(cls, *, edition_date):
+        return cls.objects.filter(edition_date=edition_date).select_related("symbol").order_by(
+            "rank",
+            "ticker",
+        )
+
     def __str__(self) -> str:  # pragma: no cover - simple data representation
         return f"{self.edition_date:%Y-%m-%d} #{self.rank} {self.ticker}"
 

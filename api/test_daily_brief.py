@@ -1,4 +1,5 @@
 from datetime import date, timedelta
+from unittest.mock import patch
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -23,21 +24,30 @@ class DailyBriefScheduleCommandTestCase(TestCase):
     @override_settings(
         DAILY_BRIEF_SEND_HOUR_UTC=16,
         DAILY_BRIEF_SEND_MINUTE_UTC=0,
+        POPULATE_DAILY_BRIEF_TIME_UTC="15:30",
         CELERY_TIMEZONE="UTC",
     )
     def test_sync_daily_brief_schedule_creates_periodic_task(self) -> None:
         call_command("sync_daily_brief_schedule")
 
-        task = PeriodicTask.objects.get(name="send-daily-top-3-edition")
-        self.assertEqual(task.task, "api.tasks.send_daily_top_3_edition")
-        self.assertTrue(task.enabled)
-        self.assertEqual(task.crontab.hour, "16")
-        self.assertEqual(task.crontab.minute, "0")
-        self.assertEqual(str(task.crontab.timezone), "UTC")
+        populate_task = PeriodicTask.objects.get(name="populate-daily-brief")
+        self.assertEqual(populate_task.task, "api.tasks.run_populate_daily_brief")
+        self.assertTrue(populate_task.enabled)
+        self.assertEqual(populate_task.crontab.hour, "15")
+        self.assertEqual(populate_task.crontab.minute, "30")
+        self.assertEqual(str(populate_task.crontab.timezone), "UTC")
+
+        send_task = PeriodicTask.objects.get(name="send-daily-top-3-edition")
+        self.assertEqual(send_task.task, "api.tasks.send_daily_top_3_edition")
+        self.assertTrue(send_task.enabled)
+        self.assertEqual(send_task.crontab.hour, "16")
+        self.assertEqual(send_task.crontab.minute, "0")
+        self.assertEqual(str(send_task.crontab.timezone), "UTC")
 
     @override_settings(
         DAILY_BRIEF_SEND_HOUR_UTC=18,
         DAILY_BRIEF_SEND_MINUTE_UTC=45,
+        POPULATE_DAILY_BRIEF_TIME_UTC="18:15",
         CELERY_TIMEZONE="UTC",
     )
     def test_sync_daily_brief_schedule_updates_existing_periodic_task(self) -> None:
@@ -50,6 +60,12 @@ class DailyBriefScheduleCommandTestCase(TestCase):
             timezone="UTC",
         )
         PeriodicTask.objects.create(
+            name="populate-daily-brief",
+            task="api.tasks.run_populate_daily_brief",
+            crontab=stale_schedule,
+            enabled=False,
+        )
+        PeriodicTask.objects.create(
             name="send-daily-top-3-edition",
             task="api.tasks.send_daily_top_3_edition",
             crontab=stale_schedule,
@@ -58,11 +74,28 @@ class DailyBriefScheduleCommandTestCase(TestCase):
 
         call_command("sync_daily_brief_schedule")
 
-        task = PeriodicTask.objects.get(name="send-daily-top-3-edition")
-        self.assertTrue(task.enabled)
-        self.assertEqual(task.crontab.hour, "18")
-        self.assertEqual(task.crontab.minute, "45")
-        self.assertEqual(str(task.crontab.timezone), "UTC")
+        populate_task = PeriodicTask.objects.get(name="populate-daily-brief")
+        self.assertTrue(populate_task.enabled)
+        self.assertEqual(populate_task.crontab.hour, "18")
+        self.assertEqual(populate_task.crontab.minute, "15")
+        self.assertEqual(str(populate_task.crontab.timezone), "UTC")
+
+        send_task = PeriodicTask.objects.get(name="send-daily-top-3-edition")
+        self.assertTrue(send_task.enabled)
+        self.assertEqual(send_task.crontab.hour, "18")
+        self.assertEqual(send_task.crontab.minute, "45")
+        self.assertEqual(str(send_task.crontab.timezone), "UTC")
+
+    @patch("api.tasks.call_command")
+    def test_run_populate_daily_brief_executes_management_command(
+        self,
+        mock_call_command,
+    ) -> None:
+        from api.tasks import run_populate_daily_brief
+
+        run_populate_daily_brief()
+
+        mock_call_command.assert_called_once_with("populate_daily_brief")
 
 
 @override_settings(RESEND_API_KEY=None)
@@ -512,21 +545,89 @@ class DailyBriefDeliveryTestCase(APITestCase):
             set(mail.outbox[0].bcc),
             {active_one.email, active_two.email},
         )
-        self.assertIn("1. MSFT", mail.outbox[0].body)
-        self.assertIn("2. NVDA", mail.outbox[0].body)
-        self.assertIn("MSFT", mail.outbox[0].body)
+        self.assertIn("1. AMZN", mail.outbox[0].body)
+        self.assertIn("2. MSFT", mail.outbox[0].body)
+        self.assertIn("AMZN", mail.outbox[0].body)
         self.assertIn("3. META", mail.outbox[0].body)
-        self.assertIn("NVDA", mail.outbox[0].body)
         self.assertIn("META", mail.outbox[0].body)
+        self.assertIn("Technicals: Hold", mail.outbox[0].body)
+        self.assertIn("Price/Strike: 200.00/180.00", mail.outbox[0].body)
+        self.assertIn("Chance of profit: 80.00%", mail.outbox[0].body)
+        self.assertIn("ROI: 9.90", mail.outbox[0].body)
         self.assertIn("Score: 93", mail.outbox[0].body)
         self.assertIn("Technicals: Buy", mail.outbox[0].body)
         self.assertIn("Price/Strike: 330.13/300.12", mail.outbox[0].body)
         self.assertIn("Chance of profit: 71.40%", mail.outbox[0].body)
         self.assertIn("ROI: 7.11", mail.outbox[0].body)
-        self.assertIn("Technicals: Strong Buy", mail.outbox[0].body)
-        self.assertIn("Price/Strike: 120.01/110.00", mail.outbox[0].body)
-        self.assertIn("Chance of profit: 69.49%", mail.outbox[0].body)
-        self.assertIn("ROI: 6.24", mail.outbox[0].body)
         self.assertNotIn("AAPL", mail.outbox[0].body)
-        self.assertNotIn("AMZN", mail.outbox[0].body)
+        self.assertNotIn("NVDA", mail.outbox[0].body)
         self.assertNotIn(settings.DEFAULT_FROM_EMAIL, set(mail.outbox[0].bcc))
+
+    def test_daily_brief_delivery_uses_persisted_daily_brief_tickers(self) -> None:
+        from .daily_brief_services import refresh_daily_brief, send_daily_brief_to_active_subscribers
+
+        target_date = date(2026, 3, 29)
+        active_user = self.create_user(username="alpha", email="alpha@example.com")
+        subscribe_user(active_user, source=DailyBriefSubscription.Source.SIGNUP)
+
+        symbol = Symbol.objects.create(
+            ticker="MSFT",
+            score=93,
+            classification="Great",
+            rsi="48.00",
+            roi="7.105",
+            price="330.00",
+            technical_score="81.00",
+            option_data={
+                "tvTechnicals": "Buy",
+                "spreadValue": 0.5,
+                "rawStrike": 300.124,
+                "rawPrice": 330.126,
+                "delta": -0.286,
+                "roi": 7.105,
+            },
+        )
+        Symbol.objects.create(
+            ticker="NVDA",
+            score=96,
+            classification="Great",
+            rsi="55.00",
+            roi="6.236",
+            price="120.00",
+            technical_score="88.00",
+            option_data={
+                "tvTechnicals": "Strong Buy",
+                "spreadValue": 0.8,
+                "rawStrike": 110.004,
+                "rawPrice": 120.005,
+                "delta": -0.3051,
+                "roi": 6.236,
+            },
+        )
+        Symbol.objects.create(
+            ticker="META",
+            score=91,
+            classification="Strong",
+            rsi="61.00",
+            roi="5.40",
+            price="510.00",
+            technical_score="74.00",
+            option_data={
+                "tvTechnicals": "Buy",
+                "spreadValue": 1.1,
+                "rawStrike": 470,
+                "rawPrice": 510,
+                "delta": -0.30,
+                "roi": 5.4,
+            },
+        )
+
+        refresh_daily_brief(target_date=target_date)
+        symbol.ticker = "ZZZZ"
+        symbol.save(update_fields=["ticker"])
+
+        send_daily_brief_to_active_subscribers(target_date=target_date)
+
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn("1. MSFT", mail.outbox[0].body)
+        self.assertNotIn("1. ZZZZ", mail.outbox[0].body)

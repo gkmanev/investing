@@ -20,6 +20,13 @@ def send_daily_top_3_edition() -> None:
     )
 
 
+@shared_task(ignore_result=True, name="api.tasks.run_populate_daily_brief")
+def run_populate_daily_brief() -> None:
+    logger.info("Starting populate_daily_brief task.")
+    call_command("populate_daily_brief")
+    logger.info("Finished populate_daily_brief task.")
+
+
 @shared_task(ignore_result=True, name="api.tasks.run_trading_view_scrape")
 def run_trading_view_scrape(skip_rsi: bool = False, **kwargs: object) -> None:
     if "skip_rsi" in kwargs:

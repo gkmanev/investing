@@ -237,6 +237,84 @@ def _extract_roi_value(symbol: Symbol) -> Decimal | None:
     return _to_decimal(_get_option_data_value(option_data, "roi"))
 
 
+def _get_daily_brief_option_data(daily_brief: DailyBrief) -> dict:
+    return daily_brief.option_data if isinstance(daily_brief.option_data, dict) else {}
+
+
+def _extract_daily_brief_technical_signal(daily_brief: DailyBrief) -> str | None:
+    option_data = _get_daily_brief_option_data(daily_brief)
+    signal = _normalize_signal(
+        _get_option_data_value(
+            option_data,
+            "tvTechnicals",
+            "tv_technicals",
+            "technicals",
+            "recommendation",
+        )
+    )
+    if signal is not None:
+        return signal
+    return _normalize_signal(daily_brief.symbol.technical_score)
+
+
+def _extract_daily_brief_strike_value(daily_brief: DailyBrief) -> Decimal | None:
+    option_data = _get_daily_brief_option_data(daily_brief)
+    return _to_decimal(
+        _get_option_data_value(
+            option_data,
+            "rawStrike",
+            "raw_strike",
+            "strike_price",
+            "strike",
+        )
+    )
+
+
+def _extract_daily_brief_price_value(daily_brief: DailyBrief) -> Decimal | None:
+    option_data = _get_daily_brief_option_data(daily_brief)
+    return _to_decimal(
+        _get_option_data_value(
+            option_data,
+            "rawPrice",
+            "raw_price",
+            "stockPrice",
+            "stock_price",
+            "underlyingPrice",
+            "underlying_price",
+        )
+    ) or _to_decimal(daily_brief.symbol.price)
+
+
+def _extract_daily_brief_delta_percent(daily_brief: DailyBrief) -> Decimal | None:
+    delta_value = _to_decimal(daily_brief.delta)
+    if delta_value is None:
+        option_data = _get_daily_brief_option_data(daily_brief)
+        delta_value = _to_decimal(
+            _get_option_data_value(option_data, "delta", "rawDelta", "raw_delta")
+        )
+    if delta_value is None:
+        return None
+    delta_value = abs(delta_value)
+    if delta_value <= Decimal("1"):
+        return delta_value * Decimal("100")
+    return delta_value
+
+
+def _extract_daily_brief_chance_of_profit_percent(daily_brief: DailyBrief) -> Decimal | None:
+    delta_percent = _extract_daily_brief_delta_percent(daily_brief)
+    if delta_percent is None:
+        return None
+    return Decimal("100") - delta_percent
+
+
+def _extract_daily_brief_roi_value(daily_brief: DailyBrief) -> Decimal | None:
+    roi_value = _to_decimal(daily_brief.roi)
+    if roi_value is not None:
+        return roi_value
+    option_data = _get_daily_brief_option_data(daily_brief)
+    return _to_decimal(_get_option_data_value(option_data, "roi"))
+
+
 def _is_daily_brief_candidate(symbol: Symbol) -> bool:
     if symbol.score is None or symbol.score <= 80:
         return False
@@ -261,58 +339,41 @@ def _is_daily_brief_candidate(symbol: Symbol) -> bool:
     return _extract_roi_value(symbol) is not None
 
 
-def _build_top_symbols_payload(limit: int = 3) -> list[dict[str, str | int | None]]:
-    candidates = list(
-        Symbol.objects.filter(
-            score__gt=80,
-            rsi__gte=30,
-            rsi__lte=70,
-            option_data__isnull=False,
-        )
-    )
+def _get_daily_brief_rows(*, edition_date) -> list[DailyBrief]:
+    daily_briefs = list(DailyBrief.edition_rows(edition_date=edition_date))
+    if daily_briefs:
+        return daily_briefs
+    refresh_daily_brief(target_date=edition_date)
+    return list(DailyBrief.edition_rows(edition_date=edition_date))
 
-    filtered_symbols: list[Symbol] = []
-    seen_tickers: set[str] = set()
-    for symbol in candidates:
-        if symbol.ticker in seen_tickers:
-            continue
-        if not _is_daily_brief_candidate(symbol):
-            continue
-        seen_tickers.add(symbol.ticker)
-        filtered_symbols.append(symbol)
 
-    filtered_symbols.sort(
-        key=lambda symbol: (
-            -(_extract_roi_value(symbol) or Decimal("0")),
-            -(symbol.score or 0),
-            0
-            if _extract_technical_signal(symbol) == "strong_buy"
-            else 1
-            if _extract_technical_signal(symbol) == "buy"
-            else 2,
-            symbol.ticker,
-        )
-    )
-    symbols = filtered_symbols[:limit]
+def _build_top_symbols_payload(*, edition_date) -> list[dict[str, str | int | None]]:
+    daily_briefs = _get_daily_brief_rows(edition_date=edition_date)
     return [
         {
-            "ticker": symbol.ticker,
-            "score": symbol.score,
-            "classification": symbol.classification,
-            "technicals": (_extract_technical_signal(symbol) or "").replace("_", " ").title()
+            "ticker": daily_brief.ticker,
+            "score": daily_brief.score,
+            "classification": daily_brief.symbol.classification,
+            "technicals": (
+                (_extract_daily_brief_technical_signal(daily_brief) or "")
+                .replace("_", " ")
+                .title()
+            )
             or None,
-            "price": _format_decimal(_extract_price_value(symbol)),
-            "strike": _format_decimal(_extract_strike_value(symbol)),
-            "chance_of_profit": _format_decimal(_extract_chance_of_profit_percent(symbol)),
-            "market_cap": _format_decimal(symbol.market_cap),
-            "roi": _format_decimal(_extract_roi_value(symbol)),
+            "price": _format_decimal(_extract_daily_brief_price_value(daily_brief)),
+            "strike": _format_decimal(_extract_daily_brief_strike_value(daily_brief)),
+            "chance_of_profit": _format_decimal(
+                _extract_daily_brief_chance_of_profit_percent(daily_brief)
+            ),
+            "market_cap": _format_decimal(daily_brief.symbol.market_cap),
+            "roi": _format_decimal(_extract_daily_brief_roi_value(daily_brief)),
         }
-        for symbol in symbols
+        for daily_brief in daily_briefs
     ]
 
 
 def _build_daily_brief_defaults(*, edition_date) -> dict:
-    top_symbols = _build_top_symbols_payload()
+    top_symbols = _build_top_symbols_payload(edition_date=edition_date)
     subject = f"PutPulse Daily Top 3 | {edition_date:%Y-%m-%d}"
     body_text = render_to_string(
         "api/email/daily_brief.txt",
@@ -339,6 +400,13 @@ def get_or_create_daily_brief_edition(*, target_date=None) -> DailyBriefEdition:
         )
     except IntegrityError:
         edition = DailyBriefEdition.objects.get(edition_date=edition_date)
+    updated_fields: list[str] = []
+    for field_name, value in defaults.items():
+        if getattr(edition, field_name) != value:
+            setattr(edition, field_name, value)
+            updated_fields.append(field_name)
+    if updated_fields:
+        edition.save(update_fields=[*updated_fields, "updated_at"])
     return edition
 
 
