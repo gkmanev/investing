@@ -109,7 +109,7 @@ class Command(BaseCommand):
             hour=hour,
             minute=minute,
             timezone_name=timezone_name,
-            day_of_week="*",
+            day_of_week=WEEKDAY_CRONTAB,
         )
 
         populate_summary = ", ".join(
@@ -124,7 +124,8 @@ class Command(BaseCommand):
                 f"removed_stale={stale_populate_count} at {populate_summary} "
                 f"weekdays "
                 f"{timezone_name}; "
-                f"send: {send_action.lower()} at {hour:02d}:{minute:02d} {timezone_name})."
+                f"send: {send_action.lower()} at {hour:02d}:{minute:02d} weekdays "
+                f"{timezone_name})."
             )
         )
 

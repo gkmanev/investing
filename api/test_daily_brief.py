@@ -43,7 +43,7 @@ class DailyBriefScheduleCommandTestCase(TestCase):
         self.assertTrue(send_task.enabled)
         self.assertEqual(send_task.crontab.hour, "16")
         self.assertEqual(send_task.crontab.minute, "0")
-        self.assertEqual(send_task.crontab.day_of_week, "*")
+        self.assertEqual(send_task.crontab.day_of_week, "1,2,3,4,5")
         self.assertEqual(str(send_task.crontab.timezone), "UTC")
 
     @override_settings(
@@ -87,7 +87,7 @@ class DailyBriefScheduleCommandTestCase(TestCase):
         self.assertTrue(send_task.enabled)
         self.assertEqual(send_task.crontab.hour, "18")
         self.assertEqual(send_task.crontab.minute, "45")
-        self.assertEqual(send_task.crontab.day_of_week, "*")
+        self.assertEqual(send_task.crontab.day_of_week, "1,2,3,4,5")
         self.assertEqual(str(send_task.crontab.timezone), "UTC")
 
     @override_settings(
@@ -154,7 +154,7 @@ class DailyBriefScheduleCommandTestCase(TestCase):
         send_task = PeriodicTask.objects.get(name="send-daily-top-3-edition")
         self.assertEqual(send_task.crontab.hour, "20")
         self.assertEqual(send_task.crontab.minute, "15")
-        self.assertEqual(send_task.crontab.day_of_week, "*")
+        self.assertEqual(send_task.crontab.day_of_week, "1,2,3,4,5")
 
     @patch("api.tasks.call_command")
     def test_run_populate_daily_brief_executes_management_command(

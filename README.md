@@ -61,6 +61,7 @@ Email delivery:
 - If `RESEND_API_KEY` is not configured, the project falls back to Django's configured email backend.
 - Daily Top 3 delivery is scheduled through Celery Beat using `api.tasks.send_daily_top_3_edition`.
 - `populate_daily_brief` is scheduled through Celery Beat using `api.tasks.run_populate_daily_brief`.
+- Daily brief populate and send tasks both run on weekdays only.
 - `trading_view_scrape` is scheduled through Celery Beat every 45 minutes from 13:00 UTC through 19:45 UTC using `api.tasks.run_trading_view_scrape`.
 - `initial_screener` is scheduled daily at 12:30 UTC using `api.tasks.run_initial_screener`.
 - Override the trading-job defaults with `TRADING_VIEW_SCRAPE_START_TIME_UTC`, `TRADING_VIEW_SCRAPE_END_TIME_UTC`, `TRADING_VIEW_SCRAPE_INTERVAL_MINUTES`, and `INITIAL_SCREENER_TIME_UTC` or pass the same values to `sync_trading_jobs_schedule`.
