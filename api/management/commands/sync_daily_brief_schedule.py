@@ -4,13 +4,16 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
+from django.db.models import Q
 from django_celery_beat.models import CrontabSchedule, PeriodicTask
 
 
 POPULATE_TASK_NAME = "populate-daily-brief"
+POPULATE_TASK_NAME_PREFIX = f"{POPULATE_TASK_NAME}-"
 POPULATE_TASK_PATH = "api.tasks.run_populate_daily_brief"
 SEND_TASK_NAME = "send-daily-top-3-edition"
 SEND_TASK_PATH = "api.tasks.send_daily_top_3_edition"
+WEEKDAY_CRONTAB = "1,2,3,4,5"
 
 
 class Command(BaseCommand):
@@ -33,7 +36,8 @@ class Command(BaseCommand):
         parser.add_argument(
             "--populate-time",
             help=(
-                "UTC time in HH:MM for populate_daily_brief. "
+                "UTC time in HH:MM, or comma-separated HH:MM values, for "
+                "populate_daily_brief. "
                 "Defaults to POPULATE_DAILY_BRIEF_TIME_UTC."
             ),
         )
@@ -65,36 +69,69 @@ class Command(BaseCommand):
 
         self._validate_time(hour=hour, minute=minute)
         self._validate_timezone(timezone_name)
-        populate_hour, populate_minute = self._parse_time_value(
+        populate_slots = self._parse_populate_times_value(
             populate_time,
             option_name="--populate-time",
         )
 
-        _, _, populate_task_created = self._upsert_crontab_task(
-            task_name=POPULATE_TASK_NAME,
-            task_path=POPULATE_TASK_PATH,
-            hour=populate_hour,
-            minute=populate_minute,
-            timezone_name=timezone_name,
-        )
+        populate_names: set[str] = set()
+        created_populate = 0
+        updated_populate = 0
+        for populate_hour, populate_minute in populate_slots:
+            task_name = self._build_populate_task_name(
+                hour=populate_hour,
+                minute=populate_minute,
+                slot_count=len(populate_slots),
+            )
+            populate_names.add(task_name)
+            _, _, populate_task_created = self._upsert_crontab_task(
+                task_name=task_name,
+                task_path=POPULATE_TASK_PATH,
+                hour=populate_hour,
+                minute=populate_minute,
+                timezone_name=timezone_name,
+                day_of_week=WEEKDAY_CRONTAB,
+            )
+            if populate_task_created:
+                created_populate += 1
+            else:
+                updated_populate += 1
+
+        stale_populate_qs = PeriodicTask.objects.filter(
+            Q(name=POPULATE_TASK_NAME) | Q(name__startswith=POPULATE_TASK_NAME_PREFIX)
+        ).exclude(name__in=populate_names)
+        stale_populate_count = stale_populate_qs.count()
+        stale_populate_qs.delete()
+
         _, _, send_task_created = self._upsert_crontab_task(
             task_name=SEND_TASK_NAME,
             task_path=SEND_TASK_PATH,
             hour=hour,
             minute=minute,
             timezone_name=timezone_name,
+            day_of_week="*",
         )
 
-        populate_action = "Created" if populate_task_created else "Updated"
+        populate_summary = ", ".join(
+            f"{populate_hour:02d}:{populate_minute:02d}"
+            for populate_hour, populate_minute in populate_slots
+        )
         send_action = "Created" if send_task_created else "Updated"
         self.stdout.write(
             self.style.SUCCESS(
                 "Synced daily brief periodic tasks "
-                f"(populate: {populate_action.lower()} at "
-                f"{populate_hour:02d}:{populate_minute:02d} {timezone_name}; "
+                f"(populate: created={created_populate}, updated={updated_populate}, "
+                f"removed_stale={stale_populate_count} at {populate_summary} "
+                f"weekdays "
+                f"{timezone_name}; "
                 f"send: {send_action.lower()} at {hour:02d}:{minute:02d} {timezone_name})."
             )
         )
+
+    def _build_populate_task_name(self, *, hour: int, minute: int, slot_count: int) -> str:
+        if slot_count == 1:
+            return POPULATE_TASK_NAME
+        return f"{POPULATE_TASK_NAME_PREFIX}{hour:02d}{minute:02d}-utc"
 
     def _upsert_crontab_task(
         self,
@@ -104,11 +141,12 @@ class Command(BaseCommand):
         hour: int,
         minute: int,
         timezone_name: str,
+        day_of_week: str,
     ) -> tuple[CrontabSchedule, PeriodicTask, bool]:
         schedule, _ = CrontabSchedule.objects.get_or_create(
             minute=str(minute),
             hour=str(hour),
-            day_of_week="*",
+            day_of_week=day_of_week,
             day_of_month="*",
             month_of_year="*",
             timezone=timezone_name,
@@ -143,6 +181,34 @@ class Command(BaseCommand):
 
         self._validate_time(hour=hour, minute=minute)
         return hour, minute
+
+    def _parse_populate_times_value(
+        self,
+        value: str,
+        *,
+        option_name: str,
+    ) -> list[tuple[int, int]]:
+        try:
+            candidates = [item.strip() for item in str(value).split(",") if item.strip()]
+        except (AttributeError, TypeError) as exc:
+            raise CommandError(
+                f"{option_name} must be in HH:MM format or a comma-separated list of HH:MM values."
+            ) from exc
+
+        if not candidates:
+            raise CommandError(
+                f"{option_name} must be in HH:MM format or a comma-separated list of HH:MM values."
+            )
+
+        slots: list[tuple[int, int]] = []
+        seen: set[tuple[int, int]] = set()
+        for candidate in candidates:
+            slot = self._parse_time_value(candidate, option_name=option_name)
+            if slot in seen:
+                continue
+            seen.add(slot)
+            slots.append(slot)
+        return slots
 
     def _validate_timezone(self, timezone_name: str) -> None:
         try:

@@ -64,7 +64,7 @@ Email delivery:
 - `trading_view_scrape` is scheduled through Celery Beat every 45 minutes from 13:00 UTC through 19:45 UTC using `api.tasks.run_trading_view_scrape`.
 - `initial_screener` is scheduled daily at 12:30 UTC using `api.tasks.run_initial_screener`.
 - Override the trading-job defaults with `TRADING_VIEW_SCRAPE_START_TIME_UTC`, `TRADING_VIEW_SCRAPE_END_TIME_UTC`, `TRADING_VIEW_SCRAPE_INTERVAL_MINUTES`, and `INITIAL_SCREENER_TIME_UTC` or pass the same values to `sync_trading_jobs_schedule`.
-- Adjust the UTC populate time with `POPULATE_DAILY_BRIEF_TIME_UTC` in `HH:MM` format.
+- Adjust the UTC populate schedule with `POPULATE_DAILY_BRIEF_TIME_UTC` in `HH:MM` format or as a comma-separated list such as `14:30,15:30,16:30,17:30,18:30,19:30,20:00`.
 - Adjust the UTC send time with `DAILY_BRIEF_SEND_HOUR_UTC` and `DAILY_BRIEF_SEND_MINUTE_UTC`.
 - For Railway testing, you can manually preview or send with `python manage.py send_daily_brief --dry-run --limit 3` and `python manage.py send_daily_brief --limit 3`.
 

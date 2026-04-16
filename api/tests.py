@@ -2436,3 +2436,53 @@ class AIAgentsPotentialCommandTestCase(APITestCase):
         self.assertEqual(report.rating, "BUY")
         self.assertEqual(report.report["report_kind"], "frontend_analysis_panel")
         self.assertIn("Saved summarized report", stderr.getvalue())
+
+    def test_format_usage_summary_estimates_cost_from_usage(self) -> None:
+        summary = ai_agents_potential_command.format_usage_summary(
+            [
+                {
+                    "model": "gpt-4o-mini",
+                    "input_tokens": 1000,
+                    "cached_input_tokens": 200,
+                    "output_tokens": 300,
+                    "web_search_calls": 3,
+                    "search_tool_type": "web_search_preview",
+                },
+                {
+                    "model": "gpt-4o-mini",
+                    "input_tokens": 500,
+                    "cached_input_tokens": 0,
+                    "output_tokens": 100,
+                    "web_search_calls": 0,
+                    "search_tool_type": "web_search_preview",
+                },
+            ]
+        )
+
+        self.assertIsNotNone(summary)
+        self.assertIn("1300 input", summary)
+        self.assertIn("200 cached input", summary)
+        self.assertIn("400 output", summary)
+        self.assertIn("3 web search call(s)", summary)
+        self.assertIn("Estimated cost: $0.0755", summary)
+
+    def test_format_usage_summary_uses_standard_web_search_pricing(self) -> None:
+        summary = ai_agents_potential_command.format_usage_summary(
+            [
+                {
+                    "model": "gpt-4o-mini",
+                    "input_tokens": 1000,
+                    "cached_input_tokens": 0,
+                    "output_tokens": 300,
+                    "web_search_calls": 3,
+                    "search_tool_type": "web_search",
+                }
+            ]
+        )
+
+        self.assertIsNotNone(summary)
+        self.assertIn("1000 input", summary)
+        self.assertIn("300 output", summary)
+        self.assertIn("3 web search call(s)", summary)
+        self.assertIn("24000 billed search input", summary)
+        self.assertIn("Estimated cost: $0.0339", summary)

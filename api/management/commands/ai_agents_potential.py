@@ -20,6 +20,19 @@ from openai import OpenAI
 
 AGENT_MODEL = "gpt-4o-mini"
 SYNTHESIS_MODEL = "gpt-4o-mini"
+DEFAULT_SEARCH_TOOL = "web_search"
+
+MODEL_PRICING_PER_1M_TOKENS = {
+    "gpt-4o-mini": {"input": 0.15, "cached_input": 0.075, "output": 0.60},
+}
+WEB_SEARCH_COST_PER_CALL = {
+    "web_search": 0.01,
+    "web_search_preview": 0.025,
+}
+WEB_SEARCH_FIXED_INPUT_TOKENS = {
+    ("web_search", "gpt-4o-mini"): 8_000,
+    ("web_search", "gpt-4.1-mini"): 8_000,
+}
 
 ALIGNMENT_CHOICES = {"supports", "contradicts", "nuances", "mixed", "not_applicable"}
 STANCE_CHOICES = {"bullish", "neutral", "bearish"}
@@ -354,13 +367,160 @@ def extract_text_from_response(response: Any) -> str:
     raise ValueError("Model response did not contain any text output.")
 
 
+def usage_to_dict(usage: Any) -> dict[str, Any]:
+    if usage is None:
+        return {}
+    if isinstance(usage, dict):
+        return usage
+    if hasattr(usage, "model_dump"):
+        dumped = usage.model_dump()
+        if isinstance(dumped, dict):
+            return dumped
+
+    data: dict[str, Any] = {}
+    for key in (
+        "input_tokens",
+        "output_tokens",
+        "prompt_tokens",
+        "completion_tokens",
+        "input_tokens_details",
+        "output_tokens_details",
+    ):
+        value = getattr(usage, key, None)
+        if value is None:
+            continue
+        if hasattr(value, "model_dump"):
+            value = value.model_dump()
+        data[key] = value
+    return data
+
+
+def safe_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def count_web_search_calls(response: Any) -> int:
+    output_items = getattr(response, "output", None)
+    if output_items is None and hasattr(response, "model_dump"):
+        output_items = response.model_dump().get("output")
+    if not output_items:
+        return 0
+
+    total = 0
+    for item in output_items:
+        item_type = item.get("type") if isinstance(item, dict) else getattr(item, "type", None)
+        if isinstance(item_type, str) and "web_search" in item_type:
+            total += 1
+    return total
+
+
+def extract_usage_metrics(response: Any, model: str, use_web_search: bool) -> dict[str, Any]:
+    usage = usage_to_dict(getattr(response, "usage", None))
+    input_details = usage_to_dict(usage.get("input_tokens_details"))
+    output_details = usage_to_dict(usage.get("output_tokens_details"))
+    web_search_calls = count_web_search_calls(response) if use_web_search else 0
+
+    return {
+        "model": model,
+        "input_tokens": safe_int(usage.get("input_tokens") or usage.get("prompt_tokens")),
+        "output_tokens": safe_int(usage.get("output_tokens") or usage.get("completion_tokens")),
+        "cached_input_tokens": safe_int(
+            input_details.get("cached_tokens") or usage.get("cached_input_tokens")
+        ),
+        "reasoning_tokens": safe_int(output_details.get("reasoning_tokens")),
+        "web_search_calls": web_search_calls,
+    }
+
+
+def normalize_generation_result(result: Any) -> dict[str, Any]:
+    if isinstance(result, str):
+        return {"text": result, "usage": None}
+    if isinstance(result, dict):
+        return {"text": str(result.get("text", "")).strip(), "usage": result.get("usage")}
+    raise ValueError("Unsupported generation result format.")
+
+
+def calculate_usage_cost(usage_items: list[dict[str, Any]]) -> dict[str, float]:
+    totals = {
+        "input_tokens": 0,
+        "cached_input_tokens": 0,
+        "output_tokens": 0,
+        "web_search_calls": 0,
+        "billed_search_input_tokens": 0,
+    }
+    total_cost = 0.0
+
+    for usage in usage_items:
+        pricing = MODEL_PRICING_PER_1M_TOKENS.get(usage.get("model"))
+        if pricing:
+            input_tokens = safe_int(usage.get("input_tokens"))
+            cached_input_tokens = min(input_tokens, safe_int(usage.get("cached_input_tokens")))
+            uncached_input_tokens = max(input_tokens - cached_input_tokens, 0)
+            output_tokens = safe_int(usage.get("output_tokens"))
+
+            totals["input_tokens"] += uncached_input_tokens
+            totals["cached_input_tokens"] += cached_input_tokens
+            totals["output_tokens"] += output_tokens
+
+            total_cost += (uncached_input_tokens / 1_000_000) * pricing["input"]
+            total_cost += (cached_input_tokens / 1_000_000) * pricing["cached_input"]
+            total_cost += (output_tokens / 1_000_000) * pricing["output"]
+
+        web_search_calls = safe_int(usage.get("web_search_calls"))
+        search_tool_type = str(usage.get("search_tool_type") or "")
+        totals["web_search_calls"] += web_search_calls
+        total_cost += web_search_calls * WEB_SEARCH_COST_PER_CALL.get(search_tool_type, 0.0)
+
+        billed_search_input_tokens = (
+            WEB_SEARCH_FIXED_INPUT_TOKENS.get((search_tool_type, str(usage.get("model"))), 0)
+            * web_search_calls
+        )
+        totals["billed_search_input_tokens"] += billed_search_input_tokens
+        if pricing and billed_search_input_tokens:
+            total_cost += (billed_search_input_tokens / 1_000_000) * pricing["input"]
+
+    return {
+        "input_tokens": float(totals["input_tokens"]),
+        "cached_input_tokens": float(totals["cached_input_tokens"]),
+        "output_tokens": float(totals["output_tokens"]),
+        "web_search_calls": float(totals["web_search_calls"]),
+        "billed_search_input_tokens": float(totals["billed_search_input_tokens"]),
+        "estimated_cost_usd": round(total_cost, 6),
+    }
+
+
+def format_usage_summary(usage_items: list[dict[str, Any]]) -> str | None:
+    if not usage_items:
+        return None
+
+    cost = calculate_usage_cost(usage_items)
+    return (
+        "  OpenAI usage: "
+        f"{int(cost['input_tokens'])} input, "
+        f"{int(cost['cached_input_tokens'])} cached input, "
+        f"{int(cost['output_tokens'])} output, "
+        f"{int(cost['web_search_calls'])} web search call(s)"
+        + (
+            f", {int(cost['billed_search_input_tokens'])} billed search input"
+            if cost["billed_search_input_tokens"]
+            else ""
+        )
+        + "  |  "
+        f"Estimated cost: ${cost['estimated_cost_usd']:.4f}"
+    )
+
+
 def generate_text(
     client: OpenAI,
     prompt: str,
     model: str,
     max_output_tokens: int,
     use_web_search: bool = False,
-) -> str:
+    search_tool_type: str = DEFAULT_SEARCH_TOOL,
+) -> dict[str, Any]:
     if hasattr(client, "responses"):
         request: dict[str, Any] = {
             "model": model,
@@ -368,17 +528,34 @@ def generate_text(
             "max_output_tokens": max_output_tokens,
         }
         if use_web_search:
-            request["tools"] = [{"type": "web_search_preview"}]
+            request["tools"] = [{"type": search_tool_type}]
 
         response = client.responses.create(**request)
-        return extract_text_from_response(response)
+        usage = extract_usage_metrics(response, model, use_web_search)
+        if use_web_search:
+            usage["search_tool_type"] = search_tool_type
+        return {
+            "text": extract_text_from_response(response),
+            "usage": usage,
+        }
 
     response = client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         max_tokens=max_output_tokens,
     )
-    return extract_text_from_response(response)
+    usage = usage_to_dict(getattr(response, "usage", None))
+    return {
+        "text": extract_text_from_response(response),
+        "usage": {
+            "model": model,
+            "input_tokens": safe_int(usage.get("prompt_tokens")),
+            "output_tokens": safe_int(usage.get("completion_tokens")),
+            "cached_input_tokens": 0,
+            "reasoning_tokens": 0,
+            "web_search_calls": 0,
+        },
+    }
 
 
 def infer_score_alignment(results: list[dict[str, Any]]) -> str:
@@ -619,17 +796,25 @@ def run_agent(
     ticker: str,
     score: int | None,
     ctx: str,
+    search_tool_type: str,
 ) -> dict[str, Any]:
     prompt = agent["prompt"](ticker, score, ctx)
-    text = generate_text(
-        client=client,
-        prompt=prompt,
-        model=AGENT_MODEL,
-        max_output_tokens=512,
-        use_web_search=True,
+    generation = normalize_generation_result(
+        generate_text(
+            client=client,
+            prompt=prompt,
+            model=AGENT_MODEL,
+            max_output_tokens=512,
+            use_web_search=True,
+            search_tool_type=search_tool_type,
+        )
     )
+    text = generation["text"]
     payload = extract_json_payload(text)
-    return normalize_agent_payload(agent, payload, text)
+    normalized = normalize_agent_payload(agent, payload, text)
+    if generation["usage"]:
+        normalized["usage"] = generation["usage"]
+    return normalized
 
 
 def run_synthesis(
@@ -707,14 +892,20 @@ def run_synthesis(
         "- The AI insight must assess disruption risk from AI and AI agents, not generic tailwinds.\n"
         "- No markdown and no extra keys."
     )
-    text = generate_text(
-        client=client,
-        prompt=prompt,
-        model=synthesis_model,
-        max_output_tokens=700,
+    generation = normalize_generation_result(
+        generate_text(
+            client=client,
+            prompt=prompt,
+            model=synthesis_model,
+            max_output_tokens=700,
+        )
     )
+    text = generation["text"]
     payload = extract_json_payload(text)
-    return normalize_panel_payload(ticker, score, payload, results, fallback_panel)
+    panel = normalize_panel_payload(ticker, score, payload, results, fallback_panel)
+    if generation["usage"]:
+        panel["_usage"] = generation["usage"]
+    return panel
 
 
 def save_due_diligence_report(panel: dict[str, Any], model_name: str) -> None:
@@ -787,6 +978,15 @@ class Command(BaseCommand):
             action="store_true",
             help="Save the summarized frontend payload into DueDiligenceReport.report.",
         )
+        parser.add_argument(
+            "--search-tool",
+            choices=["web_search", "web_search_preview"],
+            default=DEFAULT_SEARCH_TOOL,
+            help=(
+                "Responses API web search tool to use for the research agents. "
+                f"Default: {DEFAULT_SEARCH_TOOL}"
+            ),
+        )
 
     def handle(self, *args, **options):
         ticker = options["ticker"].upper().strip()
@@ -796,6 +996,7 @@ class Command(BaseCommand):
         workers = options["workers"]
         output_format = options["format"]
         save_to_db = options["save_to_db"]
+        search_tool_type = options["search_tool"]
         status_stream = self.stderr if output_format == "json" else self.stdout
         terminal_stream = self.stderr if output_format == "json" else self.stdout
 
@@ -816,16 +1017,17 @@ class Command(BaseCommand):
 
         status_stream.write(
             f"{DIM}  Running {len(AGENTS)} agents in parallel "
-            f"(model: {AGENT_MODEL}) ...{RESET}\n"
+            f"(model: {AGENT_MODEL}, search: {search_tool_type}) ...{RESET}\n"
         )
 
         results: list[dict[str, Any]] = []
         errors: list[str] = []
+        usage_items: list[dict[str, Any]] = []
 
         def _run(agent: dict[str, Any]) -> dict[str, Any]:
             start = time.time()
             try:
-                result = run_agent(client, agent, ticker, score, ctx)
+                result = run_agent(client, agent, ticker, score, ctx, search_tool_type)
                 result["elapsed"] = time.time() - start
                 return result
             except Exception as exc:
@@ -849,6 +1051,8 @@ class Command(BaseCommand):
                     )
                 else:
                     results.append(outcome)
+                    if outcome.get("usage"):
+                        usage_items.append(outcome["usage"])
 
         results.sort(key=lambda result: result["id"])
 
@@ -880,6 +1084,9 @@ class Command(BaseCommand):
             try:
                 panel = run_synthesis(client, ticker, score, results, synthesis_model)
                 panel_model_name = synthesis_model
+                if panel.get("_usage"):
+                    usage_items.append(panel["_usage"])
+                    del panel["_usage"]
             except Exception as exc:
                 status_stream.write(
                     f"{YELLOW}  Synthesis failed; using local fallback panel ({exc}).{RESET}\n"
@@ -893,6 +1100,10 @@ class Command(BaseCommand):
         if save_to_db:
             save_due_diligence_report(panel, f"{AGENT_MODEL} + {panel_model_name}")
             status_stream.write(f"{GREEN}  Saved summarized report to DueDiligenceReport.{RESET}\n")
+
+        usage_summary = format_usage_summary(usage_items)
+        if usage_summary:
+            status_stream.write(f"{DIM}{usage_summary}{RESET}\n")
 
         if output_format == "json":
             print_synthesis(panel, panel_model_name, stream=terminal_stream)

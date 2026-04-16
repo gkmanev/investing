@@ -35,6 +35,7 @@ class DailyBriefScheduleCommandTestCase(TestCase):
         self.assertTrue(populate_task.enabled)
         self.assertEqual(populate_task.crontab.hour, "15")
         self.assertEqual(populate_task.crontab.minute, "30")
+        self.assertEqual(populate_task.crontab.day_of_week, "1,2,3,4,5")
         self.assertEqual(str(populate_task.crontab.timezone), "UTC")
 
         send_task = PeriodicTask.objects.get(name="send-daily-top-3-edition")
@@ -42,6 +43,7 @@ class DailyBriefScheduleCommandTestCase(TestCase):
         self.assertTrue(send_task.enabled)
         self.assertEqual(send_task.crontab.hour, "16")
         self.assertEqual(send_task.crontab.minute, "0")
+        self.assertEqual(send_task.crontab.day_of_week, "*")
         self.assertEqual(str(send_task.crontab.timezone), "UTC")
 
     @override_settings(
@@ -78,13 +80,81 @@ class DailyBriefScheduleCommandTestCase(TestCase):
         self.assertTrue(populate_task.enabled)
         self.assertEqual(populate_task.crontab.hour, "18")
         self.assertEqual(populate_task.crontab.minute, "15")
+        self.assertEqual(populate_task.crontab.day_of_week, "1,2,3,4,5")
         self.assertEqual(str(populate_task.crontab.timezone), "UTC")
 
         send_task = PeriodicTask.objects.get(name="send-daily-top-3-edition")
         self.assertTrue(send_task.enabled)
         self.assertEqual(send_task.crontab.hour, "18")
         self.assertEqual(send_task.crontab.minute, "45")
+        self.assertEqual(send_task.crontab.day_of_week, "*")
         self.assertEqual(str(send_task.crontab.timezone), "UTC")
+
+    @override_settings(
+        DAILY_BRIEF_SEND_HOUR_UTC=20,
+        DAILY_BRIEF_SEND_MINUTE_UTC=15,
+        POPULATE_DAILY_BRIEF_TIME_UTC=(
+            "14:30,15:30,16:30,17:30,18:30,19:30,20:00"
+        ),
+        CELERY_TIMEZONE="UTC",
+    )
+    def test_sync_daily_brief_schedule_creates_multiple_populate_tasks(self) -> None:
+        stale_schedule = CrontabSchedule.objects.create(
+            minute="0",
+            hour="16",
+            day_of_week="*",
+            day_of_month="*",
+            month_of_year="*",
+            timezone="UTC",
+        )
+        PeriodicTask.objects.create(
+            name="populate-daily-brief",
+            task="api.tasks.run_populate_daily_brief",
+            crontab=stale_schedule,
+            enabled=True,
+        )
+        PeriodicTask.objects.create(
+            name="populate-daily-brief-2130-utc",
+            task="api.tasks.run_populate_daily_brief",
+            crontab=stale_schedule,
+            enabled=True,
+        )
+
+        call_command("sync_daily_brief_schedule")
+
+        expected_populate_tasks = {
+            ("populate-daily-brief-1430-utc", "14", "30"),
+            ("populate-daily-brief-1530-utc", "15", "30"),
+            ("populate-daily-brief-1630-utc", "16", "30"),
+            ("populate-daily-brief-1730-utc", "17", "30"),
+            ("populate-daily-brief-1830-utc", "18", "30"),
+            ("populate-daily-brief-1930-utc", "19", "30"),
+            ("populate-daily-brief-2000-utc", "20", "0"),
+        }
+
+        self.assertFalse(PeriodicTask.objects.filter(name="populate-daily-brief").exists())
+        self.assertFalse(
+            PeriodicTask.objects.filter(name="populate-daily-brief-2130-utc").exists()
+        )
+        self.assertEqual(
+            PeriodicTask.objects.filter(
+                name__startswith="populate-daily-brief-"
+            ).count(),
+            len(expected_populate_tasks),
+        )
+        for task_name, hour, minute in expected_populate_tasks:
+            task = PeriodicTask.objects.get(name=task_name)
+            self.assertEqual(task.task, "api.tasks.run_populate_daily_brief")
+            self.assertTrue(task.enabled)
+            self.assertEqual(task.crontab.hour, hour)
+            self.assertEqual(task.crontab.minute, minute)
+            self.assertEqual(task.crontab.day_of_week, "1,2,3,4,5")
+            self.assertEqual(str(task.crontab.timezone), "UTC")
+
+        send_task = PeriodicTask.objects.get(name="send-daily-top-3-edition")
+        self.assertEqual(send_task.crontab.hour, "20")
+        self.assertEqual(send_task.crontab.minute, "15")
+        self.assertEqual(send_task.crontab.day_of_week, "*")
 
     @patch("api.tasks.call_command")
     def test_run_populate_daily_brief_executes_management_command(
