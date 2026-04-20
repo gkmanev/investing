@@ -249,6 +249,10 @@ class SymbolViewSet(FilterMixin, viewsets.ModelViewSet):
         if liquidity:
             queryset = queryset.filter(liquidity__iexact=liquidity)
 
+        technical_score = params.get("technical_score")
+        if technical_score:
+            queryset = queryset.filter(technical_score__iexact=technical_score)
+
         queryset = self._apply_boolean_filter(
             queryset, params, field_name="initial_suitability", param_name="initial_suitability"
         )

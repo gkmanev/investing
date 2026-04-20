@@ -1816,6 +1816,28 @@ class SymbolAPITestCase(APITestCase):
     def setUp(self) -> None:
         self.list_url = reverse("symbol-list")
 
+    def test_list_can_filter_by_technical_score(self) -> None:
+        Symbol.objects.create(
+            ticker="STRONG",
+            technical_score=Symbol.TechnicalScore.STRONG_BUY,
+        )
+        Symbol.objects.create(
+            ticker="BUY",
+            technical_score=Symbol.TechnicalScore.BUY,
+        )
+        Symbol.objects.create(
+            ticker="EMPTY",
+            technical_score=None,
+        )
+
+        response = self.client.get(
+            self.list_url,
+            {"technical_score": "strong buy"},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual([item["ticker"] for item in response.data], ["STRONG"])
+
     def test_list_can_filter_by_option_volume_and_iv(self) -> None:
         Symbol.objects.create(
             ticker="LOW",
