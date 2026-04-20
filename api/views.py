@@ -32,6 +32,22 @@ from .serializers import (
 class FilterMixin:
     """Reusable query-param filtering helpers for ModelViewSets."""
 
+    def _apply_text_in_filter(
+        self, queryset, params: Mapping[str, str], *, field_name: str, param_name: str
+    ):
+        raw_value = params.get(param_name)
+        if raw_value is None:
+            return queryset
+
+        values = [value.strip() for value in raw_value.split(",") if value.strip()]
+        if not values:
+            return queryset
+
+        query = Q()
+        for value in values:
+            query |= Q(**{f"{field_name}__iexact": value})
+        return queryset.filter(query)
+
     def _apply_decimal_filter(
         self,
         queryset,
@@ -252,6 +268,12 @@ class SymbolViewSet(FilterMixin, viewsets.ModelViewSet):
         technical_score = params.get("technical_score")
         if technical_score:
             queryset = queryset.filter(technical_score__iexact=technical_score)
+        queryset = self._apply_text_in_filter(
+            queryset,
+            params,
+            field_name="technical_score",
+            param_name="technical_score_in",
+        )
 
         queryset = self._apply_boolean_filter(
             queryset, params, field_name="initial_suitability", param_name="initial_suitability"

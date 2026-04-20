@@ -1838,6 +1838,35 @@ class SymbolAPITestCase(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual([item["ticker"] for item in response.data], ["STRONG"])
 
+    def test_list_can_filter_by_multiple_technical_scores(self) -> None:
+        Symbol.objects.create(
+            ticker="STRONG",
+            technical_score=Symbol.TechnicalScore.STRONG_BUY,
+        )
+        Symbol.objects.create(
+            ticker="BUY",
+            technical_score=Symbol.TechnicalScore.BUY,
+        )
+        Symbol.objects.create(
+            ticker="NEUTRAL",
+            technical_score=Symbol.TechnicalScore.NEUTRAL,
+        )
+        Symbol.objects.create(
+            ticker="SELL",
+            technical_score=Symbol.TechnicalScore.SELL,
+        )
+
+        response = self.client.get(
+            self.list_url,
+            {"technical_score_in": "Neutral,Buy,Strong Buy"},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            [item["ticker"] for item in response.data],
+            ["BUY", "NEUTRAL", "STRONG"],
+        )
+
     def test_list_can_filter_by_option_volume_and_iv(self) -> None:
         Symbol.objects.create(
             ticker="LOW",
