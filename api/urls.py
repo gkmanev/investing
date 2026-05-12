@@ -16,6 +16,11 @@ from .daily_brief_views import (
     DailyBriefSubscriptionView,
     DailyBriefUnsubscribeView,
 )
+from .subscription_views import (
+    CreateStripeCheckoutSessionView,
+    PremiumSubscriptionView,
+    StripeWebhookView,
+)
 from .views import (
     DueDiligenceReportViewSet,
     FinancialStatementViewSet,
@@ -61,5 +66,12 @@ urlpatterns = [
         DailyBriefUnsubscribeView.as_view(),
         name="daily-brief-subscription-unsubscribe",
     ),
+    path("premium-subscription/", PremiumSubscriptionView.as_view(), name="premium-subscription"),
+    path(
+        "create-stripe-checkout-session/",
+        CreateStripeCheckoutSessionView.as_view(),
+        name="create-stripe-checkout-session",
+    ),
+    path("webhooks/stripe/", StripeWebhookView.as_view(), name="webhooks-stripe"),
     path("", include(router.urls)),
 ]

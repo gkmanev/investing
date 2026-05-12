@@ -25,11 +25,19 @@ from .daily_brief_services import (
     activate_pending_subscription_after_verification,
     subscribe_user,
 )
-from .models import EmailVerificationToken
+from .models import EmailVerificationToken, PremiumSubscription
+from .subscription_views import PremiumSubscriptionSerializer
 
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
+
+
+def _premium_data(user) -> dict | None:
+    try:
+        return PremiumSubscriptionSerializer(user.premium_subscription).data
+    except PremiumSubscription.DoesNotExist:
+        return None
 
 
 def _build_auth_payload(user) -> tuple[dict, str]:
@@ -37,6 +45,7 @@ def _build_auth_payload(user) -> tuple[dict, str]:
     return {
         "access": str(refresh.access_token),
         "user": UserSerializer(user).data,
+        "premium_subscription": _premium_data(user),
     }, str(refresh)
 
 
@@ -219,8 +228,19 @@ class RefreshView(APIView):
         except TokenError as exc:
             raise InvalidToken(str(exc)) from exc
 
+        # Resolve user to attach current premium_subscription state
+        premium = None
+        try:
+            token = RefreshToken(refresh_token)
+            user_id = token.payload.get("user_id")
+            if user_id:
+                user = User.objects.select_related("premium_subscription").get(pk=user_id)
+                premium = _premium_data(user)
+        except Exception:
+            pass
+
         response = Response(
-            {"access": serializer.validated_data["access"]},
+            {"access": serializer.validated_data["access"], "premium_subscription": premium},
             status=status.HTTP_200_OK,
         )
 

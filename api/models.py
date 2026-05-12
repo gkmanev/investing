@@ -308,3 +308,41 @@ class DailyBriefEdition(models.Model):
 
     def __str__(self) -> str:  # pragma: no cover - simple data representation
         return f"Daily brief edition {self.edition_date:%Y-%m-%d}"
+
+
+class PremiumSubscription(models.Model):
+    """Tracks a user's premium (paid) subscription managed via Stripe."""
+
+    class Status(models.TextChoices):
+        ACTIVE = "active", "Active"
+        TRIALING = "trialing", "Trialing"
+        PAST_DUE = "past_due", "Past due"
+        PAUSED = "paused", "Paused"
+        CANCELLED = "cancelled", "Cancelled"
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        related_name="premium_subscription",
+        on_delete=models.CASCADE,
+    )
+    stripe_subscription_id = models.CharField(max_length=255, unique=True)
+    stripe_customer_id = models.CharField(max_length=255, blank=True, default="")
+    status = models.CharField(
+        max_length=32,
+        choices=Status.choices,
+        default=Status.ACTIVE,
+        db_index=True,
+    )
+    current_period_end = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    @property
+    def is_active(self) -> bool:
+        return self.status in {self.Status.ACTIVE, self.Status.TRIALING}
+
+    def __str__(self) -> str:  # pragma: no cover - simple data representation
+        return f"{self.user} premium ({self.status})"

@@ -14,11 +14,25 @@ from .models import (
     DueDiligenceReport,
     FinancialStatement,
     Investment,
+    PremiumSubscription,
     ScreenerFilter,
     ScreenerType,
     Symbol,
 )
 from .permissions import IsStaffOrReadOnly
+
+FREE_SYMBOLS_LIMIT = 5
+
+
+def _user_is_premium(user) -> bool:
+    if not hasattr(user, "is_authenticated") or not user.is_authenticated:
+        return False
+    if user.is_staff:
+        return True
+    try:
+        return user.premium_subscription.is_active
+    except PremiumSubscription.DoesNotExist:
+        return False
 from .serializers import (
     DueDiligenceReportSerializer,
     FinancialStatementSerializer,
@@ -244,6 +258,22 @@ class SymbolViewSet(FilterMixin, viewsets.ModelViewSet):
     queryset = Symbol.objects.all()
     serializer_class = SymbolSerializer
     permission_classes = [IsStaffOrReadOnly]
+
+    def list(self, request, *args, **kwargs):  # type: ignore[override]
+        queryset = self.filter_queryset(self.get_queryset())
+        if _user_is_premium(request.user):
+            total = queryset.count()
+            serializer = self.get_serializer(queryset, many=True)
+            return Response({"count": total, "results": serializer.data, "has_more": False})
+
+        total = queryset.count()
+        limited = queryset[:FREE_SYMBOLS_LIMIT]
+        serializer = self.get_serializer(limited, many=True)
+        return Response({
+            "count": total,
+            "results": serializer.data,
+            "has_more": total > FREE_SYMBOLS_LIMIT,
+        })
 
     def get_queryset(self):  # type: ignore[override]
         queryset = super().get_queryset()
