@@ -6,7 +6,7 @@ from typing import Mapping
 from django.db.models import Q, Value
 from django.db.models.functions import Replace
 from rest_framework import viewsets
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 
 from .models import (
@@ -21,7 +21,17 @@ from .models import (
 )
 from .permissions import IsStaffOrReadOnly
 
-FREE_SYMBOLS_LIMIT = 5
+SYMBOL_FILTER_PARAMS = {
+    "ticker", "exchange", "classification", "liquidity",
+    "technical_score", "technical_score_in", "initial_suitability",
+    "price", "min_price", "max_price",
+    "min_market_cap", "max_market_cap",
+    "min_rsi", "max_rsi",
+    "min_roi", "max_roi",
+    "min_option_iv", "max_option_iv",
+    "min_option_volume", "max_option_volume",
+    "min_score", "max_score",
+}
 
 
 def _user_is_premium(user) -> bool:
@@ -260,20 +270,12 @@ class SymbolViewSet(FilterMixin, viewsets.ModelViewSet):
     permission_classes = [IsStaffOrReadOnly]
 
     def list(self, request, *args, **kwargs):  # type: ignore[override]
+        if set(request.query_params) & SYMBOL_FILTER_PARAMS and not _user_is_premium(request.user):
+            raise PermissionDenied("Filters are available for premium subscribers only.")
         queryset = self.filter_queryset(self.get_queryset())
-        if _user_is_premium(request.user):
-            total = queryset.count()
-            serializer = self.get_serializer(queryset, many=True)
-            return Response({"count": total, "results": serializer.data, "has_more": False})
-
         total = queryset.count()
-        limited = queryset[:FREE_SYMBOLS_LIMIT]
-        serializer = self.get_serializer(limited, many=True)
-        return Response({
-            "count": total,
-            "results": serializer.data,
-            "has_more": total > FREE_SYMBOLS_LIMIT,
-        })
+        serializer = self.get_serializer(queryset, many=True)
+        return Response({"count": total, "results": serializer.data, "has_more": False})
 
     def get_queryset(self):  # type: ignore[override]
         queryset = super().get_queryset()
