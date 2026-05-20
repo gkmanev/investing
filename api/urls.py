@@ -21,6 +21,7 @@ from .subscription_views import (
     PremiumSubscriptionView,
     StripeWebhookView,
 )
+from .agent_views import AgentView
 from .views import (
     DueDiligenceReportViewSet,
     FinancialStatementViewSet,
@@ -73,5 +74,6 @@ urlpatterns = [
         name="create-stripe-checkout-session",
     ),
     path("webhooks/stripe/", StripeWebhookView.as_view(), name="webhooks-stripe"),
+    path("agent/", AgentView.as_view(), name="agent"),
     path("", include(router.urls)),
 ]
