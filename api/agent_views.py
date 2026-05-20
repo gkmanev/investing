@@ -34,6 +34,8 @@ When interpreting results:
 Always cite specific numbers from the report (ROIC %, margins, score, flags).
 Do not invent or estimate figures not present in the tool response.
 Never give direct buy/sell recommendations — frame as analytical observations.
+
+If the analyze_stock tool returns an error, report the exact error message to the user without rephrasing or softening it.
 """
 
 # Tools the agent can call (maps to your Django business logic)
