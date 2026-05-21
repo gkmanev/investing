@@ -1,16 +1,12 @@
 import json
 import os
-import time
-import urllib.request
-import urllib.error
-from typing import Any, Dict, List
 
-from django.conf import settings
 from openai import OpenAI, OpenAIError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from api.helper import FinancialMetricsCalculator
+from api.edgar_client import EdgarClient
 
 
 SYSTEM_PROMPT = """
@@ -66,61 +62,11 @@ TOOLS = [
     }
 ]
 
-class FMPClient:
-    def __init__(self):
-        self.fmp_api_key = getattr(settings, "FINANCIAL_MODELING_API_KEY", "")
-        if not self.fmp_api_key:
-            raise ValueError("FINANCIAL_MODELING_API_KEY is missing in Django settings")
-        self.fmp_base_url = "https://financialmodelingprep.com/stable"
-
-    def _fetch_json(self, url: str) -> Any:
-        max_attempts = 4
-        wait = 15
-        for attempt in range(1, max_attempts + 1):
-            try:
-                with urllib.request.urlopen(url, timeout=30) as response:
-                    body = response.read()
-                return json.loads(body.decode("utf-8")) if body else None
-            except urllib.error.HTTPError as e:
-                if e.code == 429:
-                    retry_after = e.headers.get("Retry-After")
-                    sleep_secs = int(retry_after) if retry_after else wait
-                    if attempt == max_attempts:
-                        raise Exception(f"FMP request failed (429) after {max_attempts} attempts")
-                    time.sleep(sleep_secs)
-                    wait *= 2
-                else:
-                    raise Exception(f"FMP request failed ({e.code}): {e.reason}")
-
-    def fetch_financial_data(self, symbol: str) -> Dict[str, Any]:
-        symbol = symbol.upper()
-        base = self.fmp_base_url
-        key = self.fmp_api_key
-        statements = {
-            "balance_sheet": f"{base}/balance-sheet-statement?symbol={symbol}&apikey={key}",
-            "income_statement": f"{base}/income-statement?symbol={symbol}&apikey={key}",
-            "cash_flow": f"{base}/cash-flow-statement?symbol={symbol}&apikey={key}",
-        }
-        financial_data: Dict[str, Any] = {}
-        missing_statements: List[str] = []
-        for stmt_key, path in statements.items():
-            statement_data = self._fetch_json(path)
-            financial_data[stmt_key] = statement_data
-            if not statement_data:
-                missing_statements.append(stmt_key)
-            time.sleep(1.5)
-        if not financial_data or missing_statements:
-            missing = ", ".join(missing_statements) if missing_statements else "all statements"
-            raise Exception(f"Incomplete financial data for {symbol}; missing: {missing}")
-        return financial_data
-    
-
-
 def handle_tool_call(tool_name: str, tool_args: dict) -> str:
     if tool_name == "analyze_stock":
         symbol = tool_args["symbol"]
         try:
-            raw_data = FMPClient().fetch_financial_data(symbol)
+            raw_data = EdgarClient().fetch_financial_data(symbol)
             calculator = FinancialMetricsCalculator(raw_data)
             report = calculator.process()
 

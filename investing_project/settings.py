@@ -34,7 +34,10 @@ SECRET_KEY = os.getenv(
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 
 RAPIDAPI_KEY = os.getenv('RAPIDAPI_KEY')
-FINANCIAL_MODELING_API_KEY = os.getenv('FINANCIAL_MODELING_API_KEY')
+FINANCIAL_MODELING_API_KEY = os.getenv('FINANCIAL_MODELING_API_KEY')  # still used by initial_screener / put_checker
+
+# SEC EDGAR identity required by edgartools (format: "Name email@example.com")
+EDGAR_IDENTITY = os.getenv('EDGAR_IDENTITY', '')
 
 
 
