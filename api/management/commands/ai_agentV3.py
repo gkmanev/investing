@@ -17,17 +17,20 @@ Usage:
 """
 
 import csv
+import json
 import logging
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 from decimal import Decimal
 
 from django.core.management.base import BaseCommand, CommandError
 from django.conf import settings
+from openai import OpenAI
 from api.helper import FinancialMetricsCalculator
-from api.edgar_client import EdgarClient
 
 
 logger = logging.getLogger(__name__)
@@ -42,6 +45,7 @@ class AgentConfig:
 
     openai_api_key: str
     openai_model: str = "gpt-4o-mini"
+    fmp_api_key: str = ""
     timeout: int = 30
     max_retries: int = 3
     temperature: float = 0.1
@@ -53,6 +57,7 @@ class AgentConfig:
         return cls(
             openai_api_key=getattr(settings, "OPENAI_API_KEY", ""),
             openai_model=getattr(settings, "OPENAI_MODEL", "gpt-4o-mini"),
+            fmp_api_key=getattr(settings, "FINANCIAL_MODELING_API_KEY", ""),
         )
 
 
@@ -323,9 +328,67 @@ class SimplifiedAnalysisAgent:
     def __init__(self, openai_client, openai_model: str):
         self.client = openai_client
         self.model = openai_model
+        self.fmp_api_key = getattr(settings, "FINANCIAL_MODELING_API_KEY", "")
+        if not self.fmp_api_key:
+            raise ValueError("FINANCIAL_MODELING_API_KEY is missing in Django settings")
+        self.fmp_base_url = "https://financialmodelingprep.com/stable"
+
+    def _fetch_json(self, url: str) -> Any:
+        max_attempts = 4
+        wait = 15
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                with urllib.request.urlopen(url, timeout=30) as response:
+                    body = response.read()
+                return json.loads(body.decode("utf-8")) if body else None
+
+            except urllib.error.HTTPError as e:
+                if e.code == 429:
+                    retry_after = e.headers.get("Retry-After")
+                    sleep_secs = int(retry_after) if retry_after else wait
+                    logger.warning(
+                        f"429 rate-limited, waiting {sleep_secs}s "
+                        f"(attempt {attempt}/{max_attempts})"
+                    )
+                    if attempt == max_attempts:
+                        raise Exception(
+                            f"FMP request failed (429): Too Many Requests "
+                            f"after {max_attempts} attempts"
+                        )
+                    time.sleep(sleep_secs)
+                    wait *= 2
+                else:
+                    raise Exception(f"FMP request failed ({e.code}): {e.reason}")
 
     def fetch_financial_data(self, symbol: str) -> Dict[str, Any]:
-        return EdgarClient().fetch_financial_data(symbol)
+        symbol = symbol.upper()
+        base = self.fmp_base_url
+        key = self.fmp_api_key
+        statements = {
+            "balance_sheet": f"{base}/balance-sheet-statement?symbol={symbol}&apikey={key}",
+            "income_statement": f"{base}/income-statement?symbol={symbol}&apikey={key}",
+            "cash_flow": f"{base}/cash-flow-statement?symbol={symbol}&apikey={key}",
+        }
+
+        financial_data: Dict[str, Any] = {}
+        missing_statements: List[str] = []
+
+        for key, path in statements.items():
+            statement_data = self._fetch_json(path)
+            financial_data[key] = statement_data
+            if not statement_data:
+                missing_statements.append(key)
+            time.sleep(1.5)
+
+        if not financial_data or missing_statements:
+            missing = ", ".join(missing_statements) if missing_statements else "all statements"
+            raise Exception(
+                f"Incomplete financial data returned from API for {symbol}; "
+                f"missing: {missing}"
+            )
+
+        return financial_data
     
     
     def analyze_with_processed_data(self, processed_metrics: Dict[str, Any]) -> Dict[str, Any]:
