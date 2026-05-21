@@ -246,18 +246,20 @@ class EdgarClient:
     def _parse_cf(self, base: pd.DataFrame, col: str, date: str, symbol: str) -> dict:
         g = lambda std=(), xb=(): self._get(base, col, standard=std, xbrl=xb)
 
-        op_cf = g(
-            std=("NetCashFromOperatingActivities",),
-            xb=("us-gaap_NetCashProvidedByUsedInOperatingActivities",),
-        ) or 0
+        # Use XBRL concept directly for CF totals — standard_concept is reused on
+        # individual WC-change rows too, so the first-match rule picks the wrong row.
+        op_cf = (
+            self._get(base, col, xbrl=("us-gaap_NetCashProvidedByUsedInOperatingActivities",))
+            or 0
+        )
 
-        capex = g(
-            std=("CapitalExpenses",),
-            xb=(
+        capex = (
+            self._get(base, col, xbrl=(
                 "us-gaap_PaymentsToAcquirePropertyPlantAndEquipment",
                 "us-gaap_PaymentsForCapitalImprovements",
-            ),
-        ) or 0
+            ))
+            or 0
+        )
         if capex > 0:
             capex = -capex  # standardise to negative (cash outflow)
 
@@ -268,9 +270,19 @@ class EdgarClient:
                 "us-gaap_DepreciationAmortizationAndAccretionNet",
             ),
         ) or 0
+        # Fallback: some companies use custom D&A concepts with no standard_concept
+        # (e.g. msft_DepreciationAmortizationAndOther). Match by label keyword instead.
+        if not dna:
+            depr = base[base["label"].str.lower().str.contains(r"\bdepreciation\b", na=False, regex=True)]
+            if not depr.empty and col in depr.columns:
+                v = depr.iloc[0][col]
+                if pd.notna(v):
+                    dna = abs(float(v))
 
-        # Working capital change = sum of all IncreaseDecreaseIn* line items
-        wc_rows = base[base["concept"].str.contains("IncreaseDecreaseIn", na=False)]
+        # Working capital change = sum of IncreaseDecreaseIn* items.
+        # Use "_IncreaseDecreaseIn\w" (underscore-anchored) to avoid matching
+        # PeriodIncreaseDecreaseIncluding... concepts (e.g. net-cash-change row).
+        wc_rows = base[base["concept"].str.contains(r"_IncreaseDecreaseIn\w", na=False, regex=True)]
         wc_change = (
             sum(float(v) for v in wc_rows[col].dropna())
             if col in wc_rows.columns
