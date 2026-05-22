@@ -52,6 +52,15 @@ When interpreting get_put_wheel_opportunity results:
   earnings not before the expiration date, liquidity GOOD, score ≥ 70
 - Always cite the specific ROI %, IV %, strike, and expiration from the tool response.
 - If the tool returns no option data for the symbol, say so clearly.
+
+When the user asks for the best puts across all stocks, today's top opportunities, or wants to scan the market for put-selling candidates, call scan_put_opportunities.
+- The tool scans all tracked symbols and returns the highest-scoring cash-secured put contracts ranked by composite score. By default return only top 5 best opportunities
+- Optional filters: limit (number of results), min_score (0–100), min_roi (%), max_dte (days to expiration).
+
+When interpreting scan_put_opportunities results:
+- Present results as a ranked list with ticker, strike, expiration, ROI %, score, and rating.
+- Highlight any warnings (wide spreads, low liquidity, earnings risk) for each candidate.
+- A score ≥ 80 is a good opportunity; 65–79 is watchlist; 50–64 is speculative.
 """
 
 # Tools the agent can call (maps to your Django business logic)
@@ -101,6 +110,39 @@ TOOLS = [
                     }
                 },
                 "required": ["symbol"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "scan_put_opportunities",
+            "description": (
+                "Scan all tracked symbols in the database and return the best cash-secured put (CSP) "
+                "opportunities ranked by composite score. Use this when the user asks for today's best puts, "
+                "top put opportunities across all stocks, or wants to compare puts across multiple tickers."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Number of top results to return. Default 10.",
+                    },
+                    "min_score": {
+                        "type": "number",
+                        "description": "Minimum composite score (0–100) to include. Default 50 (filters out Avoid-rated contracts).",
+                    },
+                    "min_roi": {
+                        "type": "number",
+                        "description": "Minimum ROI percentage to include. Optional.",
+                    },
+                    "max_dte": {
+                        "type": "integer",
+                        "description": "Maximum days to expiration to include. Optional.",
+                    },
+                },
+                "required": [],
             },
         },
     },
@@ -258,6 +300,15 @@ def _extract_put_contracts(option_data):
                         raw_contracts.append(c)
     else:
         return contracts
+
+    # Expand alternatives nested inside each contract
+    extras = []
+    for c in raw_contracts:
+        if isinstance(c, dict):
+            for alt in c.get("alternatives") or []:
+                if isinstance(alt, dict):
+                    extras.append(alt)
+    raw_contracts.extend(extras)
 
     for c in raw_contracts:
         if not isinstance(c, dict):
@@ -652,6 +703,93 @@ def _handle_put_wheel_opportunity(symbol: str) -> str:
     return json.dumps(result, default=_json_default)
 
 
+def _handle_scan_put_opportunities(args: dict) -> str:
+    limit = int(args.get("limit") or 10)
+    min_score = float(args.get("min_score") or 50)
+    min_roi = _to_float(args.get("min_roi"))
+    max_dte = _to_int(args.get("max_dte"))
+
+    today = date.today()
+
+    try:
+        symbols = Symbol.objects.exclude(option_data=None).filter(score__gte=65)
+    except Exception as e:
+        return json.dumps({"error": "Database error", "details": str(e)})
+
+    results = []
+
+    for sym in symbols:
+        stock_price = _to_float(sym.price)
+        if not stock_price:
+            continue
+
+        rsi = _to_float(sym.rsi)
+        quality_score = _to_float(sym.score)
+        next_earnings_date = _parse_date(sym.next_earnings_date)
+
+        put_contracts = _extract_put_contracts(sym.option_data or {})
+        if not put_contracts:
+            continue
+
+        best_scored = None
+        for contract in put_contracts:
+            scored = _score_put_contract(
+                contract,
+                stock_price=stock_price,
+                rsi=rsi,
+                quality_score=quality_score,
+                next_earnings_date=next_earnings_date,
+                today=today,
+            )
+            if scored is None:
+                continue
+            if best_scored is None or scored["score"] > best_scored["score"]:
+                best_scored = scored
+
+        if best_scored is None:
+            continue
+
+        c = best_scored["contract"]
+        if best_scored["score"] < min_score:
+            continue
+        if min_roi is not None and c["roi"] < min_roi:
+            continue
+        if max_dte is not None and c["dte"] > max_dte:
+            continue
+
+        results.append({
+            "ticker": sym.ticker,
+            "price": stock_price,
+            "score": best_scored["score"],
+            "rating": best_scored["rating"],
+            "strike": c["strike"],
+            "expiration": c["expiration"],
+            "dte": c["dte"],
+            "roi": c["roi"],
+            "delta": c["delta"],
+            "iv": c["iv"],
+            "downside_buffer": c["downside_buffer"],
+            "earnings_risk": best_scored["earnings_before_expiration"],
+            "quality_score": quality_score,
+            "rsi": rsi,
+        })
+
+    results.sort(key=lambda x: x["score"], reverse=True)
+    top = results[:limit]
+
+    return json.dumps({
+        "scan_date": today.isoformat(),
+        "total_symbols_scanned": symbols.count(),
+        "results_returned": len(top),
+        "filters_applied": {
+            "min_score": min_score,
+            "min_roi": min_roi,
+            "max_dte": max_dte,
+        },
+        "opportunities": top,
+    }, default=_json_default)
+
+
 def handle_tool_call(tool_name: str, tool_args: dict) -> str:
     if tool_name == "analyze_stock":
         symbol = tool_args["symbol"]
@@ -680,6 +818,9 @@ def handle_tool_call(tool_name: str, tool_args: dict) -> str:
 
     if tool_name == "get_put_wheel_opportunity":
         return _handle_put_wheel_opportunity(tool_args["symbol"])
+
+    if tool_name == "scan_put_opportunities":
+        return _handle_scan_put_opportunities(tool_args)
 
     return json.dumps({"error": f"Unknown tool: {tool_name}"})
 
