@@ -50,17 +50,18 @@ The tool queries live option data from the database and returns:
 When interpreting get_put_wheel_opportunity results:
 - Good opportunity = ROI ≥ 2.5 % for the period,30 <= RSI <= 70,
   earnings not before the expiration date, liquidity GOOD, score ≥ 70
-- Always cite the specific ROI %, IV %, strike, and expiration from the tool response.
+- Always cite the specific ROI %, IV %, strike, delta and expiration from the tool response.
 - If the tool returns no option data for the symbol, say so clearly.
 
 When the user asks for the best puts across all stocks, today's top opportunities, or wants to scan the market for put-selling candidates, call scan_put_opportunities.
-- The tool scans all tracked symbols and returns the highest-scoring cash-secured put contracts ranked by composite score. By default return only top 5 best opportunities
+- The tool scans all tracked symbols and returns the highest-scoring cash-secured put contracts ranked by composite score.
 - Optional filters: limit (number of results), min_score (0–100), min_roi (%), max_dte (days to expiration).
 
 When interpreting scan_put_opportunities results:
 - Present results as a ranked list with ticker, strike, expiration, IV %, ROI %,fundamental score, delta and rating.
 - Highlight any warnings (wide spreads, low liquidity, earnings risk) for each candidate.
 - A score ≥ 80 is a good opportunity; 65–79 is watchlist; 50–64 is speculative.
+- End with a short conclusion paragraph that comments on the overall ROI range across the presented candidates and the strength of their fundamentals (quality scores and classifications). Note any standouts — highest ROI, strongest fundamentals, or any concerns worth flagging.
 """
 
 # Tools the agent can call (maps to your Django business logic)
@@ -140,6 +141,14 @@ TOOLS = [
                     "max_dte": {
                         "type": "integer",
                         "description": "Maximum days to expiration to include. Optional.",
+                    },
+                    "min_price": {
+                        "type": "number",
+                        "description": "Minimum underlying stock price to include. Optional.",
+                    },
+                    "max_price": {
+                        "type": "number",
+                        "description": "Maximum underlying stock price to include. Optional.",
                     },
                 },
                 "required": [],
@@ -708,6 +717,8 @@ def _handle_scan_put_opportunities(args: dict) -> str:
     min_score = float(args.get("min_score") or 50)
     min_roi = _to_float(args.get("min_roi"))
     max_dte = _to_int(args.get("max_dte"))
+    min_price = _to_float(args.get("min_price"))
+    max_price = _to_float(args.get("max_price"))
 
     today = date.today()
 
@@ -756,6 +767,10 @@ def _handle_scan_put_opportunities(args: dict) -> str:
             continue
         if max_dte is not None and c["dte"] > max_dte:
             continue
+        if min_price is not None and stock_price < min_price:
+            continue
+        if max_price is not None and stock_price > max_price:
+            continue
 
         results.append({
             "ticker": sym.ticker,
@@ -785,6 +800,8 @@ def _handle_scan_put_opportunities(args: dict) -> str:
             "min_score": min_score,
             "min_roi": min_roi,
             "max_dte": max_dte,
+            "min_price": min_price,
+            "max_price": max_price,
         },
         "opportunities": top,
     }, default=_json_default)
