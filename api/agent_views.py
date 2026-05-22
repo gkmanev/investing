@@ -192,7 +192,11 @@ def _parse_date(value):
         return value.date()
 
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).date()
+        s = str(value).replace("Z", "+00:00")
+        # Handle compact YYYYMMDD integer format (e.g. 20260618)
+        if re.fullmatch(r"\d{8}", s):
+            return datetime.strptime(s, "%Y%m%d").date()
+        return datetime.fromisoformat(s).date()
     except Exception:
         return None
 
@@ -205,6 +209,7 @@ def _extract_put_contracts(option_data):
     2. option_data = {"contracts": [...]}
     3. option_data = [{"type": "put", ...}, ...]
     4. option_data = {"2026-06-19": {"puts": [...]}}
+    5. option_data = {single contract dict with "strike", "option_type", ...}
     """
 
     contracts = []
@@ -218,7 +223,13 @@ def _extract_put_contracts(option_data):
     elif isinstance(option_data, dict):
         raw_contracts = []
 
-        if isinstance(option_data.get("puts"), list):
+        # Single contract stored directly as a dict
+        if "strike" in option_data and not any(
+            isinstance(option_data.get(k), list) for k in ("puts", "contracts", "options")
+        ):
+            raw_contracts = [option_data]
+
+        elif isinstance(option_data.get("puts"), list):
             raw_contracts.extend(option_data["puts"])
 
         if isinstance(option_data.get("contracts"), list):
