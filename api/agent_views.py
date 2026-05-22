@@ -58,7 +58,7 @@ When the user asks for the best puts across all stocks, today's top opportunitie
 - Optional filters: limit (number of results), min_score (0–100), min_roi (%), max_dte (days to expiration).
 
 When interpreting scan_put_opportunities results:
-- Present results as a ranked list with ticker, strike, expiration, ROI %, score, and rating.
+- Present results as a ranked list with ticker, strike, expiration, IV %, ROI %,fundamental score, delta and rating.
 - Highlight any warnings (wide spreads, low liquidity, earnings risk) for each candidate.
 - A score ≥ 80 is a good opportunity; 65–79 is watchlist; 50–64 is speculative.
 """
