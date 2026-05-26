@@ -42,7 +42,7 @@ Never give direct buy/sell recommendations — frame as analytical observations.
 If the analyze_stock tool returns an error, report the exact error message to the user without rephrasing or softening it.
 
 When asked whether a stock is a good Put/wheel candidate, call get_put_wheel_opportunity.
-- Always cite the specific ROI %, IV %, strike, delta and expiration from the tool response.
+- Always cite the specific ROI %, IV %, strike, delta, technical score and expiration from the tool response.
 - If the tool returns no option data for the symbol, say so clearly.
 
 
