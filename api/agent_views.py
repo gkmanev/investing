@@ -380,6 +380,7 @@ def _score_put_contract(
     stock_price,
     rsi,
     quality_score,
+    technical_score,
     next_earnings_date,
     today
 ):
@@ -529,6 +530,22 @@ def _score_put_contract(
         elif rsi < 30:
             warnings.append("RSI is oversold, which may signal higher short-term risk.")
 
+    # Technical score
+    if technical_score == "Strong Buy":
+        score += 10
+        reasons.append("Technical score is Strong Buy.")
+    elif technical_score == "Buy":
+        score += 6
+        reasons.append("Technical score is Buy.")
+    elif technical_score == "Neutral":
+        score += 2
+    elif technical_score == "Sell":
+        score -= 5
+        warnings.append("Technical score is Sell.")
+    elif technical_score == "Strong Sell":
+        score -= 10
+        warnings.append("Technical score is Strong Sell.")
+
     # Earnings risk
     if earnings_before_exp:
         score -= 15
@@ -608,6 +625,7 @@ def _handle_put_wheel_opportunity(symbol: str) -> str:
     stock_price = _to_float(sym.price)
     rsi = _to_float(sym.rsi)
     quality_score = _to_float(sym.score)
+    technical_score = sym.technical_score
     next_earnings_date = _parse_date(sym.next_earnings_date)
 
     option_data = sym.option_data or {}
@@ -638,6 +656,7 @@ def _handle_put_wheel_opportunity(symbol: str) -> str:
             stock_price=stock_price,
             rsi=rsi,
             quality_score=quality_score,
+            technical_score=technical_score,
             next_earnings_date=next_earnings_date,
             today=today,
         )
@@ -736,6 +755,7 @@ def _handle_scan_put_opportunities(args: dict) -> str:
 
         rsi = _to_float(sym.rsi)
         quality_score = _to_float(sym.score)
+        technical_score = sym.technical_score
         next_earnings_date = _parse_date(sym.next_earnings_date)
 
         put_contracts = _extract_put_contracts(sym.option_data or {})
@@ -749,6 +769,7 @@ def _handle_scan_put_opportunities(args: dict) -> str:
                 stock_price=stock_price,
                 rsi=rsi,
                 quality_score=quality_score,
+                technical_score=technical_score,
                 next_earnings_date=next_earnings_date,
                 today=today,
             )
