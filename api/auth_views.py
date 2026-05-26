@@ -58,6 +58,7 @@ def _set_refresh_cookie(response: Response, refresh_token: str) -> None:
         samesite=settings.AUTH_REFRESH_COOKIE_SAMESITE,
         path=settings.AUTH_REFRESH_COOKIE_PATH,
         domain=settings.AUTH_REFRESH_COOKIE_DOMAIN,
+        max_age=settings.AUTH_REFRESH_COOKIE_MAX_AGE,
     )
 
 
