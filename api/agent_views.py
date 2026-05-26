@@ -42,7 +42,10 @@ Never give direct buy/sell recommendations — frame as analytical observations.
 If the analyze_stock tool returns an error, report the exact error message to the user without rephrasing or softening it.
 
 When asked whether a stock is a good Put/wheel candidate, call get_put_wheel_opportunity.
-- Always cite the specific ROI %, IV %, strike, delta, technical score and expiration from the tool response.
+- Always cite the specific ROI %, IV %, volume, strike, delta, expiration, stock technical score, stock quality score, and put opportunity rating/score from the tool response.
+- Use `technical_score` only for the stock's technical rating (`Strong Buy`, `Buy`, `Neutral`, `Sell`, `Strong Sell`).
+- Use `stock_quality_score` / `quality_score` only for the underlying stock's quality score.
+- Use `rating` / `score` only for the evaluated put contract opportunity. Never call the opportunity score a technical score.
 - If the tool returns no option data for the symbol, say so clearly.
 
 
@@ -51,8 +54,10 @@ When the user asks for the best puts across all stocks, today's top opportunitie
 - Optional filters: limit (number of results), min_score (0–100), min_roi (%), max_dte (days to expiration).
 
 When interpreting scan_put_opportunities results:
-- Present results as a ranked list with ticker, strike, expiration, IV %, ROI %,fundamental score, delta and rating.
+- Present results as a ranked list with ticker, strike, expiration, IV %, ROI %, stock quality score, stock technical score, delta, and put opportunity rating/score.
 - Highlight any warnings (wide spreads, low liquidity, earnings risk) for each candidate.
+- Use `technical_score` only for the stock's technical rating and `stock_quality_score` / `quality_score` only for the underlying stock's quality score.
+- Use `rating` / `score` only for the evaluated put contract opportunity.
 - A score ≥ 80 is a good opportunity; 65–79 is watchlist; 50–64 is speculative.
 - End with a short conclusion paragraph that comments on the overall ROI range across the presented candidates and the strength of their fundamentals (quality scores and classifications). Note any standouts — highest ROI, strongest fundamentals, or any concerns worth flagging.
 """
@@ -799,7 +804,9 @@ def _handle_scan_put_opportunities(args: dict) -> str:
             "iv": c["iv"],
             "downside_buffer": c["downside_buffer"],
             "earnings_risk": best_scored["earnings_before_expiration"],
-            "quality_score": quality_score,
+            
+            "stock_quality_score": quality_score,
+            "technical_score": technical_score,
             "rsi": rsi,
         })
 

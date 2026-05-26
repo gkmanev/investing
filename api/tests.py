@@ -12,6 +12,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 from unittest.mock import MagicMock, call, patch
 
+from api import agent_views
 from api.custom_filters import CUSTOM_FILTER_PAYLOAD, CUSTOM_FILTER_PAYLOAD_V2
 from api.management.commands import ai_agents_potential as ai_agents_potential_command
 from api.management.commands import initial_screener as initial_screener_command
@@ -2537,3 +2538,56 @@ class AIAgentsPotentialCommandTestCase(APITestCase):
         self.assertIn("3 web search call(s)", summary)
         self.assertIn("24000 billed search input", summary)
         self.assertIn("Estimated cost: $0.0339", summary)
+
+
+class PutWheelAgentViewTests(APITestCase):
+    def test_handle_put_wheel_opportunity_returns_explicit_stock_and_opportunity_scores(
+        self,
+    ) -> None:
+        expiration = date.today() + timedelta(days=31)
+        Symbol.objects.create(
+            ticker="ADI",
+            price=Decimal("400.00"),
+            rsi=Decimal("50.00"),
+            score=85,
+            classification="High-quality compounder",
+            liquidity=Symbol.LIQUIDITY_GOOD,
+            technical_score=Symbol.TechnicalScore.BUY,
+            option_data={
+                "puts": [
+                    {
+                        "strike": 375,
+                        "expiration": expiration.isoformat(),
+                        "bid": 10.00,
+                        "ask": 10.50,
+                        "delta": -0.30,
+                        "iv": 40.45,
+                        "volume": 150,
+                        "open_interest": 800,
+                    },
+                    {
+                        "strike": 375,
+                        "expiration": expiration.isoformat(),
+                        "bid": 10.90,
+                        "ask": 11.10,
+                        "delta": -0.30,
+                        "iv": 40.45,
+                        "volume": 150,
+                        "open_interest": 800,
+                    },
+                ]
+            },
+        )
+
+        payload = json.loads(agent_views._handle_put_wheel_opportunity("ADI"))
+
+        self.assertEqual(payload["quality_score"], 85)
+        self.assertEqual(payload["stock_quality_score"], 85)
+        self.assertEqual(payload["technical_score"], Symbol.TechnicalScore.BUY)
+        self.assertEqual(payload["summary"]["quality_score"], 85)
+        self.assertEqual(payload["summary"]["stock_quality_score"], 85)
+        self.assertEqual(payload["summary"]["technical_score"], Symbol.TechnicalScore.BUY)
+        self.assertEqual(payload["summary"]["opportunity_rating"], "Good opportunity")
+        self.assertEqual(payload["summary"]["opportunity_score"], payload["summary"]["score"])
+        self.assertEqual(payload["summary"]["best_roi"], 2.93)
+        self.assertEqual(payload["best_put_opportunity"]["contract"]["roi"], 2.93)
