@@ -369,7 +369,6 @@ def _extract_put_contracts(option_data):
             "volume": volume,
             "open_interest": open_interest,
         })
-    print(contracts)
     return contracts
 
 def _score_put_contract(
@@ -687,6 +686,7 @@ def _handle_put_wheel_opportunity(symbol: str) -> str:
 
     best = evaluated[0]
     top_candidates = evaluated[:5]
+    print(f"TOP Candida:{top_candidates}")
 
     result = {
         "symbol": symbol,
