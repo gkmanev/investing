@@ -42,7 +42,7 @@ Never give direct buy/sell recommendations — frame as analytical observations.
 If the analyze_stock tool returns an error, report the exact error message to the user without rephrasing or softening it.
 
 When asked whether a stock or company or ticker is a good Put/wheel or Option selling candidate, call get_put_wheel_opportunity.
-- Always cite the specific ROI %, IV %, volume, strike, delta, expiration, stock technical score, stock quality score, and put opportunity rating/score from the tool response.
+- Always cite the specific ROI %, IV %, volume, current stock price, strike, delta, expiration, stock technical score, stock quality score, and put opportunity rating/score from the tool response.
 - Use `technical_score` only for the stock's technical rating (`Strong Buy`, `Buy`, `Neutral`, `Sell`, `Strong Sell`).
 - Use `stock_quality_score` / `quality_score` only for the underlying stock's quality score. 
 - Use `rating` / `score` only for the evaluated put contract opportunity. Never call the opportunity score a technical score.
@@ -126,7 +126,7 @@ TOOLS = [
                 "properties": {
                     "limit": {
                         "type": "integer",
-                        "description": "Number of top results to return. Default 10.",
+                        "description": "Number of top results to return. Default 15.",
                     },
                     "min_score": {
                         "type": "number",
@@ -686,8 +686,7 @@ def _handle_put_wheel_opportunity(symbol: str) -> str:
 
     best = evaluated[0]
     top_candidates = evaluated[:5]
-    print(f"TOP Candida:{top_candidates}")
-
+   
     result = {
         "symbol": symbol,
         "price": stock_price,
@@ -730,12 +729,13 @@ def _handle_put_wheel_opportunity(symbol: str) -> str:
 
 
 def _handle_scan_put_opportunities(args: dict) -> str:
-    limit = int(args.get("limit") or 10)
+    limit = int(args.get("limit") or 15)
     min_score = float(args.get("min_score") or 50)
     min_roi = _to_float(args.get("min_roi"))
     max_dte = _to_int(args.get("max_dte"))
     min_price = _to_float(args.get("min_price"))
     max_price = _to_float(args.get("max_price"))
+    print(f"args:{args}")
 
     today = date.today()
 
