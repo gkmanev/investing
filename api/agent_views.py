@@ -752,14 +752,17 @@ def _handle_scan_put_opportunities(args: dict) -> str:
             )
             if scored is None:
                 continue
-            if best_scored is None or scored["score"] > best_scored["score"]:
+            if (
+                best_scored is None
+                or scored["cumulative_score"] > best_scored["cumulative_score"]
+            ):
                 best_scored = scored
 
         if best_scored is None:
             continue
 
         c = best_scored["contract"]
-        if best_scored["score"] < min_score:
+        if best_scored["cumulative_score"] < min_score:
             continue
         if min_roi is not None and c["roi"] < min_roi:
             continue
@@ -773,7 +776,7 @@ def _handle_scan_put_opportunities(args: dict) -> str:
         results.append({
             "ticker": sym.ticker,
             "price": stock_price,
-            "score": best_scored["score"],
+            "score": best_scored["cumulative_score"],
             "rating": best_scored["rating"],
             "strike": c["strike"],
             "expiration": c["expiration"],
