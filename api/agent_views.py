@@ -126,7 +126,7 @@ TOOLS = [
                 "properties": {
                     "limit": {
                         "type": "integer",
-                        "description": "Number of top results to return. Default 15.",
+                        "description": "Number of top results to return. Default 10.",
                     },
                     "min_score": {
                         "type": "number",
@@ -413,30 +413,19 @@ def _score_put_contract(
     score = 0
     reasons = []
     warnings = []
-
-    # DTE score — your preferred 25–40 DTE window
-    if 25 <= dte <= 40:
-        score += 20
-        reasons.append("Expiration is inside the preferred 25–40 DTE window.")
-    elif 20 <= dte <= 45:
-        score += 12
-        warnings.append("Expiration is close to the target DTE window, but not ideal.")
-    else:
-        warnings.append("Expiration is outside the preferred DTE range.")
+    
 
     # Delta score
     if delta is not None:
         abs_delta = abs(delta)
 
-        if 0.15 <= abs_delta <= 0.35:
+        if 0.18 <= abs_delta <= 0.29:
             score += 20
             reasons.append("Delta is in a conservative put-selling range.")
-        elif 0.35 < abs_delta <= 0.45:
+        elif 0.29 < abs_delta <= 0.34:
             score += 10
             warnings.append("Delta is slightly aggressive for conservative put selling.")
-        elif abs_delta < 0.15:
-            score += 8
-            warnings.append("Delta is very conservative, but income may be lower.")
+
         else:
             warnings.append("Delta is too aggressive for a conservative wheel setup.")
     else:
@@ -579,7 +568,7 @@ def _score_put_contract(
             "downside_buffer": round(downside_buffer, 2),
             "spread_pct": round(spread_pct, 2) if spread_pct is not None else None,
         },
-        "score": score,
+        "cumulative_score": score,
         "rating": rating,
         "earnings_before_expiration": earnings_before_exp,
         "reasons": reasons,
@@ -680,7 +669,7 @@ def _handle_put_wheel_opportunity(symbol: str) -> str:
 
     evaluated = sorted(
         evaluated,
-        key=lambda item: item["score"],
+        key=lambda item: item["cumulative_score"],
         reverse=True
     )
 
@@ -704,18 +693,9 @@ def _handle_put_wheel_opportunity(symbol: str) -> str:
         "best_put_opportunity": best,
         "top_put_candidates": top_candidates,
 
-        "strategy_rules_used": {
-            "preferred_dte": "25–40 days",
-            "preferred_delta": "0.15–0.35 absolute delta",
-            "preferred_roi": "2.5%+",
-            "avoid_earnings_before_expiration": True,
-            "prefer_high_quality_score": "75+",
-            "prefer_reasonable_bid_ask_spread": True,
-        },
-
         "summary": {
-            "rating": best["rating"],
-            "score": best["score"],
+            "rating": best["rating"], # Good opportunity, Watchlist...
+            "cumulative_score": best["cumulative_score"],
             "best_strike": best["contract"]["strike"],
             "best_expiration": best["contract"]["expiration"],
             "best_dte": best["contract"]["dte"],
@@ -729,14 +709,13 @@ def _handle_put_wheel_opportunity(symbol: str) -> str:
 
 
 def _handle_scan_put_opportunities(args: dict) -> str:
-    limit = int(args.get("limit") or 15)
+    limit = int(args.get("limit") or 10)
     min_score = float(args.get("min_score") or 50)
     min_roi = _to_float(args.get("min_roi"))
     max_dte = _to_int(args.get("max_dte"))
     min_price = _to_float(args.get("min_price"))
     max_price = _to_float(args.get("max_price"))
-    print(f"args:{args}")
-
+    
     today = date.today()
 
     try:
