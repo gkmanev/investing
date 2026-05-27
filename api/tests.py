@@ -2,11 +2,13 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from io import StringIO
 import json
+import urllib.error
 from typing import Any
 
 import requests
 from django.core.management import call_command
 from django.core.management.base import CommandError
+from django.test import override_settings
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -23,6 +25,7 @@ from api.management.commands.fetch_profile_data import (
 )
 from api.management.commands.trading_view_scrape import (
     Command as TradingViewCommand,
+    FinancialModelingPrepClient,
     RequestRateLimiter,
     TradingViewOptions,
 )
@@ -1899,6 +1902,7 @@ class SymbolAPITestCase(APITestCase):
         self.assertEqual([item["ticker"] for item in response.data], ["MATCH"])
 
 
+@override_settings(FINANCIAL_MODELING_API_KEY="test-fmp-key")
 class TradingViewScrapeCommandTests(APITestCase):
     def setUp(self) -> None:
         self.symbol = Symbol.objects.create(
@@ -1908,6 +1912,8 @@ class TradingViewScrapeCommandTests(APITestCase):
             price=Decimal("100.00"),
         )
         self.command = TradingViewCommand()
+        self.price_client = MagicMock()
+        self.price_client.get_underlying_price.return_value = "100.00"
 
     def _expiration_int(self, days: int = 30) -> int:
         return int((date.today() + timedelta(days=days)).strftime("%Y%m%d"))
@@ -1962,24 +1968,34 @@ class TradingViewScrapeCommandTests(APITestCase):
             timeout=30,
         )
 
+    @patch("api.management.commands.trading_view_scrape.certifi.where", return_value="dummy.pem")
     @patch("api.management.commands.trading_view_scrape.time.sleep")
-    def test_tradingview_client_retries_after_429(self, mock_sleep: MagicMock) -> None:
-        session = MagicMock()
-        rate_limiter = MagicMock()
-        too_many_requests = MagicMock(status_code=429, headers={"Retry-After": "2"})
-        success = MagicMock(status_code=200, headers={})
-        success.json.return_value = {"symbols": [{"f": ["100.00", 100]}]}
-        session.request.side_effect = [too_many_requests, success]
-
-        price = TradingViewOptions(session=session, rate_limiter=rate_limiter).get_underlying_price(
-            "NASDAQ", "AAPL"
+    @patch("api.management.commands.trading_view_scrape.urllib.request.urlopen")
+    def test_fmp_client_retries_after_429(
+        self,
+        mock_urlopen: MagicMock,
+        mock_sleep: MagicMock,
+        _mock_certifi_where: MagicMock,
+    ) -> None:
+        too_many_requests = urllib.error.HTTPError(
+            "https://financialmodelingprep.com/stable/quote-short?symbol=AAPL&apikey=test-fmp-key",
+            429,
+            "Too Many Requests",
+            {"Retry-After": "2"},
+            None,
         )
+        success_response = MagicMock()
+        success_response.read.return_value = b'[{"symbol":"AAPL","price":100.0}]'
+        success_context = MagicMock()
+        success_context.__enter__.return_value = success_response
+        success_context.__exit__.return_value = None
+        mock_urlopen.side_effect = [too_many_requests, success_context]
 
-        self.assertEqual(price, "100.00")
-        self.assertEqual(session.request.call_count, 2)
-        self.assertEqual(rate_limiter.wait.call_count, 2)
-        rate_limiter.backoff.assert_called_once_with(2.0)
-        mock_sleep.assert_called_once_with(2.0)
+        price = FinancialModelingPrepClient(api_key="test-fmp-key").get_underlying_price("AAPL")
+
+        self.assertEqual(price, 100.0)
+        self.assertEqual(mock_urlopen.call_count, 2)
+        mock_sleep.assert_called_once_with(2)
 
     @patch("api.management.commands.trading_view_scrape.time.sleep")
     @patch("api.management.commands.trading_view_scrape.time.monotonic")
@@ -2030,7 +2046,6 @@ class TradingViewScrapeCommandTests(APITestCase):
     def test_process_symbol_updates_rsi_from_tradingview(self) -> None:
         expiration = self._expiration_int()
         client = MagicMock()
-        client.get_underlying_price.return_value = "100.00"
         client.get_monthly_rsi.return_value = "55.75"
         client.get_expirations.return_value = [expiration]
         client.get_chain.return_value = [
@@ -2045,6 +2060,7 @@ class TradingViewScrapeCommandTests(APITestCase):
 
         changed, was_cleared = self.command._process_symbol(
             client=client,
+            price_client=self.price_client,
             symbol=self.symbol,
             exchange="NASDAQ",
             min_dte=25,
@@ -2066,18 +2082,21 @@ class TradingViewScrapeCommandTests(APITestCase):
 
     def test_process_symbol_reports_429_with_operator_guidance(self) -> None:
         client = MagicMock()
-        response = MagicMock(status_code=429)
-        client.get_underlying_price.side_effect = requests.HTTPError(
-            "429 Client Error",
-            response=response,
+        self.price_client.get_underlying_price.side_effect = urllib.error.HTTPError(
+            "https://financialmodelingprep.com/stable/quote-short?symbol=AAPL&apikey=test-fmp-key",
+            429,
+            "Too Many Requests",
+            {"Retry-After": "2"},
+            None,
         )
 
         with self.assertRaisesMessage(
             CommandError,
-            "TradingView request failed for NASDAQ:AAPL: rate limited by TradingView (HTTP 429). Try lowering --max-rps or using --skip-rsi.",
+            "Financial Modeling Prep request failed for AAPL: rate limited by Financial Modeling Prep (HTTP 429). Check your API quota or retry later.",
         ):
             self.command._process_symbol(
                 client=client,
+                price_client=self.price_client,
                 symbol=self.symbol,
                 exchange="NASDAQ",
                 min_dte=25,
@@ -2091,7 +2110,6 @@ class TradingViewScrapeCommandTests(APITestCase):
     def test_process_symbol_keeps_smaller_abs_delta_alternatives(self) -> None:
         expiration = self._expiration_int()
         client = MagicMock()
-        client.get_underlying_price.return_value = "100.00"
         client.get_monthly_rsi.return_value = "55.75"
         client.get_expirations.return_value = [expiration]
         client.get_chain.return_value = [
@@ -2127,6 +2145,7 @@ class TradingViewScrapeCommandTests(APITestCase):
 
         changed, was_cleared = self.command._process_symbol(
             client=client,
+            price_client=self.price_client,
             symbol=self.symbol,
             exchange="NASDAQ",
             min_dte=25,
@@ -2165,7 +2184,6 @@ class TradingViewScrapeCommandTests(APITestCase):
         )
 
         client = MagicMock()
-        client.get_underlying_price.return_value = "100.00"
         client.get_monthly_rsi.return_value = "55.75"
         client.get_expirations.return_value = [expiration]
         client.get_chain.return_value = [
@@ -2180,6 +2198,7 @@ class TradingViewScrapeCommandTests(APITestCase):
 
         changed, was_cleared = self.command._process_symbol(
             client=client,
+            price_client=self.price_client,
             symbol=self.symbol,
             exchange="NASDAQ",
             min_dte=25,
@@ -2205,7 +2224,6 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.symbol.save(update_fields=["rsi", "updated_at"])
 
         client = MagicMock()
-        client.get_underlying_price.return_value = "100.00"
         client.get_expirations.return_value = [expiration]
         client.get_chain.return_value = [
             self._option_row(
@@ -2219,6 +2237,7 @@ class TradingViewScrapeCommandTests(APITestCase):
 
         changed, was_cleared = self.command._process_symbol(
             client=client,
+            price_client=self.price_client,
             symbol=self.symbol,
             exchange="NASDAQ",
             min_dte=25,
@@ -2243,7 +2262,6 @@ class TradingViewScrapeCommandTests(APITestCase):
         expiration = self._expiration_int()
         expiration_date = datetime.strptime(str(expiration), "%Y%m%d").date()
         client = MagicMock()
-        client.get_underlying_price.return_value = "100.00"
         client.get_monthly_rsi.return_value = "55.75"
         client.get_expirations.return_value = [expiration]
         client.get_chain.return_value = [
@@ -2264,6 +2282,7 @@ class TradingViewScrapeCommandTests(APITestCase):
 
         changed, was_cleared = self.command._process_symbol(
             client=client,
+            price_client=self.price_client,
             symbol=self.symbol,
             exchange="NASDAQ",
             min_dte=25,
@@ -2291,7 +2310,6 @@ class TradingViewScrapeCommandTests(APITestCase):
     ) -> None:
         expiration = self._expiration_int()
         client = MagicMock()
-        client.get_underlying_price.return_value = "100.00"
         client.get_monthly_rsi.return_value = "55.75"
         client.get_expirations.return_value = [expiration]
         client.get_chain.return_value = [
@@ -2307,6 +2325,7 @@ class TradingViewScrapeCommandTests(APITestCase):
 
         changed, was_cleared = self.command._process_symbol(
             client=client,
+            price_client=self.price_client,
             symbol=self.symbol,
             exchange="NASDAQ",
             min_dte=25,

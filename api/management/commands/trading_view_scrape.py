@@ -1,17 +1,24 @@
 from __future__ import annotations
 
+import json
+import ssl
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 from decimal import Decimal, DivisionByZero, InvalidOperation
 from typing import Any, Callable
 
+import certifi
 import requests
 try:
     import yfinance as yf
 except ImportError:  # pragma: no cover - optional dependency
     yf = None
+from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db import close_old_connections
 from django.utils import timezone
@@ -270,14 +277,54 @@ class TradingViewOptions:
 
         return rows
 
-    def get_underlying_price(self, exchange: str, ticker: str) -> Any:
-        payload = {
-            "columns": ["close", "pricescale"],
-            "ignore_unknown_fields": False,
-            "symbols": {"tickers": [f"{exchange}:{ticker}"]},
-        }
-        data = self.post_global(payload)
-        return data["symbols"][0]["f"][0]
+class FinancialModelingPrepClient:
+    BASE_URL = "https://financialmodelingprep.com/stable"
+
+    def __init__(self, api_key: str | None = None) -> None:
+        self.api_key = (
+            (api_key if api_key is not None else getattr(settings, "FINANCIAL_MODELING_API_KEY", ""))
+            or ""
+        ).strip()
+        if not self.api_key:
+            raise ValueError("FINANCIAL_MODELING_API_KEY is missing in Django settings")
+        self._ssl_context = ssl.create_default_context(cafile=certifi.where())
+
+    def _fetch_json(self, url: str) -> Any:
+        max_attempts = 4
+        wait = 15
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                with urllib.request.urlopen(
+                    url,
+                    context=self._ssl_context,
+                    timeout=30,
+                ) as response:
+                    body = response.read()
+                return json.loads(body.decode("utf-8")) if body else None
+            except urllib.error.HTTPError as exc:
+                if exc.code != 429:
+                    raise
+                retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                sleep_secs = int(retry_after) if retry_after else wait
+                if attempt == max_attempts:
+                    raise
+                time.sleep(sleep_secs)
+                wait *= 2
+
+    def get_underlying_price(self, ticker: str) -> Any:
+        query = urllib.parse.urlencode(
+            {"symbol": ticker.upper(), "apikey": self.api_key}
+        )
+        url = f"{self.BASE_URL}/quote-short?{query}"
+        payload = self._fetch_json(url)
+        if not isinstance(payload, list) or not payload:
+            raise ValueError(f"No quote data returned for {ticker.upper()}")
+
+        quote = payload[0]
+        if not isinstance(quote, dict) or "price" not in quote:
+            raise ValueError(f"Missing price in quote response for {ticker.upper()}")
+        return quote["price"]
 
 
 class Command(BaseCommand):
@@ -388,6 +435,10 @@ class Command(BaseCommand):
             raise CommandError("--workers must be at least 1.")
         if options["max_rps"] <= 0:
             raise CommandError("--max-rps must be greater than 0.")
+        try:
+            price_client = FinancialModelingPrepClient()
+        except ValueError as exc:
+            raise CommandError(str(exc)) from exc
 
         roi_above = options.get("roi_above")
         if roi_above is not None:
@@ -457,6 +508,7 @@ class Command(BaseCommand):
                 )
                 return self._process_symbol(
                     client=client,
+                    price_client=price_client,
                     symbol=symbol,
                     exchange=exchange,
                     min_dte=min_dte,
@@ -514,6 +566,7 @@ class Command(BaseCommand):
         self,
         *,
         client: TradingViewOptions,
+        price_client: FinancialModelingPrepClient,
         symbol: Symbol,
         exchange: str,
         min_dte: int,
@@ -525,9 +578,17 @@ class Command(BaseCommand):
         reporter: Callable[[str], None] | None = None,
     ) -> tuple[bool, bool]:
         try:
-            underlying_price = self._to_decimal(
-                client.get_underlying_price(exchange=exchange, ticker=symbol.ticker)
-            )
+            underlying_price = self._to_decimal(price_client.get_underlying_price(symbol.ticker))
+        except (urllib.error.HTTPError, urllib.error.URLError) as exc:
+            raise CommandError(
+                self._format_fmp_request_error(ticker=symbol.ticker, exc=exc)
+            ) from exc
+        except (KeyError, TypeError, ValueError) as exc:
+            raise CommandError(
+                f"Financial Modeling Prep returned invalid price data for {symbol.ticker}: {exc}"
+            ) from exc
+
+        try:
             monthly_rsi = (
                 self._to_decimal(client.get_monthly_rsi(exchange=exchange, ticker=symbol.ticker))
                 if fetch_rsi
@@ -687,6 +748,24 @@ class Command(BaseCommand):
                 "Try lowering --max-rps or using --skip-rsi."
             )
         return f"{prefix}: {exc}"
+
+    @staticmethod
+    def _format_fmp_request_error(
+        *,
+        ticker: str,
+        exc: urllib.error.HTTPError | urllib.error.URLError,
+    ) -> str:
+        prefix = f"Financial Modeling Prep request failed for {ticker}"
+        if isinstance(exc, urllib.error.HTTPError):
+            if exc.code == 429:
+                return (
+                    f"{prefix}: rate limited by Financial Modeling Prep (HTTP 429). "
+                    "Check your API quota or retry later."
+                )
+            return f"{prefix} ({exc.code}): {exc.reason}"
+
+        reason = getattr(exc, "reason", exc)
+        return f"{prefix}: {reason}"
 
     def _populate_missing_option_volume(
         self,
