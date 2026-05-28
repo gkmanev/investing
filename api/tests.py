@@ -1997,6 +1997,46 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.assertEqual(mock_urlopen.call_count, 2)
         mock_sleep.assert_called_once_with(2)
 
+    @patch("api.management.commands.trading_view_scrape.certifi.where", return_value="dummy.pem")
+    @patch("api.management.commands.trading_view_scrape.urllib.request.urlopen")
+    def test_fmp_client_uses_exact_symbol_match(
+        self,
+        mock_urlopen: MagicMock,
+        _mock_certifi_where: MagicMock,
+    ) -> None:
+        response = MagicMock()
+        response.read.return_value = (
+            b'[{"symbol":"AAP","price":12.34},{"symbol":"AAPL","price":100.0}]'
+        )
+        context = MagicMock()
+        context.__enter__.return_value = response
+        context.__exit__.return_value = None
+        mock_urlopen.return_value = context
+
+        price = FinancialModelingPrepClient(api_key="test-fmp-key").get_underlying_price("AAPL")
+
+        self.assertEqual(price, 100.0)
+
+    @patch("api.management.commands.trading_view_scrape.certifi.where", return_value="dummy.pem")
+    @patch("api.management.commands.trading_view_scrape.urllib.request.urlopen")
+    def test_fmp_client_rejects_missing_exact_symbol_match(
+        self,
+        mock_urlopen: MagicMock,
+        _mock_certifi_where: MagicMock,
+    ) -> None:
+        response = MagicMock()
+        response.read.return_value = b'[{"symbol":"AAP","price":12.34}]'
+        context = MagicMock()
+        context.__enter__.return_value = response
+        context.__exit__.return_value = None
+        mock_urlopen.return_value = context
+
+        with self.assertRaisesMessage(
+            ValueError,
+            "No exact quote match returned for AAPL",
+        ):
+            FinancialModelingPrepClient(api_key="test-fmp-key").get_underlying_price("AAPL")
+
     @patch("api.management.commands.trading_view_scrape.time.sleep")
     @patch("api.management.commands.trading_view_scrape.time.monotonic")
     def test_request_rate_limiter_backoff_blocks_subsequent_requests(
@@ -2254,6 +2294,47 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.symbol.refresh_from_db()
         self.assertEqual(self.symbol.rsi, Decimal("41.25"))
         client.get_monthly_rsi.assert_not_called()
+
+    def test_process_symbol_rejects_snapshot_when_put_strike_exceeds_price(self) -> None:
+        expiration = self._expiration_int()
+        original_updated_at = self.symbol.updated_at
+        self.price_client.get_underlying_price.return_value = "26.9050"
+
+        client = MagicMock()
+        client.get_monthly_rsi.return_value = "60.02"
+        client.get_expirations.return_value = [expiration]
+        client.get_chain.return_value = [
+            self._option_row(
+                strike="245",
+                bid="5.00",
+                ask="5.80",
+                delta="-0.29",
+                option_symbol="AAPL_BAD",
+                volume="20",
+                iv="35.9300",
+            )
+        ]
+
+        with self.assertRaisesMessage(
+            CommandError,
+            "Inconsistent market snapshot for AAPL: underlying price 26.9050 is not above selected put strike 245.",
+        ):
+            self.command._process_symbol(
+                client=client,
+                price_client=self.price_client,
+                symbol=self.symbol,
+                exchange="NASDAQ",
+                min_dte=25,
+                max_dte=40,
+                delta_min=Decimal("-0.37"),
+                delta_max=Decimal("-0.24"),
+                roi_threshold=Decimal("2"),
+                fetch_rsi=True,
+            )
+
+        self.symbol.refresh_from_db()
+        self.assertEqual(self.symbol.price, Decimal("100.00"))
+        self.assertEqual(self.symbol.updated_at, original_updated_at)
 
     @patch("api.management.commands.trading_view_scrape.yf")
     def test_process_symbol_backfills_missing_volume_from_yfinance(

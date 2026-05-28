@@ -313,17 +313,32 @@ class FinancialModelingPrepClient:
                 wait *= 2
 
     def get_underlying_price(self, ticker: str) -> Any:
+        normalized_ticker = ticker.upper()
         query = urllib.parse.urlencode(
-            {"symbol": ticker.upper(), "apikey": self.api_key}
+            {"symbol": normalized_ticker, "apikey": self.api_key}
         )
         url = f"{self.BASE_URL}/quote-short?{query}"
         payload = self._fetch_json(url)
         if not isinstance(payload, list) or not payload:
-            raise ValueError(f"No quote data returned for {ticker.upper()}")
+            raise ValueError(f"No quote data returned for {normalized_ticker}")
 
-        quote = payload[0]
+        quote: dict[str, Any] | None = None
+        for candidate in payload:
+            if not isinstance(candidate, dict):
+                continue
+            returned_symbol = str(candidate.get("symbol", "")).strip().upper()
+            if returned_symbol == normalized_ticker:
+                quote = candidate
+                break
+
+        if quote is None:
+            if len(payload) == 1 and isinstance(payload[0], dict) and "symbol" not in payload[0]:
+                quote = payload[0]
+            else:
+                raise ValueError(f"No exact quote match returned for {normalized_ticker}")
+
         if not isinstance(quote, dict) or "price" not in quote:
-            raise ValueError(f"Missing price in quote response for {ticker.upper()}")
+            raise ValueError(f"Missing price in quote response for {normalized_ticker}")
         return quote["price"]
 
 
@@ -689,6 +704,11 @@ class Command(BaseCommand):
         )
         option_volume = self._to_int(best_candidate.get("volume")) if best_candidate else None
         option_iv = self._to_decimal(best_candidate.get("iv")) if best_candidate else None
+        self._validate_snapshot_consistency(
+            ticker=symbol.ticker,
+            underlying_price=underlying_price,
+            option_data=option_data,
+        )
         changed = self._update_symbol_snapshot(
             symbol,
             price=underlying_price,
@@ -728,6 +748,27 @@ class Command(BaseCommand):
             reporter(message)
             return
         self.stdout.write(message)
+
+    @staticmethod
+    def _validate_snapshot_consistency(
+        *,
+        ticker: str,
+        underlying_price: Decimal,
+        option_data: dict[str, Any] | None,
+    ) -> None:
+        if not option_data:
+            return
+
+        option_type = str(option_data.get("option_type", "")).strip().lower()
+        strike_price = Command._to_decimal(option_data.get("strike_price"))
+        if option_type != "put" or strike_price is None:
+            return
+
+        if strike_price >= underlying_price:
+            raise CommandError(
+                f"Inconsistent market snapshot for {ticker}: underlying price "
+                f"{underlying_price} is not above selected put strike {strike_price}."
+            )
 
     @staticmethod
     def _format_tradingview_request_error(
