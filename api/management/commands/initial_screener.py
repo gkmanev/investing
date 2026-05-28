@@ -25,7 +25,7 @@ from api.management.commands.trading_view_scrape import FinancialModelingPrepCli
 #TEST
 
 
-MAX_WORKERS = 8  # concurrent tickers processed at once
+MAX_WORKERS = 1 # concurrent tickers processed at once
 
 SCORE_MIN = 75  # minimum score to qualify for earnings screening
 TV_SCANNER_URL = "https://scanner.tradingview.com/america/scan"
