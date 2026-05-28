@@ -156,6 +156,52 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "compare_put_candidates",
+            "description": (
+                "Compare a short list of ticker symbols for cash-secured put / wheel suitability. "
+                "This reuses the existing single-symbol put evaluation for each ticker, then ranks the "
+                "candidates by opportunity score, assignment comfort, and optional risk filters."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "symbols": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Ticker symbols to compare, e.g. [\"AAPL\", \"MSFT\", \"NVDA\"].",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of ranked results to return. Defaults to all symbols.",
+                    },
+                    "min_opportunity_score": {
+                        "type": "number",
+                        "description": "Optional minimum opportunity score required to keep a symbol.",
+                    },
+                    "min_roi": {
+                        "type": "number",
+                        "description": "Optional minimum ROI percentage required to keep a symbol.",
+                    },
+                    "max_delta": {
+                        "type": "number",
+                        "description": "Optional maximum absolute delta allowed, for example 0.30.",
+                    },
+                    "exclude_earnings_risk": {
+                        "type": "boolean",
+                        "description": "When true, exclude candidates with earnings before expiration.",
+                    },
+                    "exclude_low_liquidity": {
+                        "type": "boolean",
+                        "description": "When true, exclude candidates with weak liquidity or very wide spreads.",
+                    },
+                },
+                "required": ["symbols"],
+            },
+        },
+    },
 ]
 
 class FMPClient:
@@ -579,35 +625,34 @@ def _score_put_contract(
     }
 
 
-
-def _handle_put_wheel_opportunity(symbol: str) -> str:
+def _get_put_wheel_opportunity_payload(symbol: str) -> dict[str, Any]:
     if not symbol:
-        return json.dumps({
+        return {
             "error": "Missing required symbol"
-        })
+        }
 
     symbol = symbol.strip().upper()
 
     if not re.match(r"^[A-Z0-9.\-]{1,10}$", symbol):
-        return json.dumps({
+        return {
             "error": "Invalid ticker symbol",
             "symbol": symbol
-        })
+        }
 
     try:
         sym = Symbol.objects.filter(ticker__iexact=symbol).first()
     except Exception as e:
-        return json.dumps({
+        return {
             "error": "Database error while fetching symbol data",
             "details": str(e),
             "symbol": symbol
-        })
+        }
 
     if sym is None:
-        return json.dumps({
+        return {
             "error": f"No data found in database for {symbol}",
             "symbol": symbol
-        })
+        }
 
     today = date.today()
 
@@ -620,22 +665,28 @@ def _handle_put_wheel_opportunity(symbol: str) -> str:
     option_data = sym.option_data or {}
     put_contracts = _extract_put_contracts(option_data)
 
+    base_payload = {
+        "symbol": symbol,
+        "price": stock_price,
+        "rsi": rsi,
+        "quality_score": quality_score,
+        "stock_quality_score": quality_score,
+        "technical_score": technical_score,
+        "classification": sym.classification,
+        "liquidity": sym.liquidity,
+        "initial_suitability": sym.initial_suitability,
+        "next_earnings_date": (
+            next_earnings_date.isoformat()
+            if next_earnings_date
+            else None
+        ),
+    }
+
     if not put_contracts:
-        return json.dumps({
-            "symbol": symbol,
-            "price": stock_price,
-            "rsi": rsi,
-            "quality_score": quality_score,
-            "classification": sym.classification,
-            "liquidity": sym.liquidity,
-            "initial_suitability": sym.initial_suitability,
-            "next_earnings_date": (
-                next_earnings_date.isoformat()
-                if next_earnings_date
-                else None
-            ),
+        return {
+            **base_payload,
             "error": "No put contracts found in option_data."
-        }, default=_json_default)
+        }
 
     evaluated = []
 
@@ -647,28 +698,17 @@ def _handle_put_wheel_opportunity(symbol: str) -> str:
             quality_score=quality_score,
             technical_score=technical_score,
             next_earnings_date=next_earnings_date,
-            today=today,
+            today=today
         )
 
         if scored:
             evaluated.append(scored)
 
     if not evaluated:
-        return json.dumps({
-            "symbol": symbol,
-            "price": stock_price,
-            "rsi": rsi,
-            "quality_score": quality_score,
-            "classification": sym.classification,
-            "liquidity": sym.liquidity,
-            "initial_suitability": sym.initial_suitability,
-            "next_earnings_date": (
-                next_earnings_date.isoformat()
-                if next_earnings_date
-                else None
-            ),
+        return {
+            **base_payload,
             "error": "Put contracts were found, but none had enough valid data to evaluate."
-        }, default=_json_default)
+        }
 
     evaluated = sorted(
         evaluated,
@@ -678,27 +718,20 @@ def _handle_put_wheel_opportunity(symbol: str) -> str:
 
     best = evaluated[0]
     top_candidates = evaluated[:5]
-   
-    result = {
-        "symbol": symbol,
-        "price": stock_price,
-        "rsi": rsi,
-        "quality_score": quality_score,
-        "classification": sym.classification,
-        "liquidity": sym.liquidity,
-        "initial_suitability": sym.initial_suitability,
-        "next_earnings_date": (
-            next_earnings_date.isoformat()
-            if next_earnings_date
-            else None
-        ),
 
+    return {
+        **base_payload,
         "best_put_opportunity": best,
         "top_put_candidates": top_candidates,
-
         "summary": {
-            "rating": best["rating"], # Good opportunity, Watchlist...
+            "rating": best["rating"],
+            "opportunity_rating": best["rating"],
             "cumulative_score": best["cumulative_score"],
+            "score": best["cumulative_score"],
+            "opportunity_score": best["cumulative_score"],
+            "quality_score": quality_score,
+            "stock_quality_score": quality_score,
+            "technical_score": technical_score,
             "best_strike": best["contract"]["strike"],
             "best_expiration": best["contract"]["expiration"],
             "best_dte": best["contract"]["dte"],
@@ -708,7 +741,257 @@ def _handle_put_wheel_opportunity(symbol: str) -> str:
         }
     }
 
-    return json.dumps(result, default=_json_default)
+
+def _calculate_assignment_comfort(
+    best_opportunity: dict[str, Any],
+    technical_score: Any,
+) -> dict[str, Any]:
+    contract = best_opportunity.get("contract", {})
+    downside_buffer = _to_float(contract.get("downside_buffer"))
+    delta = _to_float(contract.get("delta"))
+    spread_pct = _to_float(contract.get("spread_pct"))
+    volume = _to_int(contract.get("volume"))
+    open_interest = _to_int(contract.get("open_interest"))
+    earnings_risk = bool(best_opportunity.get("earnings_before_expiration"))
+
+    score = 0
+    notes: list[str] = []
+    risk_flags: list[str] = []
+
+    if downside_buffer is not None:
+        if downside_buffer >= 10:
+            score += 30
+            notes.append("Large downside buffer")
+        elif downside_buffer >= 5:
+            score += 22
+            notes.append("Healthy downside buffer")
+        elif downside_buffer >= 0:
+            score += 10
+            risk_flags.append("Limited downside buffer")
+        else:
+            risk_flags.append("Strike above stock price")
+
+    if delta is not None:
+        abs_delta = abs(delta)
+        if abs_delta <= 0.20:
+            score += 25
+            notes.append("Very conservative delta")
+        elif abs_delta <= 0.28:
+            score += 20
+            notes.append("Comfortable delta")
+        elif abs_delta <= 0.34:
+            score += 12
+            risk_flags.append("Delta slightly aggressive")
+        else:
+            score += 4
+            risk_flags.append("Delta aggressive for assignment comfort")
+
+    if not earnings_risk:
+        score += 20
+        notes.append("No earnings before expiration")
+    else:
+        risk_flags.append("Earnings before expiration")
+
+    if volume is not None or open_interest is not None:
+        liquidity_score = 0
+        if volume is not None:
+            if volume >= 100:
+                liquidity_score += 6
+            elif volume >= 20:
+                liquidity_score += 4
+            elif volume <= 1:
+                risk_flags.append("Very low option volume")
+        if open_interest is not None:
+            if open_interest >= 500:
+                liquidity_score += 6
+            elif open_interest >= 100:
+                liquidity_score += 4
+            elif open_interest < 100:
+                risk_flags.append("Low open interest")
+        score += min(liquidity_score, 12)
+
+    if spread_pct is not None:
+        if spread_pct <= 10:
+            score += 8
+            notes.append("Tight spread")
+        elif spread_pct <= 25:
+            score += 4
+            risk_flags.append("Moderately wide spread")
+        else:
+            risk_flags.append("Wide spread")
+
+    if technical_score == "Strong Buy":
+        score += 5
+    elif technical_score == "Buy":
+        score += 3
+    elif technical_score == "Sell":
+        score -= 3
+        risk_flags.append("Technical score is Sell")
+    elif technical_score == "Strong Sell":
+        score -= 6
+        risk_flags.append("Technical score is Strong Sell")
+
+    return {
+        "assignment_comfort_score": max(0, min(100, round(score))),
+        "assignment_comfort_notes": notes,
+        "risk_flags": sorted(set(risk_flags)),
+    }
+
+
+def _handle_compare_put_candidates(args: dict[str, Any]) -> str:
+    raw_symbols = args.get("symbols") or []
+    if not isinstance(raw_symbols, list) or not raw_symbols:
+        return json.dumps({"error": "symbols must be a non-empty array"})
+
+    limit = _to_int(args.get("limit")) or len(raw_symbols)
+    min_opportunity_score = _to_float(args.get("min_opportunity_score"))
+    min_roi = _to_float(args.get("min_roi"))
+    max_delta = _to_float(args.get("max_delta"))
+    exclude_earnings_risk = bool(args.get("exclude_earnings_risk"))
+    exclude_low_liquidity = bool(args.get("exclude_low_liquidity"))
+
+    cleaned_symbols: list[str] = []
+    for value in raw_symbols:
+        text = str(value or "").strip().upper()
+        if text and text not in cleaned_symbols:
+            cleaned_symbols.append(text)
+
+    compared: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+
+    for symbol in cleaned_symbols:
+        payload = _get_put_wheel_opportunity_payload(symbol)
+        if payload.get("error"):
+            skipped.append({
+                "symbol": symbol,
+                "reason": payload["error"],
+            })
+            continue
+
+        best = payload.get("best_put_opportunity") or {}
+        contract = best.get("contract") or {}
+        summary = payload.get("summary") or {}
+        comfort = _calculate_assignment_comfort(best, payload.get("technical_score"))
+
+        opportunity_score = _to_float(summary.get("opportunity_score"))
+        roi = _to_float(contract.get("roi"))
+        delta = _to_float(contract.get("delta"))
+        spread_pct = _to_float(contract.get("spread_pct"))
+        volume = _to_int(contract.get("volume"))
+        open_interest = _to_int(contract.get("open_interest"))
+        earnings_risk = bool(summary.get("earnings_risk"))
+        low_liquidity = (
+            (volume is not None and volume < 20)
+            or (open_interest is not None and open_interest < 100)
+            or (spread_pct is not None and spread_pct > 25)
+        )
+
+        if min_opportunity_score is not None and (
+            opportunity_score is None or opportunity_score < min_opportunity_score
+        ):
+            skipped.append({
+                "symbol": symbol,
+                "reason": "Filtered out by min_opportunity_score",
+            })
+            continue
+        if min_roi is not None and (roi is None or roi < min_roi):
+            skipped.append({
+                "symbol": symbol,
+                "reason": "Filtered out by min_roi",
+            })
+            continue
+        if max_delta is not None and (delta is None or abs(delta) > max_delta):
+            skipped.append({
+                "symbol": symbol,
+                "reason": "Filtered out by max_delta",
+            })
+            continue
+        if exclude_earnings_risk and earnings_risk:
+            skipped.append({
+                "symbol": symbol,
+                "reason": "Filtered out by earnings risk",
+            })
+            continue
+        if exclude_low_liquidity and low_liquidity:
+            skipped.append({
+                "symbol": symbol,
+                "reason": "Filtered out by low liquidity",
+            })
+            continue
+
+        risk_penalty = 0
+        if earnings_risk:
+            risk_penalty += 10
+        if low_liquidity:
+            risk_penalty += 8
+
+        comparison_score = round(
+            ((opportunity_score or 0.0) * 0.7)
+            + (comfort["assignment_comfort_score"] * 0.3)
+            - risk_penalty,
+            2,
+        )
+
+        compared.append({
+            "symbol": symbol,
+            "price": payload.get("price"),
+            "rsi": payload.get("rsi"),
+            "quality_score": payload.get("quality_score"),
+            "stock_quality_score": payload.get("stock_quality_score"),
+            "technical_score": payload.get("technical_score"),
+            "classification": payload.get("classification"),
+            "liquidity": payload.get("liquidity"),
+            "opportunity_rating": summary.get("opportunity_rating"),
+            "opportunity_score": opportunity_score,
+            "assignment_comfort_score": comfort["assignment_comfort_score"],
+            "comparison_score": comparison_score,
+            "risk_flags": comfort["risk_flags"],
+            "assignment_comfort_notes": comfort["assignment_comfort_notes"],
+            "best_contract": {
+                "strike": contract.get("strike"),
+                "expiration": contract.get("expiration"),
+                "dte": contract.get("dte"),
+                "roi": roi,
+                "delta": delta,
+                "iv": contract.get("iv"),
+                "volume": volume,
+                "open_interest": open_interest,
+                "downside_buffer": contract.get("downside_buffer"),
+                "spread_pct": spread_pct,
+            },
+            "earnings_risk": earnings_risk,
+        })
+
+    compared.sort(
+        key=lambda item: (
+            item["comparison_score"],
+            item["opportunity_score"] or 0.0,
+            item["assignment_comfort_score"],
+        ),
+        reverse=True,
+    )
+    ranked = compared[: max(1, limit)]
+
+    return json.dumps({
+        "comparison_date": date.today().isoformat(),
+        "symbols_requested": cleaned_symbols,
+        "symbols_compared": len(ranked),
+        "filters_applied": {
+            "min_opportunity_score": min_opportunity_score,
+            "min_roi": min_roi,
+            "max_delta": max_delta,
+            "exclude_earnings_risk": exclude_earnings_risk,
+            "exclude_low_liquidity": exclude_low_liquidity,
+        },
+        "ranked_candidates": ranked,
+        "skipped": skipped,
+        "winner": ranked[0] if ranked else None,
+    }, default=_json_default)
+
+
+
+def _handle_put_wheel_opportunity(symbol: str) -> str:
+    return json.dumps(_get_put_wheel_opportunity_payload(symbol), default=_json_default)
 
 
 def _handle_scan_put_opportunities(args: dict) -> str:
@@ -850,6 +1133,9 @@ def handle_tool_call(tool_name: str, tool_args: dict) -> str:
 
     if tool_name == "scan_put_opportunities":
         return _handle_scan_put_opportunities(tool_args)
+
+    if tool_name == "compare_put_candidates":
+        return _handle_compare_put_candidates(tool_args)
 
     return json.dumps({"error": f"Unknown tool: {tool_name}"})
 

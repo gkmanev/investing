@@ -2735,3 +2735,75 @@ class PutWheelAgentViewTests(APITestCase):
         self.assertEqual(payload["summary"]["opportunity_score"], payload["summary"]["score"])
         self.assertEqual(payload["summary"]["best_roi"], 2.93)
         self.assertEqual(payload["best_put_opportunity"]["contract"]["roi"], 2.93)
+
+    def test_handle_compare_put_candidates_ranks_symbols_and_filters_errors(
+        self,
+    ) -> None:
+        expiration = date.today() + timedelta(days=31)
+        Symbol.objects.create(
+            ticker="ADI",
+            price=Decimal("400.00"),
+            rsi=Decimal("50.00"),
+            score=85,
+            classification="High-quality compounder",
+            liquidity=Symbol.LIQUIDITY_GOOD,
+            technical_score=Symbol.TechnicalScore.BUY,
+            option_data={
+                "puts": [
+                    {
+                        "strike": 375,
+                        "expiration": expiration.isoformat(),
+                        "bid": 10.90,
+                        "ask": 11.10,
+                        "delta": -0.30,
+                        "iv": 40.45,
+                        "volume": 150,
+                        "open_interest": 800,
+                    }
+                ]
+            },
+        )
+        Symbol.objects.create(
+            ticker="XYZ",
+            price=Decimal("100.00"),
+            rsi=Decimal("68.00"),
+            score=70,
+            classification="Quality (selective)",
+            liquidity=Symbol.LIQUIDITY_WEAK,
+            technical_score=Symbol.TechnicalScore.SELL,
+            option_data={
+                "puts": [
+                    {
+                        "strike": 98,
+                        "expiration": expiration.isoformat(),
+                        "bid": 1.00,
+                        "ask": 1.80,
+                        "delta": -0.38,
+                        "iv": 55.00,
+                        "volume": 1,
+                        "open_interest": 20,
+                    }
+                ]
+            },
+        )
+
+        payload = json.loads(
+            agent_views._handle_compare_put_candidates(
+                {"symbols": ["ADI", "XYZ", "MISSING"]}
+            )
+        )
+
+        self.assertEqual(payload["symbols_compared"], 2)
+        self.assertEqual(payload["winner"]["symbol"], "ADI")
+        self.assertEqual(
+            [item["symbol"] for item in payload["ranked_candidates"]],
+            ["ADI", "XYZ"],
+        )
+        self.assertGreater(
+            payload["ranked_candidates"][0]["comparison_score"],
+            payload["ranked_candidates"][1]["comparison_score"],
+        )
+        self.assertEqual(payload["ranked_candidates"][0]["opportunity_rating"], "Good opportunity")
+        self.assertTrue(
+            any(item["symbol"] == "MISSING" for item in payload["skipped"])
+        )
