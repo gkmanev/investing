@@ -4,6 +4,7 @@ import logging
 import os
 import tempfile
 import threading
+import urllib.error
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from decimal import Decimal, InvalidOperation
 from datetime import date, datetime
@@ -18,6 +19,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 
 from api.models import Symbol
+from api.management.commands.trading_view_scrape import FinancialModelingPrepClient
 
 
 #TEST
@@ -220,7 +222,24 @@ def _fetch_next_earnings_date(
     }
 
 
-def _fetch_price_and_rsi(ticker: str) -> tuple[Decimal | None, Decimal | None]:
+def _fetch_price_and_rsi(
+    ticker: str,
+    *,
+    price_client: FinancialModelingPrepClient | None = None,
+) -> tuple[Decimal | None, Decimal | None]:
+    price = None
+    if price_client is not None:
+        try:
+            price = _coerce_decimal(price_client.get_underlying_price(ticker))
+        except (
+            urllib.error.HTTPError,
+            urllib.error.URLError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ):
+            price = None
+
     try:
         df = yf.download(
             ticker,
@@ -231,14 +250,14 @@ def _fetch_price_and_rsi(ticker: str) -> tuple[Decimal | None, Decimal | None]:
             group_by="column",
         )
     except Exception:
-        return None, None
+        return price, None
 
     if df is None or df.empty:
-        return None, None
+        return price, None
 
     close = df.get("Close")
     if close is None:
-        return None, None
+        return price, None
 
     if isinstance(close, pd.DataFrame):
         if close.shape[1] == 1:
@@ -248,15 +267,7 @@ def _fetch_price_and_rsi(ticker: str) -> tuple[Decimal | None, Decimal | None]:
 
     close = close.dropna()
     if close.empty:
-        return None, None
-
-    price = None
-    last_close = close.tail(1)
-    if not last_close.empty:
-        try:
-            price = Decimal(str(last_close.iat[0]))
-        except (InvalidOperation, ValueError, TypeError):
-            price = None
+        return price, None
 
     rsi = None
     closes = close.astype(float).to_numpy()
@@ -414,9 +425,10 @@ def _process_symbol(
     fmp_api_key: str,
     force: bool,
     technical_rating: object,
+    price_client: FinancialModelingPrepClient | None = None,
 ) -> dict[str, Any]:
     """Fetch all data for a single symbol and persist updates. Returns a result summary."""
-    price, rsi = _fetch_price_and_rsi(symbol.ticker)
+    price, rsi = _fetch_price_and_rsi(symbol.ticker, price_client=price_client)
     dcf = _fetch_dcf(symbol.ticker, fmp_api_key) if fmp_api_key else None
 
     market_data_fields: list[str] = []
@@ -457,7 +469,7 @@ def _process_symbol(
 
 class Command(BaseCommand):
     help = (
-        "Fetch next earnings date, DCF, and price/RSI for Symbol objects "
+        "Fetch next earnings date, FMP price, DCF, and RSI for Symbol objects "
         f"with score >= {SCORE_MIN}."
     )
 
@@ -490,9 +502,10 @@ class Command(BaseCommand):
         total = len(symbols)
         fmp_api_key = (getattr(settings, "FINANCIAL_MODELING_API_KEY", "") or "").strip()
         technicals_by_ticker = _fetch_all_tv_technicals([symbol.ticker for symbol in symbols])
+        price_client = FinancialModelingPrepClient(api_key=fmp_api_key) if fmp_api_key else None
         if not fmp_api_key:
             self.stderr.write(
-                "FINANCIAL_MODELING_API_KEY is not configured; DCF skipped."
+                "FINANCIAL_MODELING_API_KEY is not configured; FMP price and DCF skipped."
             )
         else:
             self.stdout.write(
@@ -502,7 +515,7 @@ class Command(BaseCommand):
 
         self.stdout.write(
             "Screening "
-            f"{total} symbols (score >= {SCORE_MIN}) for earnings date, DCF, price/RSI, and TradingView technicals..."
+            f"{total} symbols (score >= {SCORE_MIN}) for earnings date, FMP price, DCF, RSI, and TradingView technicals..."
         )
 
         earnings_updated = 0
@@ -517,6 +530,7 @@ class Command(BaseCommand):
                     fmp_api_key,
                     options["force"],
                     technicals_by_ticker.get(sym.ticker, TECHNICAL_SCORE_MISSING),
+                    price_client,
                 ): sym
                 for sym in symbols
             }

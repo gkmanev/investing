@@ -5,6 +5,8 @@ import json
 import urllib.error
 from typing import Any
 
+import numpy as np
+import pandas as pd
 import requests
 from django.core.management import call_command
 from django.core.management.base import CommandError
@@ -121,6 +123,48 @@ class InitialScreenerHelpersTestCase(APITestCase):
 
         self.assertIsNone(result)
         self.assertEqual(debug["status"], "empty_result")
+
+    @patch("api.management.commands.initial_screener.talib.RSI")
+    @patch("api.management.commands.initial_screener.yf.download")
+    def test_fetch_price_and_rsi_uses_fmp_for_price_and_yfinance_for_rsi(
+        self,
+        mock_download: MagicMock,
+        mock_rsi: MagicMock,
+    ) -> None:
+        mock_download.return_value = pd.DataFrame({"Close": [100.0, 101.0, 102.0]})
+        mock_rsi.return_value = np.array([np.nan, 44.12, 55.67])
+        price_client = MagicMock()
+        price_client.get_underlying_price.return_value = "123.45"
+
+        price, rsi = initial_screener_command._fetch_price_and_rsi(
+            "AAPL",
+            price_client=price_client,
+        )
+
+        self.assertEqual(price, Decimal("123.45"))
+        self.assertEqual(rsi, Decimal("55.67"))
+        price_client.get_underlying_price.assert_called_once_with("AAPL")
+        mock_download.assert_called_once()
+
+    @patch("api.management.commands.initial_screener.talib.RSI")
+    @patch("api.management.commands.initial_screener.yf.download")
+    def test_fetch_price_and_rsi_does_not_fallback_to_yfinance_price(
+        self,
+        mock_download: MagicMock,
+        mock_rsi: MagicMock,
+    ) -> None:
+        mock_download.return_value = pd.DataFrame({"Close": [90.0, 91.0, 92.0]})
+        mock_rsi.return_value = np.array([np.nan, 40.01, 41.25])
+        price_client = MagicMock()
+        price_client.get_underlying_price.side_effect = ValueError("bad quote")
+
+        price, rsi = initial_screener_command._fetch_price_and_rsi(
+            "AAPL",
+            price_client=price_client,
+        )
+
+        self.assertIsNone(price)
+        self.assertEqual(rsi, Decimal("41.25"))
 
 
 class InvestmentAPITestCase(APITestCase):
