@@ -41,7 +41,7 @@ Never give direct buy/sell recommendations — frame as analytical observations.
 
 If the analyze_stock tool returns an error, report the exact error message to the user without rephrasing or softening it.
 
-When asked whether a stock or company or ticker is a good Put/wheel or Option selling candidate, call get_put_wheel_opportunity.
+When asked whether a stock or company or ticker is a good Put/wheel or Option selling candidate or Cash Secured Put or CSP, call get_put_wheel_opportunity.
 - Always cite the specific ROI %, IV %, volume, current stock price, strike, delta, expiration, stock technical score, stock quality score, and put opportunity rating/score from the tool response.
 - Use `technical_score` only for the stock's technical rating (`Strong Buy`, `Buy`, `Neutral`, `Sell`, `Strong Sell`).
 - Use `stock_quality_score` / `quality_score` only for the underlying stock's quality score. 
@@ -49,16 +49,15 @@ When asked whether a stock or company or ticker is a good Put/wheel or Option se
 - If the tool returns no option data for the symbol, say so clearly.
 
 
-When the user asks for the best puts across all stocks, today's top opportunities, or wants to scan the market for put-selling candidates, call scan_put_opportunities.
-- The tool scans all tracked symbols and returns the highest-scoring cash-secured put contracts ranked by composite score.
-- Optional filters: limit (number of results), min_score (0–100), min_roi (%), max_dte (days to expiration).
+When the user asks for the best puts or options trades or CSP or wheel candidates, across all stocks, today's top opportunities, or wants to scan the market for put-selling candidates, call scan_put_opportunities.
+- The tool scans all tracked symbols and returns the highest-scoring cash-secured put contracts ranked by opportunity score.
+- Optional filters: limit (number of results), min_roi (%), max_dte (days to expiration), min_price, max_price, max_delta.
 
 When interpreting scan_put_opportunities results:
 - Present results as a ranked list with ticker, strike, expiration, IV %, ROI %, stock quality score, stock technical score, delta, and put opportunity rating/score.
 - Highlight any warnings (wide spreads, low liquidity, earnings risk) for each candidate.
 - Use `technical_score` only for the stock's technical rating and `stock_quality_score` / `quality_score` only for the underlying stock's quality score.
 - Use `rating` / `score` only for the evaluated put contract opportunity.
-- A score ≥ 80 is a good opportunity; 65–79 is watchlist; 50–64 is speculative.
 - End with a short conclusion paragraph that comments on the overall ROI range across the presented candidates and the strength of their fundamentals (quality scores and classifications). Note any standouts — highest ROI, strongest fundamentals, or any concerns worth flagging.
 """
 
@@ -147,6 +146,10 @@ TOOLS = [
                     "max_price": {
                         "type": "number",
                         "description": "Maximum underlying stock price to include. Optional.",
+                    },
+                    "max_delta": {
+                        "type": "number",
+                        "description": "Maximum absolute delta to include (for example 0.30). Optional.",
                     },
                 },
                 "required": [],
@@ -715,6 +718,7 @@ def _handle_scan_put_opportunities(args: dict) -> str:
     max_dte = _to_int(args.get("max_dte"))
     min_price = _to_float(args.get("min_price"))
     max_price = _to_float(args.get("max_price"))
+    max_delta = _to_float(args.get("max_delta"))
     
     today = date.today()
 
@@ -772,6 +776,10 @@ def _handle_scan_put_opportunities(args: dict) -> str:
             continue
         if max_price is not None and stock_price > max_price:
             continue
+        if max_delta is not None:
+            contract_delta = c.get("delta")
+            if contract_delta is None or abs(contract_delta) > max_delta:
+                continue
 
         results.append({
             "ticker": sym.ticker,
@@ -805,6 +813,7 @@ def _handle_scan_put_opportunities(args: dict) -> str:
             "max_dte": max_dte,
             "min_price": min_price,
             "max_price": max_price,
+            "max_delta": max_delta,
         },
         "opportunities": top,
     }, default=_json_default)
