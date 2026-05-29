@@ -2127,6 +2127,28 @@ class TradingViewScrapeCommandTests(APITestCase):
             stdout.getvalue(),
         )
 
+    @override_settings(FINANCIAL_MODELING_API_KEY="")
+    @patch("api.management.commands.trading_view_scrape.Command._process_symbol")
+    def test_handle_uses_stored_prices_when_fmp_key_missing(
+        self, mock_process_symbol: MagicMock
+    ) -> None:
+        mock_process_symbol.return_value = (True, False)
+        stdout = StringIO()
+        stderr = StringIO()
+
+        call_command("trading_view_scrape", "--workers", "1", stdout=stdout, stderr=stderr)
+
+        self.assertEqual(mock_process_symbol.call_count, 1)
+        self.assertIsNone(mock_process_symbol.call_args.kwargs["price_client"])
+        self.assertIn(
+            "FINANCIAL_MODELING_API_KEY is not configured; using stored Symbol.price values.",
+            stderr.getvalue(),
+        )
+        self.assertIn(
+            "Processed 1 symbols | updated 1 | cleared 0 | errors 0",
+            stdout.getvalue(),
+        )
+
     def test_process_symbol_updates_rsi_from_tradingview(self) -> None:
         expiration = self._expiration_int()
         client = MagicMock()
@@ -2338,6 +2360,40 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.symbol.refresh_from_db()
         self.assertEqual(self.symbol.rsi, Decimal("41.25"))
         client.get_monthly_rsi.assert_not_called()
+
+    def test_process_symbol_uses_stored_price_when_price_client_missing(self) -> None:
+        expiration = self._expiration_int()
+        client = MagicMock()
+        client.get_monthly_rsi.return_value = "55.75"
+        client.get_expirations.return_value = [expiration]
+        client.get_chain.return_value = [
+            self._option_row(
+                strike="95",
+                bid="3.40",
+                ask="3.60",
+                delta="-0.34",
+                option_symbol="AAPL_MAIN",
+            )
+        ]
+
+        changed, was_cleared = self.command._process_symbol(
+            client=client,
+            price_client=None,
+            symbol=self.symbol,
+            exchange="NASDAQ",
+            min_dte=25,
+            max_dte=40,
+            delta_min=Decimal("-0.37"),
+            delta_max=Decimal("-0.24"),
+            roi_threshold=Decimal("2"),
+            fetch_rsi=True,
+        )
+
+        self.assertTrue(changed)
+        self.assertFalse(was_cleared)
+        self.symbol.refresh_from_db()
+        self.assertEqual(self.symbol.price, Decimal("100.00"))
+        self.assertEqual(self.symbol.rsi, Decimal("55.75"))
 
     def test_process_symbol_rejects_snapshot_when_put_strike_exceeds_price(self) -> None:
         expiration = self._expiration_int()

@@ -170,6 +170,10 @@ class Command(BaseCommand):
             slots.append((current.hour, current.minute))
             current += timedelta(minutes=interval_minutes)
 
+        end_slot = (end.hour, end.minute)
+        if not slots or slots[-1] != end_slot:
+            slots.append(end_slot)
+
         return slots
 
     def _upsert_crontab_task(

@@ -28,6 +28,7 @@ class TradingJobsScheduleCommandTestCase(TestCase):
             ("trading-view-scrape-1815-utc", "18", "15"),
             ("trading-view-scrape-1900-utc", "19", "0"),
             ("trading-view-scrape-1945-utc", "19", "45"),
+            ("trading-view-scrape-2000-utc", "20", "0"),
         }
 
         for task_name, hour, minute in expected_trading_tasks:
@@ -112,6 +113,7 @@ class TradingJobsScheduleCommandTestCase(TestCase):
             ("trading-view-scrape-1747-utc", "17", "47"),
             ("trading-view-scrape-1832-utc", "18", "32"),
             ("trading-view-scrape-1917-utc", "19", "17"),
+            ("trading-view-scrape-2000-utc", "20", "0"),
         }
 
         self.assertEqual(

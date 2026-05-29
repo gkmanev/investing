@@ -450,10 +450,12 @@ class Command(BaseCommand):
             raise CommandError("--workers must be at least 1.")
         if options["max_rps"] <= 0:
             raise CommandError("--max-rps must be greater than 0.")
-        try:
-            price_client = FinancialModelingPrepClient()
-        except ValueError as exc:
-            raise CommandError(str(exc)) from exc
+        fmp_api_key = (getattr(settings, "FINANCIAL_MODELING_API_KEY", "") or "").strip()
+        price_client = FinancialModelingPrepClient(api_key=fmp_api_key) if fmp_api_key else None
+        if price_client is None:
+            self.stderr.write(
+                "FINANCIAL_MODELING_API_KEY is not configured; using stored Symbol.price values."
+            )
 
         roi_above = options.get("roi_above")
         if roi_above is not None:
@@ -581,7 +583,7 @@ class Command(BaseCommand):
         self,
         *,
         client: TradingViewOptions,
-        price_client: FinancialModelingPrepClient,
+        price_client: FinancialModelingPrepClient | None,
         symbol: Symbol,
         exchange: str,
         min_dte: int,
@@ -592,16 +594,21 @@ class Command(BaseCommand):
         fetch_rsi: bool,
         reporter: Callable[[str], None] | None = None,
     ) -> tuple[bool, bool]:
-        try:
-            underlying_price = self._to_decimal(price_client.get_underlying_price(symbol.ticker))
-        except (urllib.error.HTTPError, urllib.error.URLError) as exc:
-            raise CommandError(
-                self._format_fmp_request_error(ticker=symbol.ticker, exc=exc)
-            ) from exc
-        except (KeyError, TypeError, ValueError) as exc:
-            raise CommandError(
-                f"Financial Modeling Prep returned invalid price data for {symbol.ticker}: {exc}"
-            ) from exc
+        if price_client is None:
+            underlying_price = self._to_decimal(symbol.price)
+        else:
+            try:
+                underlying_price = self._to_decimal(
+                    price_client.get_underlying_price(symbol.ticker)
+                )
+            except (urllib.error.HTTPError, urllib.error.URLError) as exc:
+                raise CommandError(
+                    self._format_fmp_request_error(ticker=symbol.ticker, exc=exc)
+                ) from exc
+            except (KeyError, TypeError, ValueError) as exc:
+                raise CommandError(
+                    f"Financial Modeling Prep returned invalid price data for {symbol.ticker}: {exc}"
+                ) from exc
 
         try:
             monthly_rsi = (
@@ -629,6 +636,11 @@ class Command(BaseCommand):
             ) from exc
 
         if underlying_price is None:
+            if price_client is None:
+                raise CommandError(
+                    "Missing or invalid underlying price and "
+                    "FINANCIAL_MODELING_API_KEY is not configured."
+                )
             raise CommandError("Missing or invalid underlying price.")
 
         if selected is None:
