@@ -217,32 +217,35 @@ TOOLS = [
         },
     },
     {
-        "name": "compare_put_candidates",
-        "description": "Compare put/wheel opportunities for multiple tickers and rank them by option attractiveness, assignment comfort, risk, and liquidity.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-            "symbols": {
-                "type": "array",
-                "items": { "type": "string" },
-                "description": "List of ticker symbols, e.g. ['MSFT', 'JNJ', 'NVDA']"
+        "type": "function",
+        "function": {
+            "name": "compare_put_candidates",
+            "description": "Compare put/wheel opportunities for multiple tickers and rank them by option attractiveness, assignment comfort, risk, and liquidity.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "symbols": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of ticker symbols, e.g. ['MSFT', 'JNJ', 'NVDA']",
+                    },
+                    "max_delta": {
+                        "type": "number",
+                        "description": "Maximum absolute delta, e.g. 0.30",
+                    },
+                    "min_roi": {
+                        "type": "number",
+                        "description": "Minimum ROI percentage",
+                    },
+                    "min_quality_score": {
+                        "type": "number",
+                        "description": "Minimum stock quality score",
+                    },
+                },
+                "required": ["symbols"],
             },
-            "max_delta": {
-                "type": "number",
-                "description": "Maximum absolute delta, e.g. 0.30"
-            },
-            "min_roi": {
-                "type": "number",
-                "description": "Minimum ROI percentage"
-            },
-            "min_quality_score": {
-                "type": "number",
-                "description": "Minimum stock quality score"
-            }
-            },
-            "required": ["symbols"]
-        }
-}
+        },
+    }
 ]
 
 class FMPClient:
@@ -713,9 +716,11 @@ def _handle_put_wheel_opportunity(symbol: str) -> str:
             "price": stock_price,
             "rsi": rsi,
             "quality_score": quality_score,
+            "stock_quality_score": quality_score,
             "classification": sym.classification,
             "liquidity": sym.liquidity,
             "initial_suitability": sym.initial_suitability,
+            "technical_score": technical_score,
             "next_earnings_date": (
                 next_earnings_date.isoformat()
                 if next_earnings_date
@@ -746,9 +751,11 @@ def _handle_put_wheel_opportunity(symbol: str) -> str:
             "price": stock_price,
             "rsi": rsi,
             "quality_score": quality_score,
+            "stock_quality_score": quality_score,
             "classification": sym.classification,
             "liquidity": sym.liquidity,
             "initial_suitability": sym.initial_suitability,
+            "technical_score": technical_score,
             "next_earnings_date": (
                 next_earnings_date.isoformat()
                 if next_earnings_date
@@ -771,9 +778,11 @@ def _handle_put_wheel_opportunity(symbol: str) -> str:
         "price": stock_price,
         "rsi": rsi,
         "quality_score": quality_score,
+        "stock_quality_score": quality_score,
         "classification": sym.classification,
         "liquidity": sym.liquidity,
         "initial_suitability": sym.initial_suitability,
+        "technical_score": technical_score,
         "next_earnings_date": (
             next_earnings_date.isoformat()
             if next_earnings_date
@@ -785,13 +794,19 @@ def _handle_put_wheel_opportunity(symbol: str) -> str:
 
         "summary": {
             "rating": best["rating"], # Good opportunity, Watchlist...
+            "opportunity_rating": best["rating"],
             "cumulative_score": best["cumulative_score"],
+            "score": best["cumulative_score"],
+            "opportunity_score": best["cumulative_score"],
             "best_strike": best["contract"]["strike"],
             "best_expiration": best["contract"]["expiration"],
             "best_dte": best["contract"]["dte"],
             "best_roi": best["contract"]["roi"],
             "best_delta": best["contract"]["delta"],
             "earnings_risk": best["earnings_before_expiration"],
+            "quality_score": quality_score,
+            "stock_quality_score": quality_score,
+            "technical_score": technical_score,
         }
     }
 
@@ -906,6 +921,110 @@ def _handle_scan_put_opportunities(args: dict) -> str:
     }, default=_json_default)
 
 
+def _handle_compare_put_candidates(args: dict) -> str:
+    raw_symbols = args.get("symbols") or []
+    if not isinstance(raw_symbols, list) or not raw_symbols:
+        return json.dumps({"error": "symbols must be a non-empty list"})
+
+    max_delta = _to_float(args.get("max_delta"))
+    min_roi = _to_float(args.get("min_roi"))
+    min_quality_score = _to_float(args.get("min_quality_score"))
+
+    symbols = []
+    for value in raw_symbols:
+        if value is None:
+            continue
+        symbol = str(value).strip().upper()
+        if symbol and symbol not in symbols:
+            symbols.append(symbol)
+
+    if not symbols:
+        return json.dumps({"error": "No valid symbols provided"})
+
+    ranked_candidates = []
+    skipped = []
+
+    for symbol in symbols:
+        payload = json.loads(_handle_put_wheel_opportunity(symbol))
+        if payload.get("error"):
+            skipped.append({"symbol": symbol, "error": payload["error"]})
+            continue
+
+        best = payload.get("best_put_opportunity") or {}
+        contract = best.get("contract") or {}
+        opportunity_score = best.get("cumulative_score")
+        roi = _to_float(contract.get("roi"))
+        delta = _to_float(contract.get("delta"))
+        quality_score = _to_float(payload.get("quality_score"))
+
+        if min_roi is not None and (roi is None or roi < min_roi):
+            skipped.append({
+                "symbol": symbol,
+                "error": f"Best contract ROI below min_roi filter ({min_roi}).",
+            })
+            continue
+
+        if max_delta is not None and (delta is None or abs(delta) > max_delta):
+            skipped.append({
+                "symbol": symbol,
+                "error": f"Best contract delta exceeds max_delta filter ({max_delta}).",
+            })
+            continue
+
+        if min_quality_score is not None and (
+            quality_score is None or quality_score < min_quality_score
+        ):
+            skipped.append({
+                "symbol": symbol,
+                "error": (
+                    "Underlying quality score below min_quality_score filter "
+                    f"({min_quality_score})."
+                ),
+            })
+            continue
+
+        ranked_candidates.append({
+            "symbol": symbol,
+            "price": payload.get("price"),
+            "classification": payload.get("classification"),
+            "stock_quality_score": quality_score,
+            "quality_score": quality_score,
+            "technical_score": payload.get("technical_score"),
+            "rsi": payload.get("rsi"),
+            "comparison_score": opportunity_score,
+            "opportunity_score": opportunity_score,
+            "opportunity_rating": best.get("rating"),
+            "rating": best.get("rating"),
+            "assignment_comfort_score": quality_score,
+            "best_contract": contract,
+            "warnings": best.get("warnings") or [],
+            "reasons": best.get("reasons") or [],
+            "earnings_risk": best.get("earnings_before_expiration"),
+        })
+
+    ranked_candidates.sort(
+        key=lambda item: (
+            item.get("comparison_score") or 0,
+            item.get("stock_quality_score") or 0,
+            item.get("best_contract", {}).get("roi") or 0,
+        ),
+        reverse=True,
+    )
+
+    return json.dumps({
+        "symbols_requested": symbols,
+        "symbols_compared": len(ranked_candidates),
+        "winner": ranked_candidates[0] if ranked_candidates else None,
+        "ranked_candidates": ranked_candidates,
+        "skipped": skipped,
+        "filters_applied": {
+            "max_delta": max_delta,
+            "min_roi": min_roi,
+            "min_quality_score": min_quality_score,
+        },
+    }, default=_json_default)
+
+
 def handle_tool_call(tool_name: str, tool_args: dict) -> str:
     if tool_name == "analyze_stock":
         symbol = tool_args["symbol"]
@@ -937,6 +1056,9 @@ def handle_tool_call(tool_name: str, tool_args: dict) -> str:
 
     if tool_name == "scan_put_opportunities":
         return _handle_scan_put_opportunities(tool_args)
+
+    if tool_name == "compare_put_candidates":
+        return _handle_compare_put_candidates(tool_args)
 
     return json.dumps({"error": f"Unknown tool: {tool_name}"})
 
@@ -984,7 +1106,7 @@ class AgentView(APIView):
                     })
 
                 # Append the assistant's tool-call message to history
-                messages.append(message)
+                messages.append(message.model_dump(exclude_none=True))
 
                 # Execute each tool call and feed results back
                 for tool_call in message.tool_calls:
