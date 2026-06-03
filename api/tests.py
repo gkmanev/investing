@@ -1957,7 +1957,7 @@ class TradingViewScrapeCommandTests(APITestCase):
         )
         self.command = TradingViewCommand()
         self.price_client = MagicMock()
-        self.price_client.get_underlying_price.return_value = "100.00"
+        self.price_client.get_price_and_volume.return_value = ("100.00", 500000)
 
     def _expiration_int(self, days: int = 30) -> int:
         return int((date.today() + timedelta(days=days)).strftime("%Y%m%d"))
@@ -1985,32 +1985,31 @@ class TradingViewScrapeCommandTests(APITestCase):
             "iv": iv,
         }
 
-    def test_get_monthly_rsi_uses_tradingview_symbol_endpoint(self) -> None:
-        session = MagicMock()
-        session.request.return_value = MagicMock(
-            json=MagicMock(return_value={"RSI|1M": 57.32}),
-            status_code=200,
+    @patch("api.management.commands.trading_view_scrape.certifi.where", return_value="dummy.pem")
+    @patch("api.management.commands.trading_view_scrape.urllib.request.urlopen")
+    def test_fmp_client_get_rsi_returns_last_value(
+        self,
+        mock_urlopen: MagicMock,
+        _mock_certifi_where: MagicMock,
+    ) -> None:
+        response = MagicMock()
+        response.read.return_value = (
+            b'[{"date":"2025-06-03 10:00:00","rsi":62.10},'
+            b'{"date":"2025-06-02 10:00:00","rsi":57.32}]'
         )
+        context = MagicMock()
+        context.__enter__.return_value = response
+        context.__exit__.return_value = None
+        mock_urlopen.return_value = context
 
-        rsi = TradingViewOptions(session=session).get_monthly_rsi("NASDAQ", "AAPL")
+        rsi = FinancialModelingPrepClient(api_key="test-fmp-key").get_rsi("AAPL")
 
         self.assertEqual(rsi, 57.32)
-        session.request.assert_called_once_with(
-            "GET",
-            "https://scanner.tradingview.com/symbol",
-            params={
-                "symbol": "NASDAQ:AAPL",
-                "fields": "RSI|1M",
-                "no_404": "true",
-                "label-product": "popup-technicals",
-            },
-            headers={
-                "User-Agent": "Mozilla/5.0",
-                "Accept": "application/json",
-                "Referer": "https://www.tradingview.com/symbols/NASDAQ-AAPL/technicals/",
-            },
-            timeout=30,
-        )
+        called_url = mock_urlopen.call_args[0][0]
+        self.assertIn("technical-indicators/rsi", called_url)
+        self.assertIn("symbol=AAPL", called_url)
+        self.assertIn("periodLength=14", called_url)
+        self.assertIn("timeframe=1hour", called_url)
 
     @patch("api.management.commands.trading_view_scrape.certifi.where", return_value="dummy.pem")
     @patch("api.management.commands.trading_view_scrape.time.sleep")
@@ -2149,10 +2148,10 @@ class TradingViewScrapeCommandTests(APITestCase):
             stdout.getvalue(),
         )
 
-    def test_process_symbol_updates_rsi_from_tradingview(self) -> None:
+    def test_process_symbol_updates_rsi_from_fmp(self) -> None:
         expiration = self._expiration_int()
+        self.price_client.get_rsi.return_value = "55.75"
         client = MagicMock()
-        client.get_monthly_rsi.return_value = "55.75"
         client.get_expirations.return_value = [expiration]
         client.get_chain.return_value = [
             self._option_row(
@@ -2182,13 +2181,13 @@ class TradingViewScrapeCommandTests(APITestCase):
 
         self.symbol.refresh_from_db()
         self.assertEqual(self.symbol.rsi, Decimal("55.75"))
-        self.assertEqual(self.symbol.option_volume, 150)
+        self.assertEqual(self.symbol.option_volume, 500000)
         self.assertEqual(self.symbol.option_iv, Decimal("24.1250"))
-        client.get_monthly_rsi.assert_called_once_with(exchange="NASDAQ", ticker="AAPL")
+        self.price_client.get_rsi.assert_called_once_with("AAPL")
 
     def test_process_symbol_reports_429_with_operator_guidance(self) -> None:
         client = MagicMock()
-        self.price_client.get_underlying_price.side_effect = urllib.error.HTTPError(
+        self.price_client.get_price_and_volume.side_effect = urllib.error.HTTPError(
             "https://financialmodelingprep.com/stable/quote-short?symbol=AAPL&apikey=test-fmp-key",
             429,
             "Too Many Requests",
@@ -2216,7 +2215,7 @@ class TradingViewScrapeCommandTests(APITestCase):
     def test_process_symbol_keeps_smaller_abs_delta_alternatives(self) -> None:
         expiration = self._expiration_int()
         client = MagicMock()
-        client.get_monthly_rsi.return_value = "55.75"
+        self.price_client.get_rsi.return_value = "55.75"
         client.get_expirations.return_value = [expiration]
         client.get_chain.return_value = [
             self._option_row(
@@ -2268,7 +2267,7 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.symbol.refresh_from_db()
         self.assertEqual(self.symbol.option_data["option_symbol"], "AAPL_MAIN")
         self.assertEqual(self.symbol.option_data["strike_price"], 95.0)
-        self.assertEqual(self.symbol.option_volume, 150)
+        self.assertEqual(self.symbol.option_volume, 500000)
         self.assertEqual(self.symbol.option_iv, Decimal("24.1250"))
         self.assertEqual(
             [item["option_symbol"] for item in self.symbol.option_data["alternatives"]],
@@ -2290,7 +2289,7 @@ class TradingViewScrapeCommandTests(APITestCase):
         )
 
         client = MagicMock()
-        client.get_monthly_rsi.return_value = "55.75"
+        self.price_client.get_rsi.return_value = "55.75"
         client.get_expirations.return_value = [expiration]
         client.get_chain.return_value = [
             self._option_row(
@@ -2359,12 +2358,11 @@ class TradingViewScrapeCommandTests(APITestCase):
 
         self.symbol.refresh_from_db()
         self.assertEqual(self.symbol.rsi, Decimal("41.25"))
-        client.get_monthly_rsi.assert_not_called()
+        self.price_client.get_rsi.assert_not_called()
 
     def test_process_symbol_uses_stored_price_when_price_client_missing(self) -> None:
         expiration = self._expiration_int()
         client = MagicMock()
-        client.get_monthly_rsi.return_value = "55.75"
         client.get_expirations.return_value = [expiration]
         client.get_chain.return_value = [
             self._option_row(
@@ -2393,15 +2391,15 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.assertFalse(was_cleared)
         self.symbol.refresh_from_db()
         self.assertEqual(self.symbol.price, Decimal("100.00"))
-        self.assertEqual(self.symbol.rsi, Decimal("55.75"))
+        self.assertIsNone(self.symbol.rsi)
 
     def test_process_symbol_rejects_snapshot_when_put_strike_exceeds_price(self) -> None:
         expiration = self._expiration_int()
         original_updated_at = self.symbol.updated_at
-        self.price_client.get_underlying_price.return_value = "26.9050"
+        self.price_client.get_price_and_volume.return_value = ("26.9050", 500000)
 
         client = MagicMock()
-        client.get_monthly_rsi.return_value = "60.02"
+        self.price_client.get_rsi.return_value = "60.02"
         client.get_expirations.return_value = [expiration]
         client.get_chain.return_value = [
             self._option_row(
@@ -2436,14 +2434,30 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.assertEqual(self.symbol.price, Decimal("100.00"))
         self.assertEqual(self.symbol.updated_at, original_updated_at)
 
-    @patch("api.management.commands.trading_view_scrape.yf")
-    def test_process_symbol_backfills_missing_volume_from_yfinance(
-        self, mock_yf: MagicMock
+    @patch("api.management.commands.trading_view_scrape.certifi.where", return_value="dummy.pem")
+    @patch("api.management.commands.trading_view_scrape.urllib.request.urlopen")
+    def test_fmp_client_get_price_and_volume_returns_both_fields(
+        self,
+        mock_urlopen: MagicMock,
+        _mock_certifi_where: MagicMock,
     ) -> None:
+        response = MagicMock()
+        response.read.return_value = b'[{"symbol":"AAPL","price":100.0,"volume":500000}]'
+        context = MagicMock()
+        context.__enter__.return_value = response
+        context.__exit__.return_value = None
+        mock_urlopen.return_value = context
+
+        price, volume = FinancialModelingPrepClient(api_key="test-fmp-key").get_price_and_volume("AAPL")
+
+        self.assertEqual(price, 100.0)
+        self.assertEqual(volume, 500000)
+
+    def test_process_symbol_uses_fmp_volume(self) -> None:
         expiration = self._expiration_int()
-        expiration_date = datetime.strptime(str(expiration), "%Y%m%d").date()
+        self.price_client.get_price_and_volume.return_value = ("100.00", 321)
+        self.price_client.get_rsi.return_value = "55.75"
         client = MagicMock()
-        client.get_monthly_rsi.return_value = "55.75"
         client.get_expirations.return_value = [expiration]
         client.get_chain.return_value = [
             self._option_row(
@@ -2452,14 +2466,8 @@ class TradingViewScrapeCommandTests(APITestCase):
                 ask="3.60",
                 delta="-0.34",
                 option_symbol="AAPL_MAIN",
-                volume=None,
             )
         ]
-
-        mock_yf.Ticker.return_value.option_chain.return_value = MagicMock(
-            puts=MagicMock(to_dict=MagicMock(return_value=[{"strike": 95, "volume": 321}])),
-            calls=MagicMock(to_dict=MagicMock(return_value=[])),
-        )
 
         changed, was_cleared = self.command._process_symbol(
             client=client,
@@ -2476,50 +2484,9 @@ class TradingViewScrapeCommandTests(APITestCase):
 
         self.assertTrue(changed)
         self.assertFalse(was_cleared)
-
         self.symbol.refresh_from_db()
         self.assertEqual(self.symbol.option_volume, 321)
-        self.assertEqual(self.symbol.option_data["volume"], 321)
-        mock_yf.Ticker.assert_called_once_with("AAPL")
-        mock_yf.Ticker.return_value.option_chain.assert_called_once_with(
-            expiration_date.isoformat()
-        )
-
-    @patch("api.management.commands.trading_view_scrape.yf")
-    def test_process_symbol_skips_yfinance_when_tradingview_volume_exists(
-        self, mock_yf: MagicMock
-    ) -> None:
-        expiration = self._expiration_int()
-        client = MagicMock()
-        client.get_monthly_rsi.return_value = "55.75"
-        client.get_expirations.return_value = [expiration]
-        client.get_chain.return_value = [
-            self._option_row(
-                strike="95",
-                bid="3.40",
-                ask="3.60",
-                delta="-0.34",
-                option_symbol="AAPL_MAIN",
-                volume="150",
-            )
-        ]
-
-        changed, was_cleared = self.command._process_symbol(
-            client=client,
-            price_client=self.price_client,
-            symbol=self.symbol,
-            exchange="NASDAQ",
-            min_dte=25,
-            max_dte=40,
-            delta_min=Decimal("-0.37"),
-            delta_max=Decimal("-0.24"),
-            roi_threshold=Decimal("2"),
-            fetch_rsi=True,
-        )
-
-        self.assertTrue(changed)
-        self.assertFalse(was_cleared)
-        mock_yf.Ticker.assert_not_called()
+        self.price_client.get_price_and_volume.assert_called_once_with("AAPL")
 
     def test_symbol_serializer_returns_raw_option_data_only(self) -> None:
         self.symbol.option_volume = 321

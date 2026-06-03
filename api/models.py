@@ -127,6 +127,7 @@ class Symbol(models.Model):
     option_iv = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
     next_earnings_date = models.DateField(null=True, blank=True)
     option_data = models.JSONField(null=True, blank=True)
+    call_data = models.JSONField(null=True, blank=True)
     roi = models.DecimalField(max_digits=7, decimal_places=4, null=True, blank=True)
     seeking_alpha_ticker_id = models.IntegerField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)

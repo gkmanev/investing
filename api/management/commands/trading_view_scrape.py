@@ -14,10 +14,6 @@ from typing import Any, Callable
 
 import certifi
 import requests
-try:
-    import yfinance as yf
-except ImportError:  # pragma: no cover - optional dependency
-    yf = None
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db import close_old_connections
@@ -163,27 +159,6 @@ class TradingViewOptions:
         )
         return response.json()
 
-    def get_monthly_rsi(self, exchange: str, ticker: str) -> Any:
-        response = self._request(
-            "GET",
-            self.SYMBOL_URL,
-            params={
-                "symbol": f"{exchange}:{ticker}",
-                "fields": "RSI|1M",
-                "no_404": "true",
-                "label-product": "popup-technicals",
-            },
-            headers={
-                "User-Agent": self.HEADERS["User-Agent"],
-                "Accept": self.HEADERS["Accept"],
-                "Referer": (
-                    f"https://www.tradingview.com/symbols/{exchange}-{ticker}/technicals/"
-                ),
-            },
-            timeout=30,
-        )
-        return response.json().get("RSI|1M")
-
     def get_expirations(self, exchange: str, ticker: str) -> list[int]:
         payload = {
             "columns": ["expiration"],
@@ -312,7 +287,7 @@ class FinancialModelingPrepClient:
                 time.sleep(sleep_secs)
                 wait *= 2
 
-    def get_underlying_price(self, ticker: str) -> Any:
+    def _resolve_quote(self, ticker: str) -> dict[str, Any]:
         normalized_ticker = ticker.upper()
         query = urllib.parse.urlencode(
             {"symbol": normalized_ticker, "apikey": self.api_key}
@@ -339,7 +314,31 @@ class FinancialModelingPrepClient:
 
         if not isinstance(quote, dict) or "price" not in quote:
             raise ValueError(f"Missing price in quote response for {normalized_ticker}")
-        return quote["price"]
+        return quote
+
+    def get_underlying_price(self, ticker: str) -> Any:
+        return self._resolve_quote(ticker)["price"]
+
+    def get_price_and_volume(self, ticker: str) -> tuple[Any, Any]:
+        quote = self._resolve_quote(ticker)
+        return quote["price"], quote.get("volume")
+
+    def get_rsi(self, ticker: str, period_length: int = 14, timeframe: str = "1hour") -> Any:
+        normalized_ticker = ticker.upper()
+        query = urllib.parse.urlencode({
+            "symbol": normalized_ticker,
+            "periodLength": period_length,
+            "timeframe": timeframe,
+            "apikey": self.api_key,
+        })
+        url = f"{self.BASE_URL}/technical-indicators/rsi?{query}"
+        payload = self._fetch_json(url)
+        if not isinstance(payload, list) or not payload:
+            return None
+        last = payload[-1]
+        if not isinstance(last, dict):
+            return None
+        return last.get("rsi")
 
 
 class Command(BaseCommand):
@@ -393,7 +392,7 @@ class Command(BaseCommand):
             "--skip-rsi",
             action="store_true",
             dest="skip_rsi",
-            help="Do not fetch or update monthly RSI from TradingView.",
+            help="Do not fetch or update RSI from Financial Modeling Prep.",
         )
         parser.add_argument(
             "--roi-above",
@@ -596,10 +595,16 @@ class Command(BaseCommand):
     ) -> tuple[bool, bool]:
         if price_client is None:
             underlying_price = self._to_decimal(symbol.price)
+            monthly_rsi = symbol.rsi
+            fmp_volume = None
         else:
             try:
-                underlying_price = self._to_decimal(
-                    price_client.get_underlying_price(symbol.ticker)
+                underlying_price_raw, fmp_volume = price_client.get_price_and_volume(symbol.ticker)
+                underlying_price = self._to_decimal(underlying_price_raw)
+                monthly_rsi = (
+                    self._to_decimal(price_client.get_rsi(symbol.ticker))
+                    if fetch_rsi
+                    else symbol.rsi
                 )
             except (urllib.error.HTTPError, urllib.error.URLError) as exc:
                 raise CommandError(
@@ -607,15 +612,10 @@ class Command(BaseCommand):
                 ) from exc
             except (KeyError, TypeError, ValueError) as exc:
                 raise CommandError(
-                    f"Financial Modeling Prep returned invalid price data for {symbol.ticker}: {exc}"
+                    f"Financial Modeling Prep returned invalid data for {symbol.ticker}: {exc}"
                 ) from exc
 
         try:
-            monthly_rsi = (
-                self._to_decimal(client.get_monthly_rsi(exchange=exchange, ticker=symbol.ticker))
-                if fetch_rsi
-                else symbol.rsi
-            )
             expirations = client.get_expirations(exchange=exchange, ticker=symbol.ticker)
             selected = client.pick_expiration(
                 expirations,
@@ -652,6 +652,7 @@ class Command(BaseCommand):
                 option_volume=None,
                 option_iv=None,
                 option_data=None,
+                call_data=None,
                 roi=None,
             )
             self._write_status(
@@ -682,18 +683,17 @@ class Command(BaseCommand):
                 f"TradingView returned invalid chain data for {exchange}:{symbol.ticker} {selected}."
             ) from exc
 
-        chain = self._populate_missing_option_volume(
-            ticker=symbol.ticker,
-            expiration_date=selected_date,
-            chain=chain,
-        )
         roi_candidates = self._build_roi_candidates(
             chain=chain,
             delta_min=delta_min,
             delta_max=delta_max,
             roi_threshold=roi_threshold,
+            option_type="put",
         )
         best_candidate = self._select_roi_candidate(roi_candidates)
+
+        call_candidates = self._collect_call_contracts(chain=chain)
+
         had_option_metrics = any(
             value is not None
             for value in (
@@ -709,12 +709,17 @@ class Command(BaseCommand):
             if best_candidate is not None
             else None
         )
+        call_data = (
+            [self._serialize_option_data(c) for c in call_candidates]
+            if call_candidates
+            else None
+        )
         roi_value = (
             self._to_decimal(best_candidate.get("roi"))
             if best_candidate is not None
             else None
         )
-        option_volume = self._to_int(best_candidate.get("volume")) if best_candidate else None
+        option_volume = self._to_int(fmp_volume) if best_candidate else None
         option_iv = self._to_decimal(best_candidate.get("iv")) if best_candidate else None
         self._validate_snapshot_consistency(
             ticker=symbol.ticker,
@@ -729,6 +734,7 @@ class Command(BaseCommand):
             option_volume=option_volume,
             option_iv=option_iv,
             option_data=option_data,
+            call_data=call_data,
             roi=roi_value,
         )
 
@@ -768,19 +774,15 @@ class Command(BaseCommand):
         underlying_price: Decimal,
         option_data: dict[str, Any] | None,
     ) -> None:
-        if not option_data:
-            return
-
-        option_type = str(option_data.get("option_type", "")).strip().lower()
-        strike_price = Command._to_decimal(option_data.get("strike_price"))
-        if option_type != "put" or strike_price is None:
-            return
-
-        if strike_price >= underlying_price:
-            raise CommandError(
-                f"Inconsistent market snapshot for {ticker}: underlying price "
-                f"{underlying_price} is not above selected put strike {strike_price}."
-            )
+        if option_data:
+            option_type = str(option_data.get("option_type", "")).strip().lower()
+            strike_price = Command._to_decimal(option_data.get("strike_price"))
+            if option_type == "put" and strike_price is not None:
+                if strike_price >= underlying_price:
+                    raise CommandError(
+                        f"Inconsistent market snapshot for {ticker}: underlying price "
+                        f"{underlying_price} is not above selected put strike {strike_price}."
+                    )
 
     @staticmethod
     def _format_tradingview_request_error(
@@ -820,102 +822,6 @@ class Command(BaseCommand):
         reason = getattr(exc, "reason", exc)
         return f"{prefix}: {reason}"
 
-    def _populate_missing_option_volume(
-        self,
-        *,
-        ticker: str,
-        expiration_date: date,
-        chain: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        if yf is None or not chain:
-            return chain
-        if not any(row.get("volume") is None for row in chain):
-            return chain
-
-        volume_by_contract = self._fetch_option_volumes_yfinance(
-            ticker=ticker,
-            expiration_date=expiration_date,
-        )
-        if not volume_by_contract:
-            return chain
-
-        enriched_chain: list[dict[str, Any]] = []
-        for row in chain:
-            if row.get("volume") is not None:
-                enriched_chain.append(row)
-                continue
-
-            lookup_key = self._build_option_lookup_key(
-                option_type=row.get("option_type"),
-                strike=row.get("strike_price"),
-            )
-            if lookup_key is None or lookup_key not in volume_by_contract:
-                enriched_chain.append(row)
-                continue
-
-            enriched_row = dict(row)
-            enriched_row["volume"] = volume_by_contract[lookup_key]
-            enriched_chain.append(enriched_row)
-
-        return enriched_chain
-
-    def _fetch_option_volumes_yfinance(
-        self,
-        *,
-        ticker: str,
-        expiration_date: date,
-    ) -> dict[tuple[str, Decimal], int]:
-        if yf is None:
-            return {}
-
-        try:
-            option_chain = yf.Ticker(ticker).option_chain(expiration_date.isoformat())
-        except Exception as exc:  # pragma: no cover - network failure
-            self.stderr.write(
-                f"{ticker}: failed to fetch option volume from yfinance "
-                f"for {expiration_date.isoformat()}: {exc}"
-            )
-            return {}
-
-        volume_by_contract: dict[tuple[str, Decimal], int] = {}
-        for option_type, attr_name in (("call", "calls"), ("put", "puts")):
-            option_frame = getattr(option_chain, attr_name, None)
-            if option_frame is None:
-                continue
-
-            try:
-                records = option_frame.to_dict(orient="records")
-            except Exception:
-                continue
-
-            for record in records:
-                lookup_key = self._build_option_lookup_key(
-                    option_type=option_type,
-                    strike=record.get("strike"),
-                )
-                volume = self._to_int(record.get("volume"))
-                if lookup_key is None or volume is None:
-                    continue
-                volume_by_contract[lookup_key] = volume
-
-        return volume_by_contract
-
-    def _build_option_lookup_key(
-        self,
-        *,
-        option_type: Any,
-        strike: Any,
-    ) -> tuple[str, Decimal] | None:
-        normalized_option_type = str(option_type).strip().lower()
-        if normalized_option_type not in {"call", "put"}:
-            return None
-
-        strike_decimal = self._to_decimal(strike)
-        if strike_decimal is None:
-            return None
-
-        return normalized_option_type, strike_decimal
-
     def _build_roi_candidates(
         self,
         *,
@@ -923,11 +829,12 @@ class Command(BaseCommand):
         delta_min: Decimal,
         delta_max: Decimal,
         roi_threshold: Decimal,
+        option_type: str = "put",
     ) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
 
         for row in chain:
-            if str(row.get("option_type", "")).lower() != "put":
+            if str(row.get("option_type", "")).lower() != option_type:
                 continue
 
             delta_value = self._to_decimal(row.get("delta"))
@@ -957,6 +864,38 @@ class Command(BaseCommand):
             candidates.append(option)
 
         return candidates
+
+    def _collect_call_contracts(
+        self,
+        *,
+        chain: list[dict[str, Any]],
+        delta_min: Decimal = Decimal("0.10"),
+        delta_max: Decimal = Decimal("0.85"),
+    ) -> list[dict[str, Any]]:
+        contracts: list[dict[str, Any]] = []
+
+        for row in chain:
+            if str(row.get("option_type", "")).lower() != "call":
+                continue
+
+            delta_value = self._to_decimal(row.get("delta"))
+            if delta_value is None or not (delta_min <= delta_value <= delta_max):
+                continue
+
+            strike_price = self._to_decimal(row.get("strike_price"))
+            if strike_price is None:
+                continue
+
+            option = dict(row)
+            option["delta"] = delta_value
+            option["strike_price"] = strike_price
+            option["mid"] = self._calculate_mid_price(
+                bid_price=row.get("bid"),
+                ask_price=row.get("ask"),
+            )
+            contracts.append(option)
+
+        return contracts
 
     def _select_roi_candidate(
         self, roi_candidates: list[dict[str, Any]]
@@ -1083,6 +1022,7 @@ class Command(BaseCommand):
         option_volume: int | None,
         option_iv: Decimal | None,
         option_data: dict[str, Any] | None,
+        call_data: dict[str, Any] | None,
         roi: Decimal | None,
     ) -> bool:
         changed_fields: list[str] = []
@@ -1105,6 +1045,9 @@ class Command(BaseCommand):
         if option_data != symbol.option_data:
             symbol.option_data = option_data
             changed_fields.append("option_data")
+        if call_data != symbol.call_data:
+            symbol.call_data = call_data
+            changed_fields.append("call_data")
         if roi != symbol.roi:
             symbol.roi = roi
             changed_fields.append("roi")

@@ -20,6 +20,8 @@ from api.models import Symbol
 SYSTEM_PROMPT = """
 You are a long-term equity analyst and options trading assistant.
 
+Always format your responses using Markdown. Use **bold** for emphasis, `## headers` to separate sections, bullet lists for flags/signals, and tables for ranked comparisons or multi-ticker data. Never return plain prose where a table or list would be clearer.
+
 If the user asks about long-term business quality, fundamentals, moat, financial health, balance sheet, margins, ROIC, FCF, or whether the company is good to own, call analyze_stock.
 
 The tool returns a structured report with:
@@ -464,6 +466,126 @@ def _extract_put_contracts(option_data):
         })
     return contracts
 
+
+def _extract_call_contracts(option_data):
+    """
+    Mirrors _extract_put_contracts but filters for call options.
+
+    Supports the same structures:
+    1. option_data = {"calls": [...]}
+    2. option_data = {"contracts": [...]}
+    3. option_data = [{"type": "call", ...}, ...]
+    4. option_data = {"2026-06-19": {"calls": [...]}}
+    5. option_data = {single contract dict with "strike", "option_type": "call", ...}
+    """
+
+    contracts = []
+
+    if not option_data:
+        return contracts
+
+    if isinstance(option_data, list):
+        raw_contracts = option_data
+
+    elif isinstance(option_data, dict):
+        raw_contracts = []
+
+        if "strike" in option_data and not any(
+            isinstance(option_data.get(k), list) for k in ("calls", "contracts", "options")
+        ):
+            raw_contracts = [option_data]
+
+        elif isinstance(option_data.get("calls"), list):
+            raw_contracts.extend(option_data["calls"])
+
+        if isinstance(option_data.get("contracts"), list):
+            raw_contracts.extend(option_data["contracts"])
+
+        if isinstance(option_data.get("options"), list):
+            raw_contracts.extend(option_data["options"])
+
+        _KNOWN_KEYS = {"calls", "contracts", "options"}
+        for exp_key, exp_value in option_data.items():
+            if exp_key in _KNOWN_KEYS:
+                continue
+            if isinstance(exp_value, dict) and isinstance(exp_value.get("calls"), list):
+                for contract in exp_value["calls"]:
+                    if isinstance(contract, dict):
+                        c = dict(contract)
+                        c.setdefault("expiration", exp_key)
+                        raw_contracts.append(c)
+
+            elif isinstance(exp_value, list):
+                for contract in exp_value:
+                    if isinstance(contract, dict):
+                        c = dict(contract)
+                        c.setdefault("expiration", exp_key)
+                        raw_contracts.append(c)
+    else:
+        return contracts
+
+    extras = []
+    for c in raw_contracts:
+        if isinstance(c, dict):
+            for alt in c.get("alternatives") or []:
+                if isinstance(alt, dict):
+                    extras.append(alt)
+    raw_contracts.extend(extras)
+
+    for c in raw_contracts:
+        if not isinstance(c, dict):
+            continue
+
+        contract_type = str(
+            c.get("type")
+            or c.get("option_type")
+            or c.get("contract_type")
+            or c.get("right")
+            or ""
+        ).lower()
+
+        if contract_type and contract_type not in ["call", "c"]:
+            continue
+
+        expiration = (
+            c.get("expiration")
+            or c.get("expiration_date")
+            or c.get("expiry")
+            or c.get("exp")
+            or c.get("date")
+        )
+
+        strike = _to_float(c.get("strike") or c.get("strike_price"))
+        bid = _to_float(c.get("bid"))
+        ask = _to_float(c.get("ask"))
+        last = _to_float(c.get("last") or c.get("last_price"))
+        mid = _to_float(c.get("mid") or c.get("mark"))
+
+        if mid is None and bid is not None and ask is not None and ask > 0:
+            mid = round((bid + ask) / 2, 4)
+
+        delta = _to_float(c.get("delta"))
+        iv = _to_float(c.get("iv") or c.get("implied_volatility"))
+        volume = _to_int(c.get("volume"))
+        open_interest = _to_int(c.get("open_interest") or c.get("oi"))
+
+        contracts.append({
+            "raw": c,
+            "expiration": expiration,
+            "expiration_date": _parse_date(expiration),
+            "strike": strike,
+            "bid": bid,
+            "ask": ask,
+            "last": last,
+            "mid": mid,
+            "delta": delta,
+            "iv": iv,
+            "volume": volume,
+            "open_interest": open_interest,
+        })
+    return contracts
+
+
 def _score_put_contract(
     contract,
     *,
@@ -772,7 +894,30 @@ def _handle_put_wheel_opportunity(symbol: str) -> str:
 
     best = evaluated[0]
     top_candidates = evaluated[:5]
-   
+
+    call_contracts = _extract_call_contracts(sym.call_data or {})
+    calls_summary = []
+    for c in call_contracts:
+        if not c["strike"] or not c["mid"] or not c["expiration_date"]:
+            continue
+        dte = (c["expiration_date"] - today).days
+        if dte <= 0:
+            continue
+        roi = round((c["mid"] / c["strike"]) * 100, 4)
+        calls_summary.append({
+            "strike": c["strike"],
+            "expiration": c["expiration"],
+            "dte": dte,
+            "bid": c["bid"],
+            "ask": c["ask"],
+            "mid": c["mid"],
+            "delta": c["delta"],
+            "iv": c["iv"],
+            "volume": c["volume"],
+            "open_interest": c["open_interest"],
+            "roi": roi,
+        })
+
     result = {
         "symbol": symbol,
         "price": stock_price,
@@ -791,9 +936,10 @@ def _handle_put_wheel_opportunity(symbol: str) -> str:
 
         "best_put_opportunity": best,
         "top_put_candidates": top_candidates,
+        "call_contracts": calls_summary,
 
         "summary": {
-            "rating": best["rating"], # Good opportunity, Watchlist...
+            "rating": best["rating"],
             "opportunity_rating": best["rating"],
             "cumulative_score": best["cumulative_score"],
             "score": best["cumulative_score"],
