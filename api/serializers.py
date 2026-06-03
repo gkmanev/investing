@@ -121,6 +121,7 @@ class SymbolSerializer(serializers.ModelSerializer):
             "option_iv",
             "next_earnings_date",
             "option_data",
+            "call_data",
             "roi",
             "seeking_alpha_ticker_id",
             "created_at",

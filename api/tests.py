@@ -2595,7 +2595,7 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.assertEqual(self.symbol.option_volume, 321)
         self.price_client.get_price_and_volume.assert_called_once_with("AAPL")
 
-    def test_symbol_serializer_returns_raw_option_data_only(self) -> None:
+    def test_symbol_serializer_returns_raw_option_and_call_data(self) -> None:
         self.symbol.option_volume = 321
         self.symbol.option_iv = Decimal("18.7500")
         self.symbol.option_data = {
@@ -2618,7 +2618,27 @@ class TradingViewScrapeCommandTests(APITestCase):
                 }
             ],
         }
-        self.symbol.save(update_fields=["option_volume", "option_iv", "option_data", "updated_at"])
+        self.symbol.call_data = [
+            {
+                "option_symbol": "AAPL_CALL_1",
+                "strike_price": 110.0,
+                "bid": 1.1,
+                "ask": 1.3,
+                "volume": 450,
+                "iv": 17.25,
+                "mid": 1.2,
+                "delta": 0.42,
+            }
+        ]
+        self.symbol.save(
+            update_fields=[
+                "option_volume",
+                "option_iv",
+                "option_data",
+                "call_data",
+                "updated_at",
+            ]
+        )
 
         data = SymbolSerializer(self.symbol).data
 
@@ -2642,6 +2662,14 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.assertEqual(data["option_data"]["alternatives"][0]["volume"], 210)
         self.assertEqual(data["option_data"]["alternatives"][0]["iv"], 20.1)
         self.assertEqual(data["option_data"]["alternatives"][0]["mid"], 2.9)
+        self.assertEqual(len(data["call_data"]), 1)
+        self.assertEqual(data["call_data"][0]["strike_price"], 110.0)
+        self.assertEqual(data["call_data"][0]["bid"], 1.1)
+        self.assertEqual(data["call_data"][0]["ask"], 1.3)
+        self.assertEqual(data["call_data"][0]["volume"], 450)
+        self.assertEqual(data["call_data"][0]["iv"], 17.25)
+        self.assertEqual(data["call_data"][0]["mid"], 1.2)
+        self.assertEqual(data["call_data"][0]["delta"], 0.42)
 
 
 class AIAgentsPotentialCommandTestCase(APITestCase):
