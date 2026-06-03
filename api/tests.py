@@ -1972,10 +1972,11 @@ class TradingViewScrapeCommandTests(APITestCase):
         option_symbol: str,
         volume: str = "150",
         iv: str = "24.1250",
+        option_type: str = "put",
     ) -> dict[str, object]:
         return {
             "option_symbol": option_symbol,
-            "option_type": "put",
+            "option_type": option_type,
             "strike_price": strike,
             "strike": strike,
             "bid": bid,
@@ -2322,6 +2323,112 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.assertIsNone(self.symbol.option_iv)
         self.assertIsNone(self.symbol.option_data)
         self.assertIsNone(self.symbol.roi)
+
+    def test_process_symbol_reports_saved_calls_when_no_put_candidate(self) -> None:
+        expiration = self._expiration_int()
+        client = MagicMock()
+        self.price_client.get_rsi.return_value = "55.75"
+        client.get_expirations.return_value = [expiration]
+        client.get_chain.return_value = [
+            self._option_row(
+                strike="95",
+                bid="0.10",
+                ask="0.20",
+                delta="-0.34",
+                option_symbol="AAPL_LOW_ROI",
+            ),
+            self._option_row(
+                strike="110",
+                bid="1.10",
+                ask="1.30",
+                delta="0.42",
+                option_symbol="AAPL_CALL_1",
+                option_type="call",
+            ),
+            self._option_row(
+                strike="115",
+                bid="0.70",
+                ask="0.90",
+                delta="0.28",
+                option_symbol="AAPL_CALL_2",
+                option_type="call",
+            ),
+        ]
+        reporter = MagicMock()
+
+        changed, was_cleared = self.command._process_symbol(
+            client=client,
+            price_client=self.price_client,
+            symbol=self.symbol,
+            exchange="NASDAQ",
+            min_dte=25,
+            max_dte=40,
+            delta_min=Decimal("-0.37"),
+            delta_max=Decimal("-0.24"),
+            roi_threshold=Decimal("2"),
+            fetch_rsi=True,
+            reporter=reporter,
+        )
+
+        self.assertTrue(changed)
+        self.assertFalse(was_cleared)
+        reporter.assert_called_once_with(
+            f"AAPL: no puts in delta range for "
+            f"{datetime.strptime(str(expiration), '%Y%m%d').date()}; "
+            "price/expiration updated, option data cleared; saved 2 calls."
+        )
+        self.symbol.refresh_from_db()
+        self.assertIsNone(self.symbol.option_data)
+        self.assertEqual(len(self.symbol.call_data), 2)
+
+    def test_process_symbol_reports_no_qualifying_calls_when_no_put_candidate(self) -> None:
+        expiration = self._expiration_int()
+        client = MagicMock()
+        self.price_client.get_rsi.return_value = "55.75"
+        client.get_expirations.return_value = [expiration]
+        client.get_chain.return_value = [
+            self._option_row(
+                strike="95",
+                bid="0.10",
+                ask="0.20",
+                delta="-0.34",
+                option_symbol="AAPL_LOW_ROI",
+            ),
+            self._option_row(
+                strike="130",
+                bid="0.10",
+                ask="0.20",
+                delta="0.05",
+                option_symbol="AAPL_CALL_LOW_DELTA",
+                option_type="call",
+            ),
+        ]
+        reporter = MagicMock()
+
+        changed, was_cleared = self.command._process_symbol(
+            client=client,
+            price_client=self.price_client,
+            symbol=self.symbol,
+            exchange="NASDAQ",
+            min_dte=25,
+            max_dte=40,
+            delta_min=Decimal("-0.37"),
+            delta_max=Decimal("-0.24"),
+            roi_threshold=Decimal("2"),
+            fetch_rsi=True,
+            reporter=reporter,
+        )
+
+        self.assertTrue(changed)
+        self.assertFalse(was_cleared)
+        reporter.assert_called_once_with(
+            f"AAPL: no puts in delta range for "
+            f"{datetime.strptime(str(expiration), '%Y%m%d').date()}; "
+            "price/expiration updated, option data cleared; no qualifying calls."
+        )
+        self.symbol.refresh_from_db()
+        self.assertIsNone(self.symbol.option_data)
+        self.assertIsNone(self.symbol.call_data)
 
     def test_process_symbol_can_skip_rsi_fetch_and_preserve_existing_value(self) -> None:
         expiration = self._expiration_int()

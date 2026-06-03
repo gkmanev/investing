@@ -740,9 +740,14 @@ class Command(BaseCommand):
         )
 
         if best_candidate is None:
+            call_status = (
+                f"saved {len(call_candidates)} calls"
+                if call_candidates
+                else "no qualifying calls"
+            )
             self._write_status(
                 f"{symbol.ticker}: no puts in delta range for {selected_date}; "
-                "price/expiration updated, option data cleared.",
+                f"price/expiration updated, option data cleared; {call_status}.",
                 reporter=reporter,
             )
             return changed, had_option_metrics and changed
