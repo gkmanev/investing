@@ -1966,13 +1966,14 @@ class TradingViewScrapeCommandTests(APITestCase):
         self,
         *,
         strike: str,
-        bid: str,
-        ask: str,
+        bid: object,
+        ask: object,
         delta: str,
         option_symbol: str,
-        volume: str = "150",
-        iv: str = "24.1250",
+        volume: object = "150",
+        iv: object = "24.1250",
         option_type: str = "put",
+        open_interest: object = None,
     ) -> dict[str, object]:
         return {
             "option_symbol": option_symbol,
@@ -1983,6 +1984,7 @@ class TradingViewScrapeCommandTests(APITestCase):
             "ask": ask,
             "delta": delta,
             "volume": volume,
+            "open_interest": open_interest,
             "iv": iv,
         }
 
@@ -2429,6 +2431,78 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.symbol.refresh_from_db()
         self.assertIsNone(self.symbol.option_data)
         self.assertIsNone(self.symbol.call_data)
+
+    def test_collect_call_contracts_requires_liquidity_tight_spread_and_sorts_by_strike(
+        self,
+    ) -> None:
+        contracts = self.command._collect_call_contracts(
+            chain=[
+                self._option_row(
+                    strike="105",
+                    bid="0",
+                    ask="3.00",
+                    delta="0.16",
+                    option_symbol="AAPL_ZERO_BID",
+                    option_type="call",
+                ),
+                self._option_row(
+                    strike="95",
+                    bid="1.00",
+                    ask="1.20",
+                    delta="0.28",
+                    option_symbol="AAPL_NO_LIQUIDITY",
+                    option_type="call",
+                    volume=None,
+                    open_interest=None,
+                ),
+                self._option_row(
+                    strike="90",
+                    bid="1.00",
+                    ask="2.00",
+                    delta="0.30",
+                    option_symbol="AAPL_WIDE_SPREAD",
+                    option_type="call",
+                    open_interest="500",
+                ),
+                self._option_row(
+                    strike="92",
+                    bid="1.00",
+                    ask="1.20",
+                    delta="0.22",
+                    option_symbol="AAPL_OI_ONLY",
+                    option_type="call",
+                    volume=None,
+                    open_interest="500",
+                ),
+                self._option_row(
+                    strike="87",
+                    bid="1.50",
+                    ask="1.80",
+                    delta="0.42",
+                    option_symbol="AAPL_STRIKE_87",
+                    option_type="call",
+                ),
+                self._option_row(
+                    strike="89",
+                    bid="1.10",
+                    ask="1.30",
+                    delta="0.35",
+                    option_symbol="AAPL_STRIKE_89",
+                    option_type="call",
+                ),
+            ]
+        )
+
+        self.assertEqual(
+            [contract["option_symbol"] for contract in contracts],
+            ["AAPL_STRIKE_87", "AAPL_STRIKE_89", "AAPL_OI_ONLY"],
+        )
+        self.assertEqual(
+            [contract["strike_price"] for contract in contracts],
+            [Decimal("87"), Decimal("89"), Decimal("92")],
+        )
+        self.assertEqual(contracts[-1]["open_interest"], 500)
+        self.assertIsNone(contracts[-1]["volume"])
 
     def test_process_symbol_can_skip_rsi_fetch_and_preserve_existing_value(self) -> None:
         expiration = self._expiration_int()

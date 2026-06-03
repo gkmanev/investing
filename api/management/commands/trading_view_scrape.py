@@ -28,6 +28,7 @@ MAX_DTE = 55
 PUT_DELTA_MIN = Decimal("-0.37")
 PUT_DELTA_MAX = Decimal("-0.24")
 ROI_THRESHOLD = Decimal("2")
+MAX_CALL_SPREAD_PCT = Decimal("25")
 MAX_WORKERS = 1
 DEFAULT_MAX_REQUESTS_PER_SECOND = 2.0
 MAX_RETRIES = 6
@@ -226,6 +227,7 @@ class TradingViewOptions:
                 "theta",
                 "vega",
                 "volume",
+                "open_interest",
                 "bid_iv",
                 "ask_iv",
             ],
@@ -892,15 +894,34 @@ class Command(BaseCommand):
             if strike_price is None:
                 continue
 
+            bid_value = self._to_decimal(row.get("bid"))
+            if bid_value is None or bid_value <= 0:
+                continue
+
+            volume = self._to_int(row.get("volume"))
+            open_interest = self._to_int(row.get("open_interest"))
+            if volume is None and open_interest is None:
+                continue
+
+            spread_pct = self._calculate_spread_percentage(
+                bid_price=row.get("bid"),
+                ask_price=row.get("ask"),
+            )
+            if spread_pct is None or spread_pct > MAX_CALL_SPREAD_PCT:
+                continue
+
             option = dict(row)
             option["delta"] = delta_value
             option["strike_price"] = strike_price
+            option["volume"] = volume
+            option["open_interest"] = open_interest
             option["mid"] = self._calculate_mid_price(
                 bid_price=row.get("bid"),
                 ask_price=row.get("ask"),
             )
             contracts.append(option)
 
+        contracts.sort(key=lambda item: item["strike_price"])
         return contracts
 
     def _select_roi_candidate(
@@ -959,6 +980,24 @@ class Command(BaseCommand):
             )
         except (InvalidOperation, DivisionByZero):
             return None
+
+    @staticmethod
+    def _calculate_spread_percentage(
+        *, bid_price: Any, ask_price: Any
+    ) -> Decimal | None:
+        bid_decimal = Command._to_decimal(bid_price)
+        ask_decimal = Command._to_decimal(ask_price)
+        if bid_decimal is None or ask_decimal is None or ask_decimal <= 0:
+            return None
+
+        try:
+            spread_pct = ((ask_decimal - bid_decimal) / ask_decimal) * Decimal("100")
+        except (InvalidOperation, DivisionByZero):
+            return None
+
+        if spread_pct < 0:
+            return None
+        return spread_pct.quantize(Decimal("0.01"))
 
     @staticmethod
     def _to_decimal(value: Any) -> Decimal | None:
