@@ -24,7 +24,7 @@ from api.models import Symbol
 
 DEFAULT_EXCHANGE = "NASDAQ"
 MIN_DTE = 25
-MAX_DTE = 40
+MAX_DTE = 55
 PUT_DELTA_MIN = Decimal("-0.37")
 PUT_DELTA_MAX = Decimal("-0.24")
 ROI_THRESHOLD = Decimal("2")
@@ -456,11 +456,15 @@ class Command(BaseCommand):
                 "FINANCIAL_MODELING_API_KEY is not configured; using stored Symbol.price values."
             )
 
-        roi_above = options.get("roi_above")
-        if roi_above is not None:
-            queryset = Symbol.objects.filter(roi__gt=roi_above)
+        requested_tickers = [ticker.upper() for ticker in options["tickers"]]
+        if requested_tickers:
+            queryset = Symbol.objects.filter(ticker__in=requested_tickers)
         else:
-            queryset = Symbol.objects.filter(score__gte=75)
+            roi_above = options.get("roi_above")
+            if roi_above is not None:
+                queryset = Symbol.objects.filter(roi__gt=roi_above)
+            else:
+                queryset = Symbol.objects.filter(score__gte=75)
 
         if options.get("rsi"):
             queryset = queryset.filter(
@@ -474,9 +478,6 @@ class Command(BaseCommand):
             queryset = queryset.filter(updated_at__lt=cutoff)
 
         queryset = queryset.order_by("ticker")
-        requested_tickers = [ticker.upper() for ticker in options["tickers"]]
-        if requested_tickers:
-            queryset = queryset.filter(ticker__in=requested_tickers)
 
         symbols = list(
             queryset.only(
