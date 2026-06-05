@@ -70,6 +70,47 @@ If the user asks about covered calls, selling calls against owned shares, call i
 - For `wheel_continuation`, explicitly mention `wheel_cost_basis_before_call` and `adjusted_cost_basis_after_call` when available.
 - If the response includes strategy warnings about lower premium for share retention or higher call-away risk for premium capture, surface those warnings clearly.
 
+If the user asks for best covered calls across the market, top covered call ideas, covered call screeners, scans, or ranked covered call opportunities across all tracked symbols, call scan_covered_call_opportunities.
+- The tool scans all tracked symbols and returns the highest-scoring covered call opportunities ranked by covered call score.
+- Optional filters: limit (number of results), min_roi (minimum premium yield %), max_delta, max_dte.
+
+When interpreting scan_covered_call_opportunities results:
+- Present results as a ranked list with ticker, strike, expiration, DTE, delta, IV %, premium yield %, annualized yield %, upside to strike %, call-away risk, stock quality score, stock technical score, and covered call rating/score.
+- Highlight warnings for each candidate, especially earnings risk, ex-dividend risk, low liquidity, wide spreads, or elevated call-away risk.
+- Use `technical_score` only for the stock's technical rating and `stock_quality_score` / `quality_score` only for the underlying stock's quality score.
+- Use `covered_call_score`, `score`, or `rating` only for the evaluated covered call opportunity.
+- End with a short conclusion paragraph that comments on the premium-yield range, underlying quality, and overall call-away risk tradeoff across the presented candidates.
+
+If the user asks to compare multiple tickers for covered calls, call income across several stocks they own, or which owned stock has the best covered call right now, call compare_covered_call_candidates.
+
+Use compare_covered_call_candidates when the user provides two or more tickers and wants to know which one has the better covered call setup, lower call-away risk, stronger income tradeoff, or is more suitable for covered-call income now.
+
+When interpreting compare_covered_call_candidates results:
+- Present the results as a ranked comparison.
+- Clearly separate premium attractiveness from call-away risk and underlying stock quality.
+- Do not choose only by premium yield. A high premium with weak fundamentals, poor liquidity, earnings risk, or aggressive delta should not be framed as the most conservative candidate.
+- Prefer candidates with strong underlying quality, acceptable technical trend, reasonable delta, sufficient upside to strike, good liquidity, and no near-term earnings risk.
+- If a candidate offers more premium but also materially higher call-away risk, say that clearly.
+
+Always cite the specific numbers returned by the tool:
+- ticker
+- current stock price
+- strike
+- expiration
+- DTE
+- delta
+- IV %
+- premium yield %
+- annualized yield %
+- upside to strike %
+- volume and open interest, if available
+- bid/ask spread or mid premium, if available
+- stock quality score
+- technical score
+- covered call score/rating
+- call-away risk
+- warnings
+
 
 If the user asks for best ideas for PUTs, Wheels and CSP - Cash Secured Puts across the market, top candidates, screeners, scans, or ranked opportunities, call scan_put_opportunities.
 - The tool scans all tracked symbols and returns the highest-scoring cash-secured put contracts ranked by opportunity score.
@@ -319,6 +360,40 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "scan_covered_call_opportunities",
+            "description": (
+                "Scan all tracked symbols in the database and return the best covered call "
+                "opportunities ranked by covered call score. Use this when the user asks for "
+                "today's best covered calls, top covered call ideas across all stocks, or wants "
+                "a market-wide covered call screener."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Number of top results to return. Default 10.",
+                    },
+                    "min_roi": {
+                        "type": "number",
+                        "description": "Minimum premium yield / ROI percentage to include. Optional.",
+                    },
+                    "max_delta": {
+                        "type": "number",
+                        "description": "Maximum absolute delta to include (for example 0.30). Optional.",
+                    },
+                    "max_dte": {
+                        "type": "integer",
+                        "description": "Maximum days to expiration to include. Optional.",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "compare_put_candidates",
             "description": "Compare put/wheel opportunities for multiple tickers and rank them by option attractiveness, assignment comfort, risk, and liquidity.",
             "parameters": {
@@ -340,6 +415,35 @@ TOOLS = [
                     "min_quality_score": {
                         "type": "number",
                         "description": "Minimum stock quality score",
+                    },
+                },
+                "required": ["symbols"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "compare_covered_call_candidates",
+            "description": (
+                "Compare covered call opportunities for multiple tickers and rank them by "
+                "income attractiveness, call-away risk, liquidity, and underlying stock quality."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "symbols": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of ticker symbols, e.g. ['AAPL', 'MSFT', 'NVDA']",
+                    },
+                    "max_delta": {
+                        "type": "number",
+                        "description": "Maximum absolute delta, e.g. 0.30",
+                    },
+                    "min_roi": {
+                        "type": "number",
+                        "description": "Minimum premium yield percentage",
                     },
                 },
                 "required": ["symbols"],
@@ -1432,6 +1536,282 @@ def _score_covered_call_contract(
     }
 
 
+def _evaluate_covered_call_symbol(
+    sym,
+    *,
+    shares_owned,
+    cost_basis,
+    assigned_price,
+    premium_received_from_put,
+    target_delta,
+    max_dte,
+    min_roi,
+    max_delta_filter,
+    style,
+    covered_call_strategy,
+    target_exit_price,
+):
+    today = date.today()
+    stock_price = _to_float(sym.price)
+    quality_score = _to_float(sym.score)
+    technical_score = sym.technical_score
+    next_earnings_date = _parse_date(sym.next_earnings_date)
+    call_data = sym.call_data or sym.option_data or {}
+    call_contracts = _extract_call_contracts(call_data)
+    filter_profile = _resolve_covered_call_filters(
+        style=style,
+        covered_call_strategy=covered_call_strategy,
+    )
+    style_delta_min = filter_profile["delta_min"]
+    style_delta_max = filter_profile["delta_max"]
+    style_min_dte = filter_profile["preferred_min_dte"]
+    style_max_dte = filter_profile["preferred_max_dte"]
+    strategy_warnings = []
+
+    if covered_call_strategy == "wheel_continuation":
+        if assigned_price is None or premium_received_from_put is None:
+            strategy_warnings.append(
+                "Wheel continuation works best with assigned_price and premium_received_from_put so adjusted basis can be enforced precisely."
+            )
+        elif cost_basis is None:
+            strategy_warnings.append(
+                "Using adjusted wheel basis from assignment inputs because a standalone cost basis was not provided."
+            )
+
+    base_result = {
+        "symbol": sym.ticker,
+        "current_price": stock_price,
+        "shares_owned": shares_owned,
+        "cost_basis": cost_basis,
+        "assigned_price": assigned_price,
+        "premium_received_from_put": premium_received_from_put,
+        "stock_quality_score": quality_score,
+        "quality_score": quality_score,
+        "classification": sym.classification,
+        "technical_score": technical_score,
+        "covered_call_strategy": covered_call_strategy,
+        "target_exit_price": target_exit_price,
+        "next_earnings_date": (
+            next_earnings_date.isoformat() if next_earnings_date else None
+        ),
+    }
+
+    if not call_contracts:
+        base_result["error"] = "No call contracts found in call_data."
+        return base_result
+
+    evaluated = []
+    filtered_out = 0
+    for contract in call_contracts:
+        scored = _score_covered_call_contract(
+            contract,
+            stock_price=stock_price,
+            shares_owned=shares_owned,
+            cost_basis=cost_basis,
+            assigned_price=assigned_price,
+            premium_received_from_put=premium_received_from_put,
+            target_delta=target_delta,
+            filter_profile=filter_profile,
+            covered_call_strategy=covered_call_strategy,
+            quality_score=quality_score,
+            technical_score=technical_score,
+            next_earnings_date=next_earnings_date,
+            option_data=call_data,
+            today=today,
+        )
+        if scored is None:
+            continue
+
+        contract_delta = _to_float(scored["contract"]["delta"])
+        contract_dte = _to_int(scored["contract"]["dte"])
+        contract_strike = _to_float(scored["contract"]["strike"])
+        upside_to_strike_pct = _to_float(
+            scored["contract"]["upside_to_strike_pct"]
+        )
+        abs_delta = abs(contract_delta) if contract_delta is not None else None
+
+        if max_delta_filter is not None and (
+            abs_delta is None or abs_delta > max_delta_filter
+        ):
+            filtered_out += 1
+            continue
+        if abs_delta is None or not (style_delta_min <= abs_delta <= style_delta_max):
+            filtered_out += 1
+            continue
+        if contract_dte is None or not (style_min_dte <= contract_dte <= style_max_dte):
+            filtered_out += 1
+            continue
+        contract_moneyness = scored["contract"].get("moneyness")
+        if filter_profile["require_otm"] and contract_moneyness != "OTM":
+            filtered_out += 1
+            continue
+        if not filter_profile.get("allow_itm", True) and contract_moneyness == "ITM":
+            filtered_out += 1
+            continue
+        if not filter_profile.get("allow_atm", True) and contract_moneyness == "ATM":
+            filtered_out += 1
+            continue
+        min_upside_pct = filter_profile.get("min_upside_pct")
+        if min_upside_pct is not None and (
+            upside_to_strike_pct is None or upside_to_strike_pct < min_upside_pct
+        ):
+            filtered_out += 1
+            continue
+        max_upside_pct = filter_profile.get("max_upside_pct")
+        if max_upside_pct is not None and (
+            upside_to_strike_pct is None or upside_to_strike_pct > max_upside_pct
+        ):
+            filtered_out += 1
+            continue
+        if (
+            filter_profile["require_above_cost_basis"]
+            and (
+                scored["contract"].get("adjusted_cost_basis_after_call") is not None
+                or cost_basis is not None
+            )
+            and (
+                contract_strike is None
+                or contract_strike
+                < (
+                    scored["contract"].get("adjusted_cost_basis_after_call")
+                    if scored["contract"].get("adjusted_cost_basis_after_call")
+                    is not None
+                    else cost_basis
+                )
+            )
+        ):
+            filtered_out += 1
+            continue
+        if covered_call_strategy == "exit_at_target_price":
+            if contract_strike is None or contract_strike < target_exit_price:
+                filtered_out += 1
+                continue
+            target_gap_abs_pct = (
+                abs(contract_strike - target_exit_price) / target_exit_price * 100
+            )
+            scored["contract"]["target_exit_price"] = target_exit_price
+            scored["contract"]["target_gap_abs_pct"] = round(target_gap_abs_pct, 2)
+
+        contract_roi = scored["contract"]["premium_yield_pct"]
+        if max_dte is not None and scored["contract"]["dte"] > max_dte:
+            filtered_out += 1
+            continue
+        if min_roi is not None and contract_roi < min_roi:
+            filtered_out += 1
+            continue
+        evaluated.append(scored)
+
+    if not evaluated:
+        base_result.update({
+            "filters_applied": {
+                "style_delta_min": style_delta_min,
+                "style_delta_max": style_delta_max,
+                "style_min_dte": style_min_dte,
+                "style_max_dte": style_max_dte,
+                "filter_source": filter_profile["filter_source"],
+                "covered_call_strategy": covered_call_strategy,
+                "target_exit_price": target_exit_price,
+                "target_delta": target_delta,
+                "max_dte": max_dte,
+                "min_roi": min_roi,
+                "style": style,
+            },
+            "warnings": strategy_warnings,
+            "filtered_out_contracts": filtered_out,
+            "error": (
+                "Call contracts were found, but none passed the covered-call "
+                "filters or had enough valid data to evaluate."
+            ),
+        })
+        return base_result
+
+    if covered_call_strategy == "exit_at_target_price":
+        evaluated.sort(
+            key=lambda item: (
+                item["contract"].get("target_gap_abs_pct")
+                if item["contract"].get("target_gap_abs_pct") is not None
+                else 999,
+                -(item["covered_call_score"] or 0),
+                -(item["contract"]["premium_yield_pct"] or 0),
+            ),
+        )
+    else:
+        evaluated.sort(
+            key=lambda item: (
+                item["covered_call_score"],
+                item["contract"]["premium_yield_pct"],
+                item["contract"]["upside_to_strike_pct"],
+            ),
+            reverse=True,
+        )
+
+    best = evaluated[0]
+    top_candidates = [item["contract"] for item in evaluated[:5]]
+    covered_share_lots = shares_owned // 100
+    warnings = list(best.get("warnings") or [])
+
+    if shares_owned % 100 != 0:
+        warnings.append(
+            f"Only {covered_share_lots} covered call contract(s) are fully covered by {shares_owned} shares."
+        )
+    if cost_basis is not None and best["contract"]["strike"] < cost_basis:
+        warnings.append("Recommended strike is below the provided cost basis.")
+    warnings.extend(strategy_warnings)
+
+    return {
+        "symbol": sym.ticker,
+        "current_price": stock_price,
+        "shares_owned": shares_owned,
+        "covered_share_lots": covered_share_lots,
+        "cost_basis": cost_basis,
+        "assigned_price": assigned_price,
+        "premium_received_from_put": premium_received_from_put,
+        "stock_quality_score": quality_score,
+        "quality_score": quality_score,
+        "classification": sym.classification,
+        "technical_score": technical_score,
+        "next_earnings_date": next_earnings_date.isoformat() if next_earnings_date else None,
+        "style": style,
+        "covered_call_strategy": covered_call_strategy,
+        "target_exit_price": target_exit_price,
+        "target_delta": (
+            target_delta if target_delta is not None else filter_profile["target_delta"]
+        ),
+        "best_contract": best["contract"],
+        "top_candidates": top_candidates,
+        "warnings": _dedupe_preserve_order(warnings),
+        "ex_dividend_risk": best["ex_dividend_risk"],
+        "summary": {
+            "rating": best["rating"],
+            "score": best["covered_call_score"],
+            "covered_call_score": best["covered_call_score"],
+            "best_strike": best["contract"]["strike"],
+            "best_expiration": best["contract"]["expiration"],
+            "best_dte": best["contract"]["dte"],
+            "premium_yield_pct": best["contract"]["premium_yield_pct"],
+            "annualized_yield_pct": best["contract"]["annualized_yield_pct"],
+            "effective_exit_price": best["contract"].get("effective_exit_price"),
+            "gain_if_called_from_cost_basis": best["contract"].get(
+                "gain_if_called_from_cost_basis"
+            ),
+            "call_away_risk": best["contract"]["call_away_risk"],
+        },
+        "filters_applied": {
+            "style_delta_min": style_delta_min,
+            "style_delta_max": style_delta_max,
+            "style_min_dte": style_min_dte,
+            "style_max_dte": style_max_dte,
+            "filter_source": filter_profile["filter_source"],
+            "mapped_style": filter_profile["mapped_style"],
+            "covered_call_strategy": covered_call_strategy,
+            "target_exit_price": target_exit_price,
+            "max_dte": max_dte,
+            "min_roi": min_roi,
+            "style": style,
+        },
+    }
+
+
 def _score_put_contract(
     contract,
     *,
@@ -1864,257 +2244,20 @@ def _handle_covered_call_opportunity(args: dict) -> str:
             "error": f"No data found in database for {symbol}",
             "symbol": symbol,
         })
-
-    today = date.today()
-    stock_price = _to_float(sym.price)
-    quality_score = _to_float(sym.score)
-    technical_score = sym.technical_score
-    next_earnings_date = _parse_date(sym.next_earnings_date)
-    call_data = sym.call_data or sym.option_data or {}
-    call_contracts = _extract_call_contracts(call_data)
-    filter_profile = _resolve_covered_call_filters(
+    result = _evaluate_covered_call_symbol(
+        sym,
+        shares_owned=shares_owned,
+        cost_basis=cost_basis,
+        assigned_price=assigned_price,
+        premium_received_from_put=premium_received_from_put,
+        target_delta=target_delta,
+        max_dte=max_dte,
+        min_roi=min_roi,
+        max_delta_filter=None,
         style=style,
         covered_call_strategy=covered_call_strategy,
+        target_exit_price=target_exit_price,
     )
-    style_delta_min = filter_profile["delta_min"]
-    style_delta_max = filter_profile["delta_max"]
-    style_min_dte = filter_profile["preferred_min_dte"]
-    style_max_dte = filter_profile["preferred_max_dte"]
-    strategy_warnings = []
-
-    if covered_call_strategy == "wheel_continuation":
-        if assigned_price is None or premium_received_from_put is None:
-            strategy_warnings.append(
-                "Wheel continuation works best with assigned_price and premium_received_from_put so adjusted basis can be enforced precisely."
-            )
-        elif cost_basis is None:
-            strategy_warnings.append(
-                "Using adjusted wheel basis from assignment inputs because a standalone cost basis was not provided."
-            )
-
-    if not call_contracts:
-        return json.dumps({
-            "symbol": symbol,
-            "current_price": stock_price,
-            "shares_owned": shares_owned,
-            "cost_basis": cost_basis,
-            "assigned_price": assigned_price,
-            "premium_received_from_put": premium_received_from_put,
-            "stock_quality_score": quality_score,
-            "quality_score": quality_score,
-            "classification": sym.classification,
-            "technical_score": technical_score,
-            "covered_call_strategy": covered_call_strategy,
-            "target_exit_price": target_exit_price,
-            "next_earnings_date": next_earnings_date.isoformat() if next_earnings_date else None,
-            "error": "No call contracts found in call_data.",
-        }, default=_json_default)
-
-    evaluated = []
-    filtered_out = 0
-    for contract in call_contracts:
-        scored = _score_covered_call_contract(
-            contract,
-            stock_price=stock_price,
-            shares_owned=shares_owned,
-            cost_basis=cost_basis,
-            assigned_price=assigned_price,
-            premium_received_from_put=premium_received_from_put,
-            target_delta=target_delta,
-            filter_profile=filter_profile,
-            covered_call_strategy=covered_call_strategy,
-            quality_score=quality_score,
-            technical_score=technical_score,
-            next_earnings_date=next_earnings_date,
-            option_data=call_data,
-            today=today,
-        )
-        if scored is None:
-            continue
-
-        contract_delta = _to_float(scored["contract"]["delta"])
-        contract_dte = _to_int(scored["contract"]["dte"])
-        contract_strike = _to_float(scored["contract"]["strike"])
-        upside_to_strike_pct = _to_float(scored["contract"]["upside_to_strike_pct"])
-        abs_delta = abs(contract_delta) if contract_delta is not None else None
-
-        if abs_delta is None or not (style_delta_min <= abs_delta <= style_delta_max):
-            filtered_out += 1
-            continue
-        if contract_dte is None or not (style_min_dte <= contract_dte <= style_max_dte):
-            filtered_out += 1
-            continue
-        contract_moneyness = scored["contract"].get("moneyness")
-        if filter_profile["require_otm"] and contract_moneyness != "OTM":
-            filtered_out += 1
-            continue
-        if not filter_profile.get("allow_itm", True) and contract_moneyness == "ITM":
-            filtered_out += 1
-            continue
-        if not filter_profile.get("allow_atm", True) and contract_moneyness == "ATM":
-            filtered_out += 1
-            continue
-        min_upside_pct = filter_profile.get("min_upside_pct")
-        if min_upside_pct is not None and (
-            upside_to_strike_pct is None or upside_to_strike_pct < min_upside_pct
-        ):
-            filtered_out += 1
-            continue
-        max_upside_pct = filter_profile.get("max_upside_pct")
-        if max_upside_pct is not None and (
-            upside_to_strike_pct is None or upside_to_strike_pct > max_upside_pct
-        ):
-            filtered_out += 1
-            continue
-        if (
-            filter_profile["require_above_cost_basis"]
-            and (
-                scored["contract"].get("adjusted_cost_basis_after_call") is not None
-                or cost_basis is not None
-            )
-            and (
-                contract_strike is None
-                or contract_strike
-                < (
-                    scored["contract"].get("adjusted_cost_basis_after_call")
-                    if scored["contract"].get("adjusted_cost_basis_after_call") is not None
-                    else cost_basis
-                )
-            )
-        ):
-            filtered_out += 1
-            continue
-        if covered_call_strategy == "exit_at_target_price":
-            if contract_strike is None or contract_strike < target_exit_price:
-                filtered_out += 1
-                continue
-            target_gap_abs_pct = abs(contract_strike - target_exit_price) / target_exit_price * 100
-            scored["contract"]["target_exit_price"] = target_exit_price
-            scored["contract"]["target_gap_abs_pct"] = round(target_gap_abs_pct, 2)
-
-        contract_roi = scored["contract"]["premium_yield_pct"]
-        if max_dte is not None and scored["contract"]["dte"] > max_dte:
-            filtered_out += 1
-            continue
-        if min_roi is not None and contract_roi < min_roi:
-            filtered_out += 1
-            continue
-        evaluated.append(scored)
-
-    if not evaluated:
-        return json.dumps({
-            "symbol": symbol,
-            "current_price": stock_price,
-            "shares_owned": shares_owned,
-            "cost_basis": cost_basis,
-            "assigned_price": assigned_price,
-            "premium_received_from_put": premium_received_from_put,
-            "stock_quality_score": quality_score,
-            "quality_score": quality_score,
-            "classification": sym.classification,
-            "technical_score": technical_score,
-            "next_earnings_date": next_earnings_date.isoformat() if next_earnings_date else None,
-            "filters_applied": {
-                "style_delta_min": style_delta_min,
-                "style_delta_max": style_delta_max,
-                "style_min_dte": style_min_dte,
-                "style_max_dte": style_max_dte,
-                "filter_source": filter_profile["filter_source"],
-                "covered_call_strategy": covered_call_strategy,
-                "target_exit_price": target_exit_price,
-                "target_delta": target_delta,
-                "max_dte": max_dte,
-                "min_roi": min_roi,
-                "style": style,
-            },
-            "warnings": strategy_warnings,
-            "filtered_out_contracts": filtered_out,
-            "error": "Call contracts were found, but none passed the covered-call filters or had enough valid data to evaluate.",
-        }, default=_json_default)
-
-    if covered_call_strategy == "exit_at_target_price":
-        evaluated.sort(
-            key=lambda item: (
-                item["contract"].get("target_gap_abs_pct")
-                if item["contract"].get("target_gap_abs_pct") is not None
-                else 999,
-                -(item["covered_call_score"] or 0),
-                -(item["contract"]["premium_yield_pct"] or 0),
-            ),
-        )
-    else:
-        evaluated.sort(
-            key=lambda item: (
-                item["covered_call_score"],
-                item["contract"]["premium_yield_pct"],
-                item["contract"]["upside_to_strike_pct"],
-            ),
-            reverse=True,
-        )
-
-    best = evaluated[0]
-    top_candidates = [item["contract"] for item in evaluated[:5]]
-    covered_share_lots = shares_owned // 100
-    warnings = list(best.get("warnings") or [])
-
-    if shares_owned % 100 != 0:
-        warnings.append(
-            f"Only {covered_share_lots} covered call contract(s) are fully covered by {shares_owned} shares."
-        )
-    if cost_basis is not None and best["contract"]["strike"] < cost_basis:
-        warnings.append("Recommended strike is below the provided cost basis.")
-    warnings.extend(strategy_warnings)
-
-    result = {
-        "symbol": symbol,
-        "current_price": stock_price,
-        "shares_owned": shares_owned,
-        "covered_share_lots": covered_share_lots,
-        "cost_basis": cost_basis,
-        "assigned_price": assigned_price,
-        "premium_received_from_put": premium_received_from_put,
-        "stock_quality_score": quality_score,
-        "quality_score": quality_score,
-        "classification": sym.classification,
-        "technical_score": technical_score,
-        "next_earnings_date": next_earnings_date.isoformat() if next_earnings_date else None,
-        "style": style,
-        "covered_call_strategy": covered_call_strategy,
-        "target_exit_price": target_exit_price,
-        "target_delta": (
-            target_delta if target_delta is not None else filter_profile["target_delta"]
-        ),
-        "best_contract": best["contract"],
-        "top_candidates": top_candidates,
-        "warnings": _dedupe_preserve_order(warnings),
-        "ex_dividend_risk": best["ex_dividend_risk"],
-        "summary": {
-            "rating": best["rating"],
-            "score": best["covered_call_score"],
-            "covered_call_score": best["covered_call_score"],
-            "best_strike": best["contract"]["strike"],
-            "best_expiration": best["contract"]["expiration"],
-            "best_dte": best["contract"]["dte"],
-            "premium_yield_pct": best["contract"]["premium_yield_pct"],
-            "annualized_yield_pct": best["contract"]["annualized_yield_pct"],
-            "effective_exit_price": best["contract"].get("effective_exit_price"),
-            "gain_if_called_from_cost_basis": best["contract"].get("gain_if_called_from_cost_basis"),
-            "call_away_risk": best["contract"]["call_away_risk"],
-        },
-        "filters_applied": {
-            "style_delta_min": style_delta_min,
-            "style_delta_max": style_delta_max,
-            "style_min_dte": style_min_dte,
-            "style_max_dte": style_max_dte,
-            "filter_source": filter_profile["filter_source"],
-            "mapped_style": filter_profile["mapped_style"],
-            "covered_call_strategy": covered_call_strategy,
-            "target_exit_price": target_exit_price,
-            "max_dte": max_dte,
-            "min_roi": min_roi,
-            "style": style,
-        },
-    }
     return json.dumps(result, default=_json_default)
 
 
@@ -2226,6 +2369,93 @@ def _handle_scan_put_opportunities(args: dict) -> str:
     }, default=_json_default)
 
 
+def _handle_scan_covered_call_opportunities(args: dict) -> str:
+    limit = int(args.get("limit") or 10)
+    min_roi = _to_float(args.get("min_roi"))
+    max_delta = _to_float(args.get("max_delta"))
+    max_dte = _to_int(args.get("max_dte"))
+    today = date.today()
+
+    try:
+        symbols = Symbol.objects.filter(score__gte=65)
+    except Exception as e:
+        return json.dumps({"error": "Database error", "details": str(e)})
+
+    results = []
+
+    for sym in symbols:
+        payload = _evaluate_covered_call_symbol(
+            sym,
+            shares_owned=100,
+            cost_basis=None,
+            assigned_price=None,
+            premium_received_from_put=None,
+            target_delta=None,
+            max_dte=max_dte,
+            min_roi=min_roi,
+            max_delta_filter=max_delta,
+            style="balanced",
+            covered_call_strategy="balanced_income",
+            target_exit_price=None,
+        )
+        best_contract = payload.get("best_contract") or {}
+        if payload.get("error") or not best_contract:
+            continue
+        contract_delta = _to_float(best_contract.get("delta"))
+
+        results.append({
+            "ticker": sym.ticker,
+            "price": payload.get("current_price"),
+            "classification": payload.get("classification"),
+            "score": best_contract.get("covered_call_score"),
+            "covered_call_score": best_contract.get("covered_call_score"),
+            "rating": best_contract.get("rating"),
+            "strike": best_contract.get("strike"),
+            "expiration": best_contract.get("expiration"),
+            "dte": best_contract.get("dte"),
+            "premium_yield_pct": best_contract.get("premium_yield_pct"),
+            "annualized_yield_pct": best_contract.get("annualized_yield_pct"),
+            "delta": contract_delta,
+            "iv": best_contract.get("iv"),
+            "mid": best_contract.get("mid"),
+            "bid": best_contract.get("bid"),
+            "ask": best_contract.get("ask"),
+            "upside_to_strike_pct": best_contract.get("upside_to_strike_pct"),
+            "call_away_risk": best_contract.get("call_away_risk"),
+            "stock_quality_score": payload.get("stock_quality_score"),
+            "quality_score": payload.get("quality_score"),
+            "technical_score": payload.get("technical_score"),
+            "warnings": payload.get("warnings") or [],
+            "reasons": best_contract.get("reasons") or [],
+            "ex_dividend_risk": payload.get("ex_dividend_risk"),
+        })
+
+    results.sort(
+        key=lambda item: (
+            item.get("score") or 0,
+            item.get("premium_yield_pct") or 0,
+            item.get("upside_to_strike_pct") or 0,
+        ),
+        reverse=True,
+    )
+    top = results[:limit]
+
+    return json.dumps({
+        "scan_date": today.isoformat(),
+        "total_symbols_scanned": symbols.count(),
+        "results_returned": len(top),
+        "filters_applied": {
+            "min_roi": min_roi,
+            "max_delta": max_delta,
+            "max_dte": max_dte,
+            "style": "balanced",
+            "covered_call_strategy": "balanced_income",
+            "shares_assumed": 100,
+        },
+        "opportunities": top,
+    }, default=_json_default)
+
+
 def _handle_compare_put_candidates(args: dict) -> str:
     raw_symbols = args.get("symbols") or []
     if not isinstance(raw_symbols, list) or not raw_symbols:
@@ -2330,6 +2560,131 @@ def _handle_compare_put_candidates(args: dict) -> str:
     }, default=_json_default)
 
 
+def _handle_compare_covered_call_candidates(args: dict) -> str:
+    raw_symbols = args.get("symbols") or []
+    if not isinstance(raw_symbols, list) or not raw_symbols:
+        return json.dumps({"error": "symbols must be a non-empty list"})
+
+    max_delta = _to_float(args.get("max_delta"))
+    min_roi = _to_float(args.get("min_roi"))
+
+    symbols = []
+    for value in raw_symbols:
+        if value is None:
+            continue
+        symbol = str(value).strip().upper()
+        if symbol and symbol not in symbols:
+            symbols.append(symbol)
+
+    if not symbols:
+        return json.dumps({"error": "No valid symbols provided"})
+
+    ranked_candidates = []
+    skipped = []
+
+    for symbol in symbols:
+        try:
+            sym = Symbol.objects.filter(ticker__iexact=symbol).first()
+        except Exception as e:
+            skipped.append({
+                "symbol": symbol,
+                "error": f"Database error while fetching symbol data: {str(e)}",
+            })
+            continue
+
+        if sym is None:
+            skipped.append({
+                "symbol": symbol,
+                "error": f"No data found in database for {symbol}",
+            })
+            continue
+
+        payload = _evaluate_covered_call_symbol(
+            sym,
+            shares_owned=100,
+            cost_basis=None,
+            assigned_price=None,
+            premium_received_from_put=None,
+            target_delta=None,
+            max_dte=None,
+            min_roi=min_roi,
+            max_delta_filter=max_delta,
+            style="balanced",
+            covered_call_strategy="balanced_income",
+            target_exit_price=None,
+        )
+        if payload.get("error"):
+            filter_reason = None
+            if max_delta is not None and min_roi is not None:
+                filter_reason = (
+                    "Best covered call opportunity did not satisfy max_delta and/or "
+                    f"min_roi filters (max_delta={max_delta}, min_roi={min_roi})."
+                )
+            elif max_delta is not None:
+                filter_reason = (
+                    "Best covered call opportunity did not satisfy max_delta filter "
+                    f"({max_delta})."
+                )
+            elif min_roi is not None:
+                filter_reason = (
+                    "Best covered call opportunity did not satisfy min_roi filter "
+                    f"({min_roi})."
+                )
+
+            skipped.append({
+                "symbol": symbol,
+                "error": filter_reason or payload["error"],
+            })
+            continue
+
+        best_contract = payload.get("best_contract") or {}
+        comparison_score = _to_float(payload.get("summary", {}).get("covered_call_score"))
+
+        ranked_candidates.append({
+            "symbol": symbol,
+            "price": payload.get("current_price"),
+            "classification": payload.get("classification"),
+            "stock_quality_score": payload.get("stock_quality_score"),
+            "quality_score": payload.get("quality_score"),
+            "technical_score": payload.get("technical_score"),
+            "comparison_score": comparison_score,
+            "covered_call_score": comparison_score,
+            "score": comparison_score,
+            "covered_call_rating": payload.get("summary", {}).get("rating"),
+            "rating": payload.get("summary", {}).get("rating"),
+            "call_away_risk": best_contract.get("call_away_risk"),
+            "best_contract": best_contract,
+            "warnings": payload.get("warnings") or [],
+            "reasons": best_contract.get("reasons") or [],
+            "earnings_risk": "Earnings occur before expiration." in (payload.get("warnings") or []),
+            "ex_dividend_risk": payload.get("ex_dividend_risk"),
+        })
+
+    ranked_candidates.sort(
+        key=lambda item: (
+            item.get("comparison_score") or 0,
+            item.get("stock_quality_score") or 0,
+            item.get("best_contract", {}).get("premium_yield_pct") or 0,
+        ),
+        reverse=True,
+    )
+
+    return json.dumps({
+        "symbols_requested": symbols,
+        "symbols_compared": len(ranked_candidates),
+        "winner": ranked_candidates[0] if ranked_candidates else None,
+        "ranked_candidates": ranked_candidates,
+        "skipped": skipped,
+        "filters_applied": {
+            "max_delta": max_delta,
+            "min_roi": min_roi,
+            "style": "balanced",
+            "covered_call_strategy": "balanced_income",
+            "shares_assumed": 100,
+        },
+    }, default=_json_default)
+
+
 def handle_tool_call(tool_name: str, tool_args: dict) -> str:
     if tool_name == "analyze_stock":
         symbol = tool_args["symbol"]
@@ -2365,8 +2720,14 @@ def handle_tool_call(tool_name: str, tool_args: dict) -> str:
     if tool_name == "scan_put_opportunities":
         return _handle_scan_put_opportunities(tool_args)
 
+    if tool_name == "scan_covered_call_opportunities":
+        return _handle_scan_covered_call_opportunities(tool_args)
+
     if tool_name == "compare_put_candidates":
         return _handle_compare_put_candidates(tool_args)
+
+    if tool_name == "compare_covered_call_candidates":
+        return _handle_compare_covered_call_candidates(tool_args)
 
     return json.dumps({"error": f"Unknown tool: {tool_name}"})
 

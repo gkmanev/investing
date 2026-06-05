@@ -3040,6 +3040,168 @@ class PutWheelAgentViewTests(APITestCase):
             any(item["symbol"] == "MISSING" for item in payload["skipped"])
         )
 
+    def test_handle_compare_covered_call_candidates_ranks_symbols_and_filters_errors(
+        self,
+    ) -> None:
+        expiration = date.today() + timedelta(days=28)
+        Symbol.objects.create(
+            ticker="AAPL",
+            price=Decimal("195.00"),
+            score=84,
+            classification="High-quality compounder",
+            technical_score=Symbol.TechnicalScore.NEUTRAL,
+            call_data={
+                "calls": [
+                    {
+                        "strike": 210,
+                        "expiration": expiration.isoformat(),
+                        "bid": 4.00,
+                        "ask": 4.20,
+                        "delta": 0.28,
+                        "iv": 24.0,
+                        "volume": 800,
+                        "open_interest": 3000,
+                    }
+                ]
+            },
+        )
+        Symbol.objects.create(
+            ticker="AMZN",
+            price=Decimal("100.00"),
+            score=80,
+            classification="Quality (selective)",
+            technical_score=Symbol.TechnicalScore.NEUTRAL,
+            call_data={
+                "calls": [
+                    {
+                        "strike": 110,
+                        "expiration": expiration.isoformat(),
+                        "bid": 1.50,
+                        "ask": 1.70,
+                        "delta": 0.28,
+                        "iv": 21.0,
+                        "volume": 300,
+                        "open_interest": 1700,
+                    }
+                ]
+            },
+        )
+        Symbol.objects.create(
+            ticker="NFLX",
+            price=Decimal("500.00"),
+            score=80,
+            classification="Quality (selective)",
+            technical_score=Symbol.TechnicalScore.NEUTRAL,
+            call_data={
+                "calls": [
+                    {
+                        "strike": 520,
+                        "expiration": expiration.isoformat(),
+                        "bid": 6.00,
+                        "ask": 6.20,
+                        "delta": 0.34,
+                        "iv": 27.0,
+                        "volume": 650,
+                        "open_interest": 2800,
+                    }
+                ]
+            },
+        )
+
+        payload = json.loads(
+            agent_views._handle_compare_covered_call_candidates(
+                {"symbols": ["AAPL", "AMZN", "NFLX", "MISSING"], "max_delta": 0.30, "min_roi": 1.0}
+            )
+        )
+
+        self.assertEqual(payload["symbols_compared"], 2)
+        self.assertEqual(payload["winner"]["symbol"], "AAPL")
+        self.assertEqual(
+            [item["symbol"] for item in payload["ranked_candidates"]],
+            ["AAPL", "AMZN"],
+        )
+        self.assertGreater(
+            payload["ranked_candidates"][0]["comparison_score"],
+            payload["ranked_candidates"][1]["comparison_score"],
+        )
+        self.assertEqual(payload["ranked_candidates"][0]["covered_call_rating"], "Excellent")
+        self.assertEqual(payload["ranked_candidates"][0]["call_away_risk"], "Low")
+        self.assertTrue(
+            any(
+                item["symbol"] == "NFLX" and "max_delta" in item["error"]
+                for item in payload["skipped"]
+            )
+        )
+        self.assertTrue(
+            any(item["symbol"] == "MISSING" for item in payload["skipped"])
+        )
+
+    def test_handle_compare_covered_call_candidates_respects_min_roi(
+        self,
+    ) -> None:
+        expiration = date.today() + timedelta(days=28)
+        Symbol.objects.create(
+            ticker="CRM",
+            price=Decimal("280.00"),
+            score=82,
+            classification="High-quality compounder",
+            technical_score=Symbol.TechnicalScore.NEUTRAL,
+            call_data={
+                "calls": [
+                    {
+                        "strike": 295,
+                        "expiration": expiration.isoformat(),
+                        "bid": 1.20,
+                        "ask": 1.30,
+                        "delta": 0.27,
+                        "iv": 23.0,
+                        "volume": 320,
+                        "open_interest": 1400,
+                    }
+                ]
+            },
+        )
+        Symbol.objects.create(
+            ticker="ORCL",
+            price=Decimal("90.00"),
+            score=78,
+            classification="Quality (selective)",
+            technical_score=Symbol.TechnicalScore.NEUTRAL,
+            call_data={
+                "calls": [
+                    {
+                        "strike": 95,
+                        "expiration": expiration.isoformat(),
+                        "bid": 1.30,
+                        "ask": 1.50,
+                        "delta": 0.29,
+                        "iv": 24.0,
+                        "volume": 450,
+                        "open_interest": 1800,
+                    }
+                ]
+            },
+        )
+
+        payload = json.loads(
+            agent_views._handle_compare_covered_call_candidates(
+                {"symbols": ["CRM", "ORCL"], "min_roi": 1.5}
+            )
+        )
+
+        self.assertEqual(payload["symbols_compared"], 1)
+        self.assertEqual(payload["winner"]["symbol"], "ORCL")
+        self.assertEqual(
+            [item["symbol"] for item in payload["ranked_candidates"]],
+            ["ORCL"],
+        )
+        self.assertTrue(
+            any(
+                item["symbol"] == "CRM" and "min_roi" in item["error"]
+                for item in payload["skipped"]
+            )
+        )
+
     def test_handle_covered_call_opportunity_returns_ranked_call_candidates(self) -> None:
         expiration = date.today() + timedelta(days=28)
         Symbol.objects.create(
@@ -3439,3 +3601,175 @@ class PutWheelAgentViewTests(APITestCase):
             payload["error"],
             "At least 100 shares are required to sell one standard covered call.",
         )
+
+    def test_handle_scan_covered_call_opportunities_ranks_and_filters_delta(
+        self,
+    ) -> None:
+        expiration = date.today() + timedelta(days=28)
+        Symbol.objects.create(
+            ticker="AAPL",
+            price=Decimal("195.00"),
+            score=84,
+            classification="High-quality compounder",
+            technical_score=Symbol.TechnicalScore.NEUTRAL,
+            call_data={
+                "calls": [
+                    {
+                        "strike": 210,
+                        "expiration": expiration.isoformat(),
+                        "bid": 4.00,
+                        "ask": 4.20,
+                        "delta": 0.28,
+                        "iv": 24.0,
+                        "volume": 800,
+                        "open_interest": 3000,
+                    }
+                ]
+            },
+        )
+        Symbol.objects.create(
+            ticker="MSFT",
+            price=Decimal("420.00"),
+            score=88,
+            classification="High-quality compounder",
+            technical_score=Symbol.TechnicalScore.NEUTRAL,
+            call_data={
+                "calls": [
+                    {
+                        "strike": 440,
+                        "expiration": expiration.isoformat(),
+                        "bid": 5.20,
+                        "ask": 5.40,
+                        "delta": 0.29,
+                        "iv": 21.0,
+                        "volume": 700,
+                        "open_interest": 3200,
+                    }
+                ]
+            },
+        )
+        Symbol.objects.create(
+            ticker="NFLX",
+            price=Decimal("500.00"),
+            score=80,
+            classification="Quality (selective)",
+            technical_score=Symbol.TechnicalScore.NEUTRAL,
+            call_data={
+                "calls": [
+                    {
+                        "strike": 520,
+                        "expiration": expiration.isoformat(),
+                        "bid": 6.00,
+                        "ask": 6.20,
+                        "delta": 0.34,
+                        "iv": 27.0,
+                        "volume": 650,
+                        "open_interest": 2800,
+                    }
+                ]
+            },
+        )
+
+        payload = json.loads(
+            agent_views._handle_scan_covered_call_opportunities(
+                {"limit": 2, "min_roi": 1.0, "max_delta": 0.30, "max_dte": 35}
+            )
+        )
+
+        self.assertEqual(payload["total_symbols_scanned"], 3)
+        self.assertEqual(payload["results_returned"], 2)
+        self.assertEqual(
+            [item["ticker"] for item in payload["opportunities"]],
+            ["AAPL", "MSFT"],
+        )
+        self.assertEqual(payload["filters_applied"]["covered_call_strategy"], "balanced_income")
+        self.assertEqual(payload["filters_applied"]["shares_assumed"], 100)
+        self.assertEqual(payload["opportunities"][0]["covered_call_score"], payload["opportunities"][0]["score"])
+        self.assertEqual(payload["opportunities"][0]["premium_yield_pct"], 2.1)
+        self.assertIn(
+            "Ex-dividend data is unavailable.",
+            payload["opportunities"][0]["warnings"],
+        )
+
+    def test_handle_scan_covered_call_opportunities_respects_roi_and_dte_filters(
+        self,
+    ) -> None:
+        near_expiration = date.today() + timedelta(days=24)
+        longer_expiration = date.today() + timedelta(days=40)
+        Symbol.objects.create(
+            ticker="AMZN",
+            price=Decimal("100.00"),
+            score=80,
+            classification="Quality (selective)",
+            technical_score=Symbol.TechnicalScore.NEUTRAL,
+            call_data={
+                "calls": [
+                    {
+                        "strike": 110,
+                        "expiration": near_expiration.isoformat(),
+                        "bid": 1.50,
+                        "ask": 1.70,
+                        "delta": 0.28,
+                        "iv": 21.0,
+                        "volume": 300,
+                        "open_interest": 1700,
+                    }
+                ]
+            },
+        )
+        Symbol.objects.create(
+            ticker="CRM",
+            price=Decimal("280.00"),
+            score=82,
+            classification="High-quality compounder",
+            technical_score=Symbol.TechnicalScore.NEUTRAL,
+            call_data={
+                "calls": [
+                    {
+                        "strike": 295,
+                        "expiration": near_expiration.isoformat(),
+                        "bid": 1.20,
+                        "ask": 1.30,
+                        "delta": 0.27,
+                        "iv": 23.0,
+                        "volume": 320,
+                        "open_interest": 1400,
+                    }
+                ]
+            },
+        )
+        Symbol.objects.create(
+            ticker="ORCL",
+            price=Decimal("90.00"),
+            score=78,
+            classification="Quality (selective)",
+            technical_score=Symbol.TechnicalScore.NEUTRAL,
+            call_data={
+                "calls": [
+                    {
+                        "strike": 95,
+                        "expiration": longer_expiration.isoformat(),
+                        "bid": 1.00,
+                        "ask": 1.20,
+                        "delta": 0.29,
+                        "iv": 24.0,
+                        "volume": 450,
+                        "open_interest": 1800,
+                    }
+                ]
+            },
+        )
+
+        payload = json.loads(
+            agent_views._handle_scan_covered_call_opportunities(
+                {"limit": 5, "min_roi": 1.0, "max_dte": 30}
+            )
+        )
+
+        self.assertEqual(payload["total_symbols_scanned"], 3)
+        self.assertEqual(payload["results_returned"], 1)
+        self.assertEqual(
+            [item["ticker"] for item in payload["opportunities"]],
+            ["AMZN"],
+        )
+        self.assertEqual(payload["opportunities"][0]["premium_yield_pct"], 1.6)
