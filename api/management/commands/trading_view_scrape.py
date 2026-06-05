@@ -208,6 +208,19 @@ class TradingViewOptions:
         ticker: str,
         expiration: int,
     ) -> list[dict[str, Any]]:
+        data = self.get_chain_response(
+            exchange=exchange,
+            ticker=ticker,
+            expiration=expiration,
+        )
+        return self.parse_chain_response(data)
+
+    def get_chain_response(
+        self,
+        exchange: str,
+        ticker: str,
+        expiration: int,
+    ) -> dict[str, Any]:
         payload = {
             "columns": [
                 "ask",
@@ -240,7 +253,10 @@ class TradingViewOptions:
                 {"name": "underlying_symbol", "values": [f"{exchange}:{ticker}"]}
             ],
         }
-        data = self.post_options(payload)
+        return self.post_options(payload)
+
+    @staticmethod
+    def parse_chain_response(data: dict[str, Any]) -> list[dict[str, Any]]:
         fields = data["fields"]
         rows: list[dict[str, Any]] = []
 
@@ -673,12 +689,21 @@ class Command(BaseCommand):
 
         selected_date = datetime.strptime(str(selected), "%Y%m%d").date()
 
+        chain_response: dict[str, Any] | None = None
         try:
-            chain = client.get_chain(
-                exchange=exchange,
-                ticker=symbol.ticker,
-                expiration=selected,
-            )
+            if debug_call_chain:
+                chain_response = client.get_chain_response(
+                    exchange=exchange,
+                    ticker=symbol.ticker,
+                    expiration=selected,
+                )
+                chain = client.parse_chain_response(chain_response)
+            else:
+                chain = client.get_chain(
+                    exchange=exchange,
+                    ticker=symbol.ticker,
+                    expiration=selected,
+                )
         except requests.RequestException as exc:
             raise CommandError(
                 self._format_tradingview_request_error(
@@ -711,6 +736,7 @@ class Command(BaseCommand):
                     expiration=selected_date,
                     chain=chain,
                     call_candidates=call_candidates,
+                    raw_chain_response=chain_response,
                 ),
                 reporter=reporter,
             )
@@ -1058,6 +1084,7 @@ class Command(BaseCommand):
         expiration: date,
         chain: list[dict[str, Any]],
         call_candidates: list[dict[str, Any]],
+        raw_chain_response: dict[str, Any] | None = None,
     ) -> str:
         fetched_calls = [
             self._serialize_option_data(row)
@@ -1072,6 +1099,9 @@ class Command(BaseCommand):
             )
         ]
         filtered_calls = [self._serialize_option_data(option) for option in call_candidates]
+        fields = raw_chain_response.get("fields", []) if raw_chain_response else []
+        raw_symbols = raw_chain_response.get("symbols", []) if raw_chain_response else []
+        raw_sample = raw_symbols[0] if raw_symbols else None
 
         return json.dumps(
             {
@@ -1079,6 +1109,10 @@ class Command(BaseCommand):
                     "ticker": ticker,
                     "exchange": exchange,
                     "expiration": expiration.isoformat(),
+                    "response_field_count": len(fields),
+                    "response_fields": fields,
+                    "response_symbol_count": len(raw_symbols),
+                    "response_first_symbol": raw_sample,
                     "fetched_call_count": len(fetched_calls),
                     "filtered_call_count": len(filtered_calls),
                     "fetched_calls": fetched_calls,
