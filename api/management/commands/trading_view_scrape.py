@@ -944,8 +944,6 @@ class Command(BaseCommand):
 
             volume = self._to_int(row.get("volume"))
             open_interest = self._to_int(row.get("open_interest"))
-            if volume is None and open_interest is None:
-                continue
 
             option = dict(row)
             option["delta"] = delta_value

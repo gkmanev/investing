@@ -2432,7 +2432,7 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.assertIsNone(self.symbol.option_data)
         self.assertIsNone(self.symbol.call_data)
 
-    def test_collect_call_contracts_requires_liquidity_and_sorts_by_strike(
+    def test_collect_call_contracts_allows_missing_liquidity_and_sorts_by_strike(
         self,
     ) -> None:
         contracts = self.command._collect_call_contracts(
@@ -2495,13 +2495,27 @@ class TradingViewScrapeCommandTests(APITestCase):
 
         self.assertEqual(
             [contract["option_symbol"] for contract in contracts],
-            ["AAPL_STRIKE_87", "AAPL_STRIKE_89", "AAPL_WIDE_SPREAD", "AAPL_OI_ONLY"],
+            [
+                "AAPL_STRIKE_87",
+                "AAPL_STRIKE_89",
+                "AAPL_WIDE_SPREAD",
+                "AAPL_OI_ONLY",
+                "AAPL_NO_LIQUIDITY",
+            ],
         )
         self.assertEqual(
             [contract["strike_price"] for contract in contracts],
-            [Decimal("87"), Decimal("89"), Decimal("90"), Decimal("92")],
+            [
+                Decimal("87"),
+                Decimal("89"),
+                Decimal("90"),
+                Decimal("92"),
+                Decimal("95"),
+            ],
         )
-        self.assertEqual(contracts[-1]["open_interest"], 500)
+        self.assertEqual(contracts[-2]["open_interest"], 500)
+        self.assertIsNone(contracts[-2]["volume"])
+        self.assertIsNone(contracts[-1]["open_interest"])
         self.assertIsNone(contracts[-1]["volume"])
 
     def test_process_symbol_can_skip_rsi_fetch_and_preserve_existing_value(self) -> None:
