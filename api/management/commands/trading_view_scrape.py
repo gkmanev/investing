@@ -28,7 +28,6 @@ MAX_DTE = 55
 PUT_DELTA_MIN = Decimal("-0.37")
 PUT_DELTA_MAX = Decimal("-0.24")
 ROI_THRESHOLD = Decimal("2")
-MAX_CALL_SPREAD_PCT = Decimal("25")
 MAX_WORKERS = 1
 DEFAULT_MAX_REQUESTS_PER_SECOND = 2.0
 MAX_RETRIES = 6
@@ -430,6 +429,12 @@ class Command(BaseCommand):
             dest="max_rps",
             help="Maximum TradingView requests per second across all workers.",
         )
+        parser.add_argument(
+            "--debug-call-chain",
+            action="store_true",
+            dest="debug_call_chain",
+            help="Print the fetched and filtered call chain for each processed symbol.",
+        )
 
     def handle(self, *args: Any, **options: Any) -> str:
         min_dte = options["min_dte"]
@@ -536,6 +541,7 @@ class Command(BaseCommand):
                     delta_max=delta_max,
                     roi_threshold=roi_threshold,
                     fetch_rsi=not options["skip_rsi"],
+                    debug_call_chain=options["debug_call_chain"],
                     reporter=reporter,
                 )
             finally:
@@ -594,6 +600,7 @@ class Command(BaseCommand):
         delta_max: Decimal,
         roi_threshold: Decimal,
         fetch_rsi: bool,
+        debug_call_chain: bool = False,
         reporter: Callable[[str], None] | None = None,
     ) -> tuple[bool, bool]:
         if price_client is None:
@@ -696,6 +703,17 @@ class Command(BaseCommand):
         best_candidate = self._select_roi_candidate(roi_candidates)
 
         call_candidates = self._collect_call_contracts(chain=chain)
+        if debug_call_chain:
+            self._write_status(
+                self._format_call_chain_debug_output(
+                    ticker=symbol.ticker,
+                    exchange=exchange,
+                    expiration=selected_date,
+                    chain=chain,
+                    call_candidates=call_candidates,
+                ),
+                reporter=reporter,
+            )
 
         had_option_metrics = any(
             value is not None
@@ -903,13 +921,6 @@ class Command(BaseCommand):
             if volume is None and open_interest is None:
                 continue
 
-            spread_pct = self._calculate_spread_percentage(
-                bid_price=row.get("bid"),
-                ask_price=row.get("ask"),
-            )
-            if spread_pct is None or spread_pct > MAX_CALL_SPREAD_PCT:
-                continue
-
             option = dict(row)
             option["delta"] = delta_value
             option["strike_price"] = strike_price
@@ -982,24 +993,6 @@ class Command(BaseCommand):
             return None
 
     @staticmethod
-    def _calculate_spread_percentage(
-        *, bid_price: Any, ask_price: Any
-    ) -> Decimal | None:
-        bid_decimal = Command._to_decimal(bid_price)
-        ask_decimal = Command._to_decimal(ask_price)
-        if bid_decimal is None or ask_decimal is None or ask_decimal <= 0:
-            return None
-
-        try:
-            spread_pct = ((ask_decimal - bid_decimal) / ask_decimal) * Decimal("100")
-        except (InvalidOperation, DivisionByZero):
-            return None
-
-        if spread_pct < 0:
-            return None
-        return spread_pct.quantize(Decimal("0.01"))
-
-    @staticmethod
     def _to_decimal(value: Any) -> Decimal | None:
         try:
             return Decimal(str(value))
@@ -1056,6 +1049,45 @@ class Command(BaseCommand):
             serialized["strike"] = serialized["strike_price"]
 
         return serialized
+
+    def _format_call_chain_debug_output(
+        self,
+        *,
+        ticker: str,
+        exchange: str,
+        expiration: date,
+        chain: list[dict[str, Any]],
+        call_candidates: list[dict[str, Any]],
+    ) -> str:
+        fetched_calls = [
+            self._serialize_option_data(row)
+            for row in sorted(
+                (
+                    row
+                    for row in chain
+                    if str(row.get("option_type", "")).lower() == "call"
+                ),
+                key=lambda item: self._to_decimal(item.get("strike_price"))
+                or Decimal("999999999"),
+            )
+        ]
+        filtered_calls = [self._serialize_option_data(option) for option in call_candidates]
+
+        return json.dumps(
+            {
+                "debug_call_chain": {
+                    "ticker": ticker,
+                    "exchange": exchange,
+                    "expiration": expiration.isoformat(),
+                    "fetched_call_count": len(fetched_calls),
+                    "filtered_call_count": len(filtered_calls),
+                    "fetched_calls": fetched_calls,
+                    "filtered_calls": filtered_calls,
+                }
+            },
+            indent=2,
+            sort_keys=True,
+        )
 
     def _update_symbol_snapshot(
         self,
