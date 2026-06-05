@@ -3039,3 +3039,403 @@ class PutWheelAgentViewTests(APITestCase):
         self.assertTrue(
             any(item["symbol"] == "MISSING" for item in payload["skipped"])
         )
+
+    def test_handle_covered_call_opportunity_returns_ranked_call_candidates(self) -> None:
+        expiration = date.today() + timedelta(days=28)
+        Symbol.objects.create(
+            ticker="AAPL",
+            price=Decimal("195.00"),
+            score=84,
+            classification="High-quality compounder",
+            technical_score=Symbol.TechnicalScore.NEUTRAL,
+            next_earnings_date=date.today() + timedelta(days=50),
+            call_data={
+                "calls": [
+                    {
+                        "strike": 205,
+                        "expiration": expiration.isoformat(),
+                        "bid": 5.00,
+                        "ask": 5.20,
+                        "delta": 0.39,
+                        "iv": 25.5,
+                        "volume": 1200,
+                        "open_interest": 5000,
+                    },
+                    {
+                        "strike": 210,
+                        "expiration": expiration.isoformat(),
+                        "bid": 4.00,
+                        "ask": 4.20,
+                        "delta": 0.28,
+                        "iv": 24.0,
+                        "volume": 800,
+                        "open_interest": 3000,
+                    },
+                    {
+                        "strike": 220,
+                        "expiration": expiration.isoformat(),
+                        "bid": 1.50,
+                        "ask": 1.60,
+                        "delta": 0.16,
+                        "iv": 22.0,
+                        "volume": 200,
+                        "open_interest": 900,
+                    },
+                ]
+            },
+        )
+
+        payload = json.loads(
+            agent_views._handle_covered_call_opportunity(
+                {
+                    "symbol": "AAPL",
+                    "shares_owned": 200,
+                    "cost_basis": 180,
+                    "style": "balanced",
+                }
+            )
+        )
+
+        self.assertEqual(payload["symbol"], "AAPL")
+        self.assertEqual(payload["stock_quality_score"], 84)
+        self.assertEqual(payload["technical_score"], Symbol.TechnicalScore.NEUTRAL)
+        self.assertEqual(payload["covered_share_lots"], 2)
+        self.assertEqual(payload["best_contract"]["strike"], 210.0)
+        self.assertEqual(payload["best_contract"]["rating"], "Excellent")
+        self.assertEqual(payload["best_contract"]["covered_call_score"], payload["summary"]["covered_call_score"])
+        self.assertEqual(payload["best_contract"]["premium_income"], 820.0)
+        self.assertEqual(payload["best_contract"]["call_away_risk"], "Low")
+        self.assertEqual(len(payload["top_candidates"]), 1)
+        self.assertEqual(payload["filters_applied"]["style_delta_min"], 0.25)
+        self.assertEqual(payload["filters_applied"]["style_delta_max"], 0.35)
+        self.assertEqual(payload["filters_applied"]["style_min_dte"], 21)
+        self.assertEqual(payload["filters_applied"]["style_max_dte"], 45)
+        self.assertFalse(payload["ex_dividend_risk"]["data_available"])
+        self.assertIn("Ex-dividend data is unavailable.", payload["warnings"])
+
+    def test_handle_covered_call_opportunity_style_filters_change_selected_contract(self) -> None:
+        expiration = date.today() + timedelta(days=28)
+        Symbol.objects.create(
+            ticker="MSFT",
+            price=Decimal("420.00"),
+            score=88,
+            classification="High-quality compounder",
+            technical_score=Symbol.TechnicalScore.NEUTRAL,
+            call_data={
+                "calls": [
+                    {
+                        "strike": 430,
+                        "expiration": expiration.isoformat(),
+                        "bid": 8.00,
+                        "ask": 8.20,
+                        "delta": 0.48,
+                        "iv": 23.0,
+                        "volume": 950,
+                        "open_interest": 4100,
+                    },
+                    {
+                        "strike": 440,
+                        "expiration": expiration.isoformat(),
+                        "bid": 5.20,
+                        "ask": 5.40,
+                        "delta": 0.31,
+                        "iv": 21.0,
+                        "volume": 700,
+                        "open_interest": 3200,
+                    },
+                    {
+                        "strike": 455,
+                        "expiration": expiration.isoformat(),
+                        "bid": 2.20,
+                        "ask": 2.35,
+                        "delta": 0.20,
+                        "iv": 19.0,
+                        "volume": 250,
+                        "open_interest": 1500,
+                    },
+                ]
+            },
+        )
+
+        balanced_payload = json.loads(
+            agent_views._handle_covered_call_opportunity(
+                {"symbol": "MSFT", "shares_owned": 100, "style": "balanced"}
+            )
+        )
+        income_payload = json.loads(
+            agent_views._handle_covered_call_opportunity(
+                {"symbol": "MSFT", "shares_owned": 100, "style": "income"}
+            )
+        )
+
+        self.assertEqual(balanced_payload["best_contract"]["strike"], 440.0)
+        self.assertEqual(len(balanced_payload["top_candidates"]), 1)
+        self.assertEqual(income_payload["best_contract"]["strike"], 430.0)
+        self.assertEqual(len(income_payload["top_candidates"]), 1)
+
+    def test_handle_covered_call_opportunity_defaults_to_balanced_income_strategy(self) -> None:
+        expiration = date.today() + timedelta(days=28)
+        Symbol.objects.create(
+            ticker="CRM",
+            price=Decimal("280.00"),
+            score=82,
+            classification="High-quality compounder",
+            technical_score=Symbol.TechnicalScore.NEUTRAL,
+            call_data={
+                "calls": [
+                    {
+                        "strike": 292.5,
+                        "expiration": expiration.isoformat(),
+                        "bid": 4.80,
+                        "ask": 5.00,
+                        "delta": 0.31,
+                        "iv": 24.0,
+                        "volume": 600,
+                        "open_interest": 2400,
+                    },
+                    {
+                        "strike": 300,
+                        "expiration": expiration.isoformat(),
+                        "bid": 2.20,
+                        "ask": 2.35,
+                        "delta": 0.18,
+                        "iv": 21.0,
+                        "volume": 300,
+                        "open_interest": 1700,
+                    },
+                ]
+            },
+        )
+
+        payload = json.loads(
+            agent_views._handle_covered_call_opportunity(
+                {"symbol": "CRM", "shares_owned": 100}
+            )
+        )
+
+        self.assertEqual(payload["covered_call_strategy"], "balanced_income")
+        self.assertEqual(payload["filters_applied"]["filter_source"], "strategy")
+        self.assertEqual(payload["best_contract"]["strike"], 292.5)
+
+    def test_handle_covered_call_opportunity_strategy_filters_change_selected_contract(self) -> None:
+        expiration = date.today() + timedelta(days=28)
+        Symbol.objects.create(
+            ticker="NVDA",
+            price=Decimal("500.00"),
+            score=90,
+            classification="High-quality compounder",
+            technical_score=Symbol.TechnicalScore.NEUTRAL,
+            call_data={
+                "calls": [
+                    {
+                        "strike": 515,
+                        "expiration": expiration.isoformat(),
+                        "bid": 11.00,
+                        "ask": 11.40,
+                        "delta": 0.41,
+                        "iv": 29.0,
+                        "volume": 1300,
+                        "open_interest": 6200,
+                    },
+                    {
+                        "strike": 530,
+                        "expiration": expiration.isoformat(),
+                        "bid": 7.00,
+                        "ask": 7.30,
+                        "delta": 0.30,
+                        "iv": 26.0,
+                        "volume": 950,
+                        "open_interest": 4800,
+                    },
+                    {
+                        "strike": 550,
+                        "expiration": expiration.isoformat(),
+                        "bid": 3.20,
+                        "ask": 3.35,
+                        "delta": 0.18,
+                        "iv": 24.0,
+                        "volume": 500,
+                        "open_interest": 2600,
+                    },
+                ]
+            },
+        )
+
+        keep_payload = json.loads(
+            agent_views._handle_covered_call_opportunity(
+                {
+                    "symbol": "NVDA",
+                    "shares_owned": 100,
+                    "covered_call_strategy": "keep_shares_conservative",
+                }
+            )
+        )
+        premium_payload = json.loads(
+            agent_views._handle_covered_call_opportunity(
+                {
+                    "symbol": "NVDA",
+                    "shares_owned": 100,
+                    "covered_call_strategy": "high_premium_ok_called",
+                }
+            )
+        )
+
+        self.assertEqual(keep_payload["best_contract"]["strike"], 550.0)
+        self.assertEqual(
+            keep_payload["filters_applied"]["covered_call_strategy"],
+            "keep_shares_conservative",
+        )
+        self.assertIn(
+            "Premium will be lower because you are prioritizing share retention.",
+            keep_payload["warnings"],
+        )
+        self.assertEqual(premium_payload["best_contract"]["strike"], 515.0)
+        self.assertEqual(
+            premium_payload["filters_applied"]["covered_call_strategy"],
+            "high_premium_ok_called",
+        )
+        self.assertIn(
+            "This gives more premium but materially increases the chance your shares are called away.",
+            premium_payload["warnings"],
+        )
+
+    def test_handle_covered_call_opportunity_exit_strategy_returns_effective_exit_metrics(self) -> None:
+        expiration = date.today() + timedelta(days=21)
+        Symbol.objects.create(
+            ticker="AMZN",
+            price=Decimal("100.00"),
+            score=80,
+            classification="Quality (selective)",
+            technical_score=Symbol.TechnicalScore.NEUTRAL,
+            call_data={
+                "calls": [
+                    {
+                        "strike": 105,
+                        "expiration": expiration.isoformat(),
+                        "bid": 2.90,
+                        "ask": 3.10,
+                        "delta": 0.42,
+                        "iv": 22.0,
+                        "volume": 400,
+                        "open_interest": 2000,
+                    },
+                    {
+                        "strike": 110,
+                        "expiration": expiration.isoformat(),
+                        "bid": 1.50,
+                        "ask": 1.70,
+                        "delta": 0.28,
+                        "iv": 21.0,
+                        "volume": 300,
+                        "open_interest": 1700,
+                    },
+                    {
+                        "strike": 115,
+                        "expiration": expiration.isoformat(),
+                        "bid": 0.80,
+                        "ask": 0.92,
+                        "delta": 0.18,
+                        "iv": 20.0,
+                        "volume": 250,
+                        "open_interest": 1400,
+                    },
+                ]
+            },
+        )
+
+        payload = json.loads(
+            agent_views._handle_covered_call_opportunity(
+                {
+                    "symbol": "AMZN",
+                    "shares_owned": 100,
+                    "cost_basis": 96,
+                    "covered_call_strategy": "exit_at_target_price",
+                    "target_exit_price": 109,
+                }
+            )
+        )
+
+        self.assertEqual(payload["best_contract"]["strike"], 110.0)
+        self.assertEqual(payload["best_contract"]["effective_exit_price"], 111.6)
+        self.assertEqual(payload["best_contract"]["gain_if_called_from_cost_basis"], 1560.0)
+        self.assertEqual(payload["summary"]["effective_exit_price"], 111.6)
+
+    def test_handle_covered_call_opportunity_wheel_continuation_uses_adjusted_basis(self) -> None:
+        expiration = date.today() + timedelta(days=28)
+        Symbol.objects.create(
+            ticker="ORCL",
+            price=Decimal("90.00"),
+            score=78,
+            classification="Quality (selective)",
+            technical_score=Symbol.TechnicalScore.NEUTRAL,
+            call_data={
+                "calls": [
+                    {
+                        "strike": 93,
+                        "expiration": expiration.isoformat(),
+                        "bid": 0.90,
+                        "ask": 1.10,
+                        "delta": 0.28,
+                        "iv": 26.0,
+                        "volume": 500,
+                        "open_interest": 2100,
+                    },
+                    {
+                        "strike": 95,
+                        "expiration": expiration.isoformat(),
+                        "bid": 0.40,
+                        "ask": 0.60,
+                        "delta": 0.24,
+                        "iv": 24.0,
+                        "volume": 450,
+                        "open_interest": 1800,
+                    },
+                ]
+            },
+        )
+
+        payload = json.loads(
+            agent_views._handle_covered_call_opportunity(
+                {
+                    "symbol": "ORCL",
+                    "shares_owned": 100,
+                    "covered_call_strategy": "wheel_continuation",
+                    "assigned_price": 100,
+                    "premium_received_from_put": 5,
+                }
+            )
+        )
+
+        self.assertEqual(payload["best_contract"]["strike"], 95.0)
+        self.assertEqual(payload["best_contract"]["wheel_cost_basis_before_call"], 95.0)
+        self.assertEqual(payload["best_contract"]["adjusted_cost_basis_after_call"], 94.5)
+
+    def test_handle_covered_call_opportunity_exit_strategy_requires_target_exit_price(self) -> None:
+        payload = json.loads(
+            agent_views._handle_covered_call_opportunity(
+                {
+                    "symbol": "AAPL",
+                    "shares_owned": 100,
+                    "covered_call_strategy": "exit_at_target_price",
+                }
+            )
+        )
+
+        self.assertIn("error", payload)
+        self.assertEqual(
+            payload["error"],
+            "target_exit_price is required when covered_call_strategy is exit_at_target_price.",
+        )
+
+    def test_handle_covered_call_opportunity_requires_100_shares(self) -> None:
+        payload = json.loads(
+            agent_views._handle_covered_call_opportunity(
+                {"symbol": "AAPL", "shares_owned": 75}
+            )
+        )
+
+        self.assertIn("error", payload)
+        self.assertEqual(
+            payload["error"],
+            "At least 100 shares are required to sell one standard covered call.",
+        )
