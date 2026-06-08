@@ -1988,6 +1988,40 @@ class TradingViewScrapeCommandTests(APITestCase):
             "iv": iv,
         }
 
+    def test_parse_expiration_volume_sums_call_and_put_volume_for_selected_expiration(self) -> None:
+        volume = TradingViewOptions.parse_expiration_volume(
+            {
+                "items": [
+                    {
+                        "exp": 20260717,
+                        "strikes": [
+                            {"s": 95, "c": {"v": 120}, "p": {"v": 80}},
+                            {"s": 100, "c": {"v": "15"}, "p": {"v": "25"}},
+                            {"s": 105, "c": {}, "p": {"v": None}},
+                        ],
+                    }
+                ]
+            },
+            20260717,
+        )
+
+        self.assertEqual(volume, 240)
+
+    def test_parse_expiration_volume_returns_none_when_expiration_missing(self) -> None:
+        volume = TradingViewOptions.parse_expiration_volume(
+            {
+                "items": [
+                    {
+                        "exp": 20260717,
+                        "strikes": [{"s": 95, "c": {"v": 120}, "p": {"v": 80}}],
+                    }
+                ]
+            },
+            20260821,
+        )
+
+        self.assertIsNone(volume)
+
     @patch("api.management.commands.trading_view_scrape.certifi.where", return_value="dummy.pem")
     @patch("api.management.commands.trading_view_scrape.urllib.request.urlopen")
     def test_fmp_client_get_rsi_returns_last_value(
@@ -2156,6 +2190,7 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.price_client.get_rsi.return_value = "55.75"
         client = MagicMock()
         client.get_expirations.return_value = [expiration]
+        client.get_expiration_volume.return_value = 1240
         client.get_chain.return_value = [
             self._option_row(
                 strike="95",
@@ -2184,7 +2219,7 @@ class TradingViewScrapeCommandTests(APITestCase):
 
         self.symbol.refresh_from_db()
         self.assertEqual(self.symbol.rsi, Decimal("55.75"))
-        self.assertEqual(self.symbol.option_volume, 500000)
+        self.assertEqual(self.symbol.option_volume, 1240)
         self.assertEqual(self.symbol.option_iv, Decimal("24.1250"))
         self.price_client.get_rsi.assert_called_once_with("AAPL")
 
@@ -2220,6 +2255,7 @@ class TradingViewScrapeCommandTests(APITestCase):
         client = MagicMock()
         self.price_client.get_rsi.return_value = "55.75"
         client.get_expirations.return_value = [expiration]
+        client.get_expiration_volume.return_value = 980
         client.get_chain.return_value = [
             self._option_row(
                 strike="95",
@@ -2270,7 +2306,7 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.symbol.refresh_from_db()
         self.assertEqual(self.symbol.option_data["option_symbol"], "AAPL_MAIN")
         self.assertEqual(self.symbol.option_data["strike_price"], 95.0)
-        self.assertEqual(self.symbol.option_volume, 500000)
+        self.assertEqual(self.symbol.option_volume, 980)
         self.assertEqual(self.symbol.option_iv, Decimal("24.1250"))
         self.assertEqual(
             [item["option_symbol"] for item in self.symbol.option_data["alternatives"]],
@@ -2281,7 +2317,7 @@ class TradingViewScrapeCommandTests(APITestCase):
             [-0.31, -0.28],
         )
 
-    def test_process_symbol_clears_option_volume_and_iv_without_roi_candidate(self) -> None:
+    def test_process_symbol_refreshes_option_volume_and_clears_iv_without_roi_candidate(self) -> None:
         expiration = self._expiration_int()
         self.symbol.option_volume = 750
         self.symbol.option_iv = Decimal("33.3300")
@@ -2294,6 +2330,7 @@ class TradingViewScrapeCommandTests(APITestCase):
         client = MagicMock()
         self.price_client.get_rsi.return_value = "55.75"
         client.get_expirations.return_value = [expiration]
+        client.get_expiration_volume.return_value = 620
         client.get_chain.return_value = [
             self._option_row(
                 strike="95",
@@ -2321,7 +2358,7 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.assertTrue(was_cleared)
 
         self.symbol.refresh_from_db()
-        self.assertIsNone(self.symbol.option_volume)
+        self.assertEqual(self.symbol.option_volume, 620)
         self.assertIsNone(self.symbol.option_iv)
         self.assertIsNone(self.symbol.option_data)
         self.assertIsNone(self.symbol.roi)
@@ -2331,6 +2368,7 @@ class TradingViewScrapeCommandTests(APITestCase):
         client = MagicMock()
         self.price_client.get_rsi.return_value = "55.75"
         client.get_expirations.return_value = [expiration]
+        client.get_expiration_volume.return_value = 840
         client.get_chain.return_value = [
             self._option_row(
                 strike="95",
@@ -2381,6 +2419,7 @@ class TradingViewScrapeCommandTests(APITestCase):
         )
         self.symbol.refresh_from_db()
         self.assertIsNone(self.symbol.option_data)
+        self.assertEqual(self.symbol.option_volume, 840)
         self.assertEqual(len(self.symbol.call_data), 2)
 
     def test_process_symbol_reports_no_qualifying_calls_when_no_put_candidate(self) -> None:
@@ -2388,6 +2427,7 @@ class TradingViewScrapeCommandTests(APITestCase):
         client = MagicMock()
         self.price_client.get_rsi.return_value = "55.75"
         client.get_expirations.return_value = [expiration]
+        client.get_expiration_volume.return_value = 410
         client.get_chain.return_value = [
             self._option_row(
                 strike="95",
@@ -2431,6 +2471,7 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.symbol.refresh_from_db()
         self.assertIsNone(self.symbol.option_data)
         self.assertIsNone(self.symbol.call_data)
+        self.assertEqual(self.symbol.option_volume, 410)
 
     def test_collect_call_contracts_allows_missing_liquidity_and_sorts_by_strike(
         self,
@@ -2525,6 +2566,7 @@ class TradingViewScrapeCommandTests(APITestCase):
 
         client = MagicMock()
         client.get_expirations.return_value = [expiration]
+        client.get_expiration_volume.return_value = 560
         client.get_chain.return_value = [
             self._option_row(
                 strike="95",
@@ -2559,6 +2601,7 @@ class TradingViewScrapeCommandTests(APITestCase):
         expiration = self._expiration_int()
         client = MagicMock()
         client.get_expirations.return_value = [expiration]
+        client.get_expiration_volume.return_value = 730
         client.get_chain.return_value = [
             self._option_row(
                 strike="95",
@@ -2596,6 +2639,7 @@ class TradingViewScrapeCommandTests(APITestCase):
         client = MagicMock()
         self.price_client.get_rsi.return_value = "60.02"
         client.get_expirations.return_value = [expiration]
+        client.get_expiration_volume.return_value = 205
         client.get_chain.return_value = [
             self._option_row(
                 strike="245",
@@ -2648,12 +2692,13 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.assertEqual(price, 100.0)
         self.assertEqual(volume, 500000)
 
-    def test_process_symbol_uses_fmp_volume(self) -> None:
+    def test_process_symbol_uses_tradingview_expiration_volume(self) -> None:
         expiration = self._expiration_int()
         self.price_client.get_price_and_volume.return_value = ("100.00", 321)
         self.price_client.get_rsi.return_value = "55.75"
         client = MagicMock()
         client.get_expirations.return_value = [expiration]
+        client.get_expiration_volume.return_value = 654
         client.get_chain.return_value = [
             self._option_row(
                 strike="95",
@@ -2680,7 +2725,7 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.assertTrue(changed)
         self.assertFalse(was_cleared)
         self.symbol.refresh_from_db()
-        self.assertEqual(self.symbol.option_volume, 321)
+        self.assertEqual(self.symbol.option_volume, 654)
         self.price_client.get_price_and_volume.assert_called_once_with("AAPL")
 
     def test_symbol_serializer_returns_raw_option_and_call_data(self) -> None:
@@ -3787,3 +3832,876 @@ class PutWheelAgentViewTests(APITestCase):
             ["AMZN"],
         )
         self.assertEqual(payload["opportunities"][0]["premium_yield_pct"], 1.6)
+
+    def test_handle_spread_opportunity_returns_bull_put_credit_metrics(self) -> None:
+        expiration = date.today() + timedelta(days=39)
+        Symbol.objects.create(
+            ticker="AAPL",
+            price=Decimal("195.25"),
+            score=84,
+            classification="High-quality compounder",
+            technical_score=Symbol.TechnicalScore.BUY,
+            next_earnings_date=date.today() + timedelta(days=60),
+            option_data={
+                "puts": [
+                    {
+                        "strike": 180,
+                        "expiration": expiration.isoformat(),
+                        "bid": 1.15,
+                        "ask": 1.25,
+                        "mid": 1.20,
+                        "delta": -0.20,
+                        "iv": 29.1,
+                        "volume": 740,
+                        "open_interest": 5100,
+                    },
+                    {
+                        "strike": 185,
+                        "expiration": expiration.isoformat(),
+                        "bid": 2.10,
+                        "ask": 2.25,
+                        "mid": 2.18,
+                        "delta": -0.28,
+                        "iv": 28.4,
+                        "volume": 850,
+                        "open_interest": 6200,
+                    },
+                ]
+            },
+        )
+
+        payload = json.loads(
+            agent_views._handle_spread_opportunity(
+                {
+                    "symbol": "AAPL",
+                    "spread_type": "bull_put_credit_spread",
+                    "risk_profile": "balanced",
+                    "width": 5,
+                }
+            )
+        )
+
+        self.assertEqual(payload["symbol"], "AAPL")
+        self.assertEqual(payload["stock_quality_score"], 84)
+        self.assertEqual(payload["technical_score"], Symbol.TechnicalScore.BUY)
+        self.assertEqual(payload["best_spread"]["spread_type"], "bull_put_credit_spread")
+        self.assertEqual(payload["best_spread"]["net_credit"], 0.98)
+        self.assertEqual(payload["best_spread"]["max_profit"], 98.0)
+        self.assertEqual(payload["best_spread"]["max_loss"], 402.0)
+        self.assertEqual(payload["best_spread"]["breakeven"], 184.02)
+        self.assertEqual(payload["best_spread"]["return_on_risk_pct"], 24.38)
+        self.assertEqual(payload["best_spread"]["dte"], 39)
+        self.assertEqual(len(payload["best_spread"]["legs"]), 2)
+        self.assertEqual(payload["summary"]["spread_type"], "bull_put_credit_spread")
+
+    def test_handle_spread_opportunity_auto_prefers_bull_call_debit_when_iv_is_low(
+        self,
+    ) -> None:
+        expiration = date.today() + timedelta(days=28)
+        Symbol.objects.create(
+            ticker="MSFT",
+            price=Decimal("100.00"),
+            score=82,
+            classification="High-quality compounder",
+            technical_score=Symbol.TechnicalScore.BUY,
+            next_earnings_date=date.today() + timedelta(days=70),
+            option_data={
+                "puts": [
+                    {
+                        "strike": 95,
+                        "expiration": expiration.isoformat(),
+                        "bid": 0.45,
+                        "ask": 0.55,
+                        "mid": 0.50,
+                        "delta": -0.15,
+                        "iv": 18.0,
+                        "volume": 220,
+                        "open_interest": 1600,
+                    },
+                    {
+                        "strike": 100,
+                        "expiration": expiration.isoformat(),
+                        "bid": 1.15,
+                        "ask": 1.25,
+                        "mid": 1.20,
+                        "delta": -0.24,
+                        "iv": 18.5,
+                        "volume": 260,
+                        "open_interest": 1800,
+                    },
+                ]
+            },
+            call_data={
+                "calls": [
+                    {
+                        "strike": 100,
+                        "expiration": expiration.isoformat(),
+                        "bid": 4.35,
+                        "ask": 4.45,
+                        "mid": 4.40,
+                        "delta": 0.55,
+                        "iv": 17.5,
+                        "volume": 480,
+                        "open_interest": 3200,
+                    },
+                    {
+                        "strike": 110,
+                        "expiration": expiration.isoformat(),
+                        "bid": 0.95,
+                        "ask": 1.05,
+                        "mid": 1.00,
+                        "delta": 0.28,
+                        "iv": 17.8,
+                        "volume": 420,
+                        "open_interest": 2900,
+                    },
+                ]
+            },
+        )
+
+        payload = json.loads(
+            agent_views._handle_spread_opportunity(
+                {
+                    "symbol": "MSFT",
+                    "spread_type": "auto",
+                    "directional_view": "bullish",
+                    "risk_profile": "balanced",
+                    "width": 5,
+                }
+            )
+        )
+
+        self.assertEqual(payload["resolved_directional_view"], "bullish")
+        self.assertEqual(
+            payload["best_spread"]["spread_type"],
+            "bull_call_debit_spread",
+        )
+        self.assertEqual(payload["best_spread"]["net_debit"], 3.4)
+        self.assertEqual(payload["best_spread"]["breakeven"], 103.4)
+        self.assertEqual(payload["best_spread"]["reward_to_risk"], 1.94)
+        self.assertEqual(
+            payload["filters_applied"]["debit_filters"]["min_reward_to_risk"],
+            1.5,
+        )
+        self.assertEqual(payload["summary"]["spread_type"], "bull_call_debit_spread")
+
+    def test_handle_spread_opportunity_returns_iron_condor_structure(self) -> None:
+        expiration = date.today() + timedelta(days=28)
+        Symbol.objects.create(
+            ticker="TSLA",
+            price=Decimal("100.00"),
+            score=76,
+            classification="Quality (selective)",
+            technical_score=Symbol.TechnicalScore.NEUTRAL,
+            next_earnings_date=date.today() + timedelta(days=90),
+            option_data={
+                "puts": [
+                    {
+                        "strike": 90,
+                        "expiration": expiration.isoformat(),
+                        "bid": 0.45,
+                        "ask": 0.55,
+                        "mid": 0.50,
+                        "delta": -0.09,
+                        "iv": 27.5,
+                        "volume": 310,
+                        "open_interest": 1500,
+                    },
+                    {
+                        "strike": 95,
+                        "expiration": expiration.isoformat(),
+                        "bid": 0.95,
+                        "ask": 1.05,
+                        "mid": 1.00,
+                        "delta": -0.18,
+                        "iv": 28.0,
+                        "volume": 420,
+                        "open_interest": 2200,
+                    },
+                ]
+            },
+            call_data={
+                "calls": [
+                    {
+                        "strike": 105,
+                        "expiration": expiration.isoformat(),
+                        "bid": 1.05,
+                        "ask": 1.15,
+                        "mid": 1.10,
+                        "delta": 0.17,
+                        "iv": 27.9,
+                        "volume": 390,
+                        "open_interest": 2100,
+                    },
+                    {
+                        "strike": 110,
+                        "expiration": expiration.isoformat(),
+                        "bid": 0.50,
+                        "ask": 0.60,
+                        "mid": 0.55,
+                        "delta": 0.09,
+                        "iv": 27.4,
+                        "volume": 305,
+                        "open_interest": 1600,
+                    },
+                ]
+            },
+        )
+
+        payload = json.loads(
+            agent_views._handle_spread_opportunity(
+                {
+                    "symbol": "TSLA",
+                    "spread_type": "iron_condor",
+                    "directional_view": "neutral",
+                    "risk_profile": "balanced",
+                    "width": 5,
+                }
+            )
+        )
+
+        self.assertEqual(payload["best_spread"]["spread_type"], "iron_condor")
+        self.assertEqual(payload["best_spread"]["net_credit"], 1.05)
+        self.assertEqual(payload["best_spread"]["max_profit"], 105.0)
+        self.assertEqual(payload["best_spread"]["max_loss"], 395.0)
+        self.assertEqual(payload["best_spread"]["breakeven_low"], 93.95)
+        self.assertEqual(payload["best_spread"]["breakeven_high"], 106.05)
+        self.assertEqual(payload["best_spread"]["strategy_fit"], "Neutral income trade")
+        self.assertEqual(len(payload["best_spread"]["legs"]), 4)
+
+    def test_handle_spread_opportunity_credit_filters_respect_earnings_policy(self) -> None:
+        expiration = date.today() + timedelta(days=28)
+        Symbol.objects.create(
+            ticker="DHI",
+            price=Decimal("150.00"),
+            score=78,
+            classification="Quality (selective)",
+            technical_score=Symbol.TechnicalScore.BUY,
+            next_earnings_date=date.today() + timedelta(days=10),
+            option_data={
+                "puts": [
+                    {
+                        "strike": 135,
+                        "expiration": expiration.isoformat(),
+                        "bid": 0.65,
+                        "ask": 0.75,
+                        "mid": 0.70,
+                        "delta": -0.16,
+                        "iv": 29.0,
+                        "volume": 180,
+                        "open_interest": 600,
+                    },
+                    {
+                        "strike": 140,
+                        "expiration": expiration.isoformat(),
+                        "bid": 1.65,
+                        "ask": 1.75,
+                        "mid": 1.70,
+                        "delta": -0.31,
+                        "iv": 29.5,
+                        "volume": 220,
+                        "open_interest": 850,
+                    },
+                ]
+            },
+        )
+
+        conservative_payload = json.loads(
+            agent_views._handle_spread_opportunity(
+                {
+                    "symbol": "DHI",
+                    "spread_type": "bull_put_credit_spread",
+                    "risk_profile": "conservative",
+                    "width": 5,
+                }
+            )
+        )
+        aggressive_payload = json.loads(
+            agent_views._handle_spread_opportunity(
+                {
+                    "symbol": "DHI",
+                    "spread_type": "bull_put_credit_spread",
+                    "risk_profile": "aggressive",
+                    "width": 5,
+                }
+            )
+        )
+
+        self.assertIn("error", conservative_payload)
+        self.assertEqual(
+            conservative_payload["filters_applied"]["credit_filters"][
+                "exclude_earnings_before_expiration"
+            ],
+            True,
+        )
+        self.assertNotIn("error", aggressive_payload)
+        self.assertEqual(
+            aggressive_payload["filters_applied"]["credit_filters"]["allow_earnings"],
+            True,
+        )
+        self.assertEqual(
+            aggressive_payload["best_spread"]["spread_type"],
+            "bull_put_credit_spread",
+        )
+
+    def test_handle_scan_spread_opportunities_ranks_credit_spreads_with_filters(
+        self,
+    ) -> None:
+        expiration = date.today() + timedelta(days=35)
+        Symbol.objects.create(
+            ticker="AAPL",
+            price=Decimal("200.00"),
+            score=88,
+            classification="High-quality compounder",
+            technical_score=Symbol.TechnicalScore.STRONG_BUY,
+            next_earnings_date=date.today() + timedelta(days=70),
+            option_data={
+                "puts": [
+                    {
+                        "strike": 180,
+                        "expiration": expiration.isoformat(),
+                        "bid": 1.05,
+                        "ask": 1.15,
+                        "mid": 1.10,
+                        "delta": -0.14,
+                        "iv": 25.0,
+                        "volume": 520,
+                        "open_interest": 2400,
+                    },
+                    {
+                        "strike": 185,
+                        "expiration": expiration.isoformat(),
+                        "bid": 2.00,
+                        "ask": 2.10,
+                        "mid": 2.05,
+                        "delta": -0.22,
+                        "iv": 25.8,
+                        "volume": 640,
+                        "open_interest": 3100,
+                    },
+                ]
+            },
+        )
+        Symbol.objects.create(
+            ticker="AMZN",
+            price=Decimal("140.00"),
+            score=82,
+            classification="Quality (selective)",
+            technical_score=Symbol.TechnicalScore.BUY,
+            next_earnings_date=date.today() + timedelta(days=80),
+            option_data={
+                "puts": [
+                    {
+                        "strike": 125,
+                        "expiration": expiration.isoformat(),
+                        "bid": 0.70,
+                        "ask": 0.80,
+                        "mid": 0.75,
+                        "delta": -0.11,
+                        "iv": 24.0,
+                        "volume": 410,
+                        "open_interest": 1800,
+                    },
+                    {
+                        "strike": 130,
+                        "expiration": expiration.isoformat(),
+                        "bid": 1.80,
+                        "ask": 1.90,
+                        "mid": 1.85,
+                        "delta": -0.19,
+                        "iv": 24.5,
+                        "volume": 480,
+                        "open_interest": 2100,
+                    },
+                ]
+            },
+        )
+        Symbol.objects.create(
+            ticker="DHI",
+            price=Decimal("150.00"),
+            score=84,
+            classification="Quality (selective)",
+            technical_score=Symbol.TechnicalScore.BUY,
+            next_earnings_date=date.today() + timedelta(days=10),
+            option_data={
+                "puts": [
+                    {
+                        "strike": 135,
+                        "expiration": expiration.isoformat(),
+                        "bid": 0.65,
+                        "ask": 0.75,
+                        "mid": 0.70,
+                        "delta": -0.16,
+                        "iv": 29.0,
+                        "volume": 180,
+                        "open_interest": 600,
+                    },
+                    {
+                        "strike": 140,
+                        "expiration": expiration.isoformat(),
+                        "bid": 1.65,
+                        "ask": 1.75,
+                        "mid": 1.70,
+                        "delta": -0.23,
+                        "iv": 29.5,
+                        "volume": 220,
+                        "open_interest": 850,
+                    },
+                ]
+            },
+        )
+
+        payload = json.loads(
+            agent_views._handle_scan_spread_opportunities(
+                {
+                    "spread_type": "bull_put_credit_spread",
+                    "directional_view": "bullish",
+                    "limit": 2,
+                    "max_dte": 45,
+                    "min_return_on_risk_pct": 20,
+                    "min_probability_of_profit": 70,
+                    "max_risk": 500,
+                    "min_quality_score": 80,
+                    "max_short_delta": 0.25,
+                    "exclude_earnings": True,
+                }
+            )
+        )
+
+        self.assertEqual(payload["total_symbols_scanned"], 3)
+        self.assertEqual(payload["results_returned"], 2)
+        self.assertEqual(
+            [item["ticker"] for item in payload["opportunities"]],
+            ["AMZN", "AAPL"],
+        )
+        self.assertEqual(
+            payload["filters_applied"]["spread_type"],
+            "bull_put_credit_spread",
+        )
+        self.assertEqual(payload["filters_applied"]["exclude_earnings"], True)
+        self.assertEqual(
+            payload["opportunities"][0]["spread_type"],
+            "bull_put_credit_spread",
+        )
+        self.assertEqual(payload["opportunities"][0]["return_on_risk_pct"], 28.21)
+        self.assertEqual(payload["opportunities"][0]["max_short_delta"], 0.19)
+        self.assertTrue(payload["opportunities"][0]["short_leg_deltas"])
+
+    def test_handle_scan_spread_opportunities_supports_debit_spreads_via_auto(
+        self,
+    ) -> None:
+        expiration = date.today() + timedelta(days=28)
+        Symbol.objects.create(
+            ticker="MSFT",
+            price=Decimal("100.00"),
+            score=82,
+            classification="High-quality compounder",
+            technical_score=Symbol.TechnicalScore.BUY,
+            next_earnings_date=date.today() + timedelta(days=70),
+            option_data={
+                "puts": [
+                    {
+                        "strike": 95,
+                        "expiration": expiration.isoformat(),
+                        "bid": 0.45,
+                        "ask": 0.55,
+                        "mid": 0.50,
+                        "delta": -0.15,
+                        "iv": 18.0,
+                        "volume": 220,
+                        "open_interest": 1600,
+                    },
+                    {
+                        "strike": 100,
+                        "expiration": expiration.isoformat(),
+                        "bid": 1.15,
+                        "ask": 1.25,
+                        "mid": 1.20,
+                        "delta": -0.24,
+                        "iv": 18.5,
+                        "volume": 260,
+                        "open_interest": 1800,
+                    },
+                ]
+            },
+            call_data={
+                "calls": [
+                    {
+                        "strike": 100,
+                        "expiration": expiration.isoformat(),
+                        "bid": 4.35,
+                        "ask": 4.45,
+                        "mid": 4.40,
+                        "delta": 0.55,
+                        "iv": 17.5,
+                        "volume": 480,
+                        "open_interest": 3200,
+                    },
+                    {
+                        "strike": 110,
+                        "expiration": expiration.isoformat(),
+                        "bid": 0.95,
+                        "ask": 1.05,
+                        "mid": 1.00,
+                        "delta": 0.28,
+                        "iv": 17.8,
+                        "volume": 420,
+                        "open_interest": 2900,
+                    },
+                ]
+            },
+        )
+
+        payload = json.loads(
+            agent_views._handle_scan_spread_opportunities(
+                {
+                    "spread_type": "auto",
+                    "directional_view": "bullish",
+                    "max_dte": 35,
+                    "min_return_on_risk_pct": 150,
+                    "max_risk": 400,
+                    "max_short_delta": 0.30,
+                }
+            )
+        )
+
+        self.assertEqual(payload["total_symbols_scanned"], 1)
+        self.assertEqual(payload["results_returned"], 1)
+        self.assertEqual(payload["opportunities"][0]["ticker"], "MSFT")
+        self.assertEqual(
+            payload["opportunities"][0]["spread_type"],
+            "bull_call_debit_spread",
+        )
+        self.assertEqual(payload["opportunities"][0]["net_debit"], 3.4)
+        self.assertEqual(payload["opportunities"][0]["reward_to_risk"], 1.94)
+        self.assertEqual(payload["opportunities"][0]["return_on_risk_pct"], 194.0)
+        self.assertEqual(payload["opportunities"][0]["max_short_delta"], 0.28)
+
+    def test_handle_spread_opportunity_balanced_credit_defaults_to_45_dte(
+        self,
+    ) -> None:
+        near_expiration = date.today() + timedelta(days=40)
+        far_expiration = date.today() + timedelta(days=50)
+        Symbol.objects.create(
+            ticker="QCOM",
+            price=Decimal("160.00"),
+            score=83,
+            classification="High-quality compounder",
+            technical_score=Symbol.TechnicalScore.BUY,
+            next_earnings_date=date.today() + timedelta(days=80),
+            option_data={
+                "puts": [
+                    {
+                        "strike": 145,
+                        "expiration": near_expiration.isoformat(),
+                        "bid": 0.55,
+                        "ask": 0.65,
+                        "mid": 0.60,
+                        "delta": -0.14,
+                        "iv": 26.0,
+                        "volume": 400,
+                        "open_interest": 1800,
+                    },
+                    {
+                        "strike": 150,
+                        "expiration": near_expiration.isoformat(),
+                        "bid": 1.70,
+                        "ask": 1.80,
+                        "mid": 1.75,
+                        "delta": -0.24,
+                        "iv": 26.5,
+                        "volume": 520,
+                        "open_interest": 2400,
+                    },
+                    {
+                        "strike": 145,
+                        "expiration": far_expiration.isoformat(),
+                        "bid": 0.75,
+                        "ask": 0.85,
+                        "mid": 0.80,
+                        "delta": -0.15,
+                        "iv": 26.2,
+                        "volume": 420,
+                        "open_interest": 1900,
+                    },
+                    {
+                        "strike": 150,
+                        "expiration": far_expiration.isoformat(),
+                        "bid": 2.05,
+                        "ask": 2.15,
+                        "mid": 2.10,
+                        "delta": -0.25,
+                        "iv": 26.8,
+                        "volume": 560,
+                        "open_interest": 2500,
+                    },
+                ]
+            },
+        )
+
+        payload = json.loads(
+            agent_views._handle_spread_opportunity(
+                {
+                    "symbol": "QCOM",
+                    "spread_type": "bull_put_credit_spread",
+                    "risk_profile": "balanced",
+                    "width": 5,
+                }
+            )
+        )
+
+        self.assertEqual(payload["filters_applied"]["credit_filters"]["max_dte"], 45)
+        self.assertEqual(
+            payload["best_spread"]["expiration"], near_expiration.isoformat()
+        )
+        self.assertTrue(all(item["dte"] <= 45 for item in payload["top_candidates"]))
+
+    def test_handle_scan_spread_opportunities_respects_risk_profile(self) -> None:
+        expiration = date.today() + timedelta(days=50)
+        Symbol.objects.create(
+            ticker="MSFG",
+            price=Decimal("100.00"),
+            score=82,
+            classification="High-quality compounder",
+            technical_score=Symbol.TechnicalScore.BUY,
+            next_earnings_date=date.today() + timedelta(days=90),
+            call_data={
+                "calls": [
+                    {
+                        "strike": 100,
+                        "expiration": expiration.isoformat(),
+                        "bid": 4.35,
+                        "ask": 4.45,
+                        "mid": 4.40,
+                        "delta": 0.55,
+                        "iv": 17.5,
+                        "volume": 480,
+                        "open_interest": 3200,
+                    },
+                    {
+                        "strike": 110,
+                        "expiration": expiration.isoformat(),
+                        "bid": 0.95,
+                        "ask": 1.05,
+                        "mid": 1.00,
+                        "delta": 0.28,
+                        "iv": 17.8,
+                        "volume": 420,
+                        "open_interest": 2900,
+                    },
+                ]
+            },
+        )
+
+        conservative_payload = json.loads(
+            agent_views._handle_scan_spread_opportunities(
+                {
+                    "spread_type": "bull_call_debit_spread",
+                    "directional_view": "bullish",
+                    "risk_profile": "conservative",
+                    "limit": 5,
+                }
+            )
+        )
+        aggressive_payload = json.loads(
+            agent_views._handle_scan_spread_opportunities(
+                {
+                    "spread_type": "bull_call_debit_spread",
+                    "directional_view": "bullish",
+                    "risk_profile": "aggressive",
+                    "limit": 5,
+                }
+            )
+        )
+
+        self.assertEqual(conservative_payload["risk_profile_used"], "conservative")
+        self.assertEqual(conservative_payload["results_returned"], 0)
+        self.assertEqual(aggressive_payload["risk_profile_used"], "aggressive")
+        self.assertEqual(aggressive_payload["results_returned"], 1)
+        self.assertEqual(aggressive_payload["opportunities"][0]["ticker"], "MSFG")
+
+    def test_handle_compare_spread_candidates_ranks_symbols(self) -> None:
+        expiration = date.today() + timedelta(days=35)
+        Symbol.objects.create(
+            ticker="AAPL",
+            price=Decimal("200.00"),
+            score=88,
+            classification="High-quality compounder",
+            technical_score=Symbol.TechnicalScore.STRONG_BUY,
+            next_earnings_date=date.today() + timedelta(days=70),
+            option_data={
+                "puts": [
+                    {
+                        "strike": 180,
+                        "expiration": expiration.isoformat(),
+                        "bid": 1.05,
+                        "ask": 1.15,
+                        "mid": 1.10,
+                        "delta": -0.14,
+                        "iv": 25.0,
+                        "volume": 520,
+                        "open_interest": 2400,
+                    },
+                    {
+                        "strike": 185,
+                        "expiration": expiration.isoformat(),
+                        "bid": 2.00,
+                        "ask": 2.10,
+                        "mid": 2.05,
+                        "delta": -0.22,
+                        "iv": 25.8,
+                        "volume": 640,
+                        "open_interest": 3100,
+                    },
+                ]
+            },
+        )
+        Symbol.objects.create(
+            ticker="AMZN",
+            price=Decimal("140.00"),
+            score=82,
+            classification="Quality (selective)",
+            technical_score=Symbol.TechnicalScore.BUY,
+            next_earnings_date=date.today() + timedelta(days=80),
+            option_data={
+                "puts": [
+                    {
+                        "strike": 125,
+                        "expiration": expiration.isoformat(),
+                        "bid": 0.70,
+                        "ask": 0.80,
+                        "mid": 0.75,
+                        "delta": -0.18,
+                        "iv": 24.0,
+                        "volume": 410,
+                        "open_interest": 1800,
+                    },
+                    {
+                        "strike": 130,
+                        "expiration": expiration.isoformat(),
+                        "bid": 1.85,
+                        "ask": 1.95,
+                        "mid": 1.90,
+                        "delta": -0.27,
+                        "iv": 24.5,
+                        "volume": 480,
+                        "open_interest": 2100,
+                    },
+                ]
+            },
+        )
+
+        payload = json.loads(
+            agent_views._handle_compare_spread_candidates(
+                {
+                    "symbols": ["AAPL", "AMZN", "MISSING"],
+                    "spread_type": "bull_put_credit_spread",
+                    "directional_view": "bullish",
+                    "risk_profile": "balanced",
+                    "width": 5,
+                }
+            )
+        )
+
+        self.assertEqual(payload["comparison_mode"], "ticker_comparison")
+        self.assertEqual(payload["candidates_compared"], 2)
+        self.assertEqual(payload["winner"]["symbol"], "AMZN")
+        self.assertEqual(
+            [item["symbol"] for item in payload["ranked_candidates"]],
+            ["AMZN", "AAPL"],
+        )
+        self.assertEqual(
+            payload["ranked_candidates"][0]["spread_type_requested"],
+            "bull_put_credit_spread",
+        )
+        self.assertTrue(any(item["symbol"] == "MISSING" for item in payload["skipped"]))
+
+    def test_handle_compare_spread_candidates_supports_spread_type_comparison(
+        self,
+    ) -> None:
+        expiration = date.today() + timedelta(days=28)
+        Symbol.objects.create(
+            ticker="MSFT",
+            price=Decimal("100.00"),
+            score=82,
+            classification="High-quality compounder",
+            technical_score=Symbol.TechnicalScore.BUY,
+            next_earnings_date=date.today() + timedelta(days=70),
+            option_data={
+                "puts": [
+                    {
+                        "strike": 90,
+                        "expiration": expiration.isoformat(),
+                        "bid": 0.40,
+                        "ask": 0.50,
+                        "mid": 0.45,
+                        "delta": -0.16,
+                        "iv": 18.0,
+                        "volume": 220,
+                        "open_interest": 1600,
+                    },
+                    {
+                        "strike": 95,
+                        "expiration": expiration.isoformat(),
+                        "bid": 1.35,
+                        "ask": 1.45,
+                        "mid": 1.40,
+                        "delta": -0.26,
+                        "iv": 18.5,
+                        "volume": 260,
+                        "open_interest": 1800,
+                    },
+                ]
+            },
+            call_data={
+                "calls": [
+                    {
+                        "strike": 100,
+                        "expiration": expiration.isoformat(),
+                        "bid": 4.35,
+                        "ask": 4.45,
+                        "mid": 4.40,
+                        "delta": 0.55,
+                        "iv": 17.5,
+                        "volume": 480,
+                        "open_interest": 3200,
+                    },
+                    {
+                        "strike": 110,
+                        "expiration": expiration.isoformat(),
+                        "bid": 0.95,
+                        "ask": 1.05,
+                        "mid": 1.00,
+                        "delta": 0.28,
+                        "iv": 17.8,
+                        "volume": 420,
+                        "open_interest": 2900,
+                    },
+                ]
+            },
+        )
+
+        payload = json.loads(
+            agent_views._handle_compare_spread_candidates(
+                {
+                    "symbol": "MSFT",
+                    "spread_types": [
+                        "bull_put_credit_spread",
+                        "bull_call_debit_spread",
+                    ],
+                    "directional_view": "bullish",
+                    "risk_profile": "balanced",
+                }
+            )
+        )
+
+        self.assertEqual(payload["comparison_mode"], "spread_type_comparison")
+        self.assertEqual(payload["candidates_compared"], 2)
+        self.assertEqual(payload["winner"]["symbol"], "MSFT")
+        self.assertEqual(
+            payload["winner"]["spread_type_requested"], "bull_call_debit_spread"
+        )
+        self.assertEqual(
+            [item["spread_type_requested"] for item in payload["ranked_candidates"]],
+            ["bull_call_debit_spread", "bull_put_credit_spread"],
+        )

@@ -9,6 +9,7 @@ from decimal import Decimal
 from typing import Any, Dict, List
 
 from django.conf import settings
+from django.db.models import Q
 from openai import OpenAI, OpenAIError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -69,6 +70,50 @@ If the user asks about covered calls, selling calls against owned shares, call i
 - For `exit_at_target_price`, explicitly mention `effective_exit_price` and `gain_if_called_from_cost_basis` when available.
 - For `wheel_continuation`, explicitly mention `wheel_cost_basis_before_call` and `adjusted_cost_basis_after_call` when available.
 - If the response includes strategy warnings about lower premium for share retention or higher call-away risk for premium capture, surface those warnings clearly.
+
+If the user asks about debit spreads, credit spreads, vertical spreads, bull put spreads, bear call spreads, bull call spreads, bear put spreads, iron condors, iron butterflies, or other defined-risk option trades for one ticker, call get_spread_opportunity.
+- First infer:
+  - directional_view: bullish, bearish, neutral, or auto
+  - spread_type: credit spread, debit spread, a specific structure, or auto
+  - risk_profile: conservative, balanced, or aggressive
+  - max_risk, if the user provides it
+- Do not block the answer if the user did not specify these. Use defaults and state the assumption clearly:
+  - directional_view=`auto`
+  - spread_type=`auto`
+  - risk_profile=`balanced`
+  - max_dte=45 for credit spreads
+  - max_dte=60 for debit spreads
+- Map user phrasing to tool settings like this:
+  - defined-risk income -> credit spread
+  - bullish but limited risk -> bull put credit spread or bull call debit spread
+  - bearish but limited risk -> bear call credit spread or bear put debit spread
+  - high probability trade -> credit spread with a lower-delta short strike
+  - cheap bullish bet -> bull call debit spread
+  - cheap bearish bet -> bear put debit spread
+  - neutral income -> iron condor
+  - high IV spread -> credit spread or iron condor
+  - low IV directional trade -> debit spread
+  - max risk below $500 -> set `max_risk`
+- Always cite the ticker, current stock price, spread type, expiration, DTE, each leg (action, call/put, strike, bid, ask, mid, delta, IV, volume, open interest), net credit or debit, max profit, max loss, breakeven, return on risk or reward-to-risk, estimated probability of profit if available, downside/upside buffer, stock technical score, stock quality score, spread rating/score, and warnings from the tool response.
+- Use `technical_score` only for the stock's technical rating and `stock_quality_score` / `quality_score` only for the underlying stock's quality score.
+- Use `spread_score`, `score`, or `rating` only for the evaluated spread opportunity.
+- If the user asks generally for the best spread, use `spread_type="auto"`.
+- For credit spreads, emphasize max loss, breakeven, probability of profit, and return on risk. Do not rank only by credit received.
+- For debit spreads, emphasize max loss, max profit, breakeven, reward-to-risk, and the directional thesis. Do not present debit spreads as income strategies.
+- Never call a spread safe. Call it defined-risk, meaning the maximum theoretical loss is known before entry, excluding assignment and execution risk.
+- If the tool returns earnings, liquidity, delta, or IV warnings, mention them explicitly.
+
+If the user asks for best spread ideas across the market, such as best credit spreads today, conservative bull put spreads, bearish call credit spreads, defined-risk income trades, or spread scans with risk/return constraints, call scan_spread_opportunities.
+- Use this only for market-wide spread scans across tracked symbols, not for a single ticker or a specific ticker list.
+- If the user does not specify a direction or spread type, use auto mode and explain the assumption.
+- Present results as a ranked list with ticker, spread type, expiration, DTE, strikes, net credit/debit, max profit, max loss, return on risk, estimated probability of profit, stock quality score, technical score, and spread rating/score.
+- If the response includes earnings, liquidity, delta, or IV warnings, mention them explicitly.
+
+If the user provides multiple tickers for spread ideas, asks which ticker has the better spread setup, or asks to compare spread types, call compare_spread_candidates.
+- Use this when comparing multiple tickers, or when comparing two or more spread structures for one ticker.
+- Do not use scan_spread_opportunities when the user provides a specific ticker list.
+- Present the results as a ranked comparison and clearly separate income-oriented credit spreads from directional debit spreads.
+- Do not choose only by headline credit, debit, or ROI. Factor in max loss, liquidity, earnings risk, underlying quality, technical alignment, and whether the spread structure matches the stated thesis.
 
 If the user asks for best covered calls across the market, top covered call ideas, covered call screeners, scans, or ranked covered call opportunities across all tracked symbols, call scan_covered_call_opportunities.
 - The tool scans all tracked symbols and returns the highest-scoring covered call opportunities ranked by covered call score.
@@ -315,6 +360,72 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "get_spread_opportunity",
+            "description": (
+                "Fetch current option chain data for a symbol and evaluate defined-risk option spread opportunities. "
+                "Supports bull put credit spreads, bear call credit spreads, bull call debit spreads, bear put debit spreads, "
+                "iron condors, and iron butterflies. Ranks spreads using max profit, max loss, risk/reward, probability of profit, "
+                "breakeven, liquidity, bid/ask spreads, IV, DTE, delta, stock quality score, technical score, earnings risk, "
+                "and trend alignment."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "Stock ticker symbol, e.g. AAPL, MSFT, NVDA",
+                    },
+                    "spread_type": {
+                        "type": "string",
+                        "enum": [
+                            "bull_put_credit_spread",
+                            "bear_call_credit_spread",
+                            "bull_call_debit_spread",
+                            "bear_put_debit_spread",
+                            "iron_condor",
+                            "iron_butterfly",
+                            "auto",
+                        ],
+                        "description": "Type of spread to evaluate. Use auto if the user does not specify a structure or just asks for the best spread.",
+                    },
+                    "directional_view": {
+                        "type": "string",
+                        "enum": ["bullish", "bearish", "neutral", "auto"],
+                        "description": "User's market view. Use auto when it is not specified.",
+                    },
+                    "risk_profile": {
+                        "type": "string",
+                        "enum": ["conservative", "balanced", "aggressive"],
+                        "description": "Risk preference. Defaults to balanced when not specified.",
+                    },
+                    "max_dte": {
+                        "type": "integer",
+                        "description": "Maximum days to expiration. When omitted, default to 45 for credit spreads and 60 for debit spreads.",
+                    },
+                    "min_credit": {
+                        "type": "number",
+                        "description": "Minimum credit received for credit spreads. Optional.",
+                    },
+                    "max_debit": {
+                        "type": "number",
+                        "description": "Maximum debit paid for debit spreads. Optional.",
+                    },
+                    "max_risk": {
+                        "type": "number",
+                        "description": "Maximum dollar risk per spread. Optional.",
+                    },
+                    "width": {
+                        "type": "number",
+                        "description": "Preferred strike width, e.g. 5 or 10. Optional.",
+                    },
+                },
+                "required": ["symbol"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "scan_put_opportunities",
             "description": (
                 "Scan all tracked symbols in the database and return the best cash-secured put (CSP) "
@@ -360,6 +471,71 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "scan_spread_opportunities",
+            "description": (
+                "Scan all tracked symbols and option chains for defined-risk spread opportunities. "
+                "Supports credit spreads, debit spreads, and neutral spreads. Use for market-wide scans, "
+                "high-probability spreads, defined-risk income trades, or spread screens with max risk constraints."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "spread_type": {
+                        "type": "string",
+                        "enum": [
+                            "bull_put_credit_spread",
+                            "bear_call_credit_spread",
+                            "bull_call_debit_spread",
+                            "bear_put_debit_spread",
+                            "iron_condor",
+                            "iron_butterfly",
+                            "auto"
+                        ],
+                        "description": "Spread structure to scan for. Use auto when the user does not specify one."
+                    },
+                    "directional_view": {
+                        "type": "string",
+                        "enum": ["bullish", "bearish", "neutral", "auto"],
+                        "description": "Directional thesis. Use auto when the user does not specify one."
+                    },
+                    "risk_profile": {
+                        "type": "string",
+                        "enum": ["conservative", "balanced", "aggressive"],
+                        "description": "Risk preference for spread filters. Defaults to balanced."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Number of results to return. Default 10."
+                    },
+                    "max_dte": {
+                        "type": "integer"
+                    },
+                    "min_return_on_risk_pct": {
+                        "type": "number"
+                    },
+                    "min_probability_of_profit": {
+                        "type": "number"
+                    },
+                    "max_risk": {
+                        "type": "number"
+                    },
+                    "min_quality_score": {
+                        "type": "number"
+                    },
+                    "max_short_delta": {
+                        "type": "number"
+                    },
+                    "exclude_earnings": {
+                        "type": "boolean"
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "scan_covered_call_opportunities",
             "description": (
                 "Scan all tracked symbols in the database and return the best covered call "
@@ -385,6 +561,111 @@ TOOLS = [
                     "max_dte": {
                         "type": "integer",
                         "description": "Maximum days to expiration to include. Optional.",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "compare_spread_candidates",
+            "description": (
+                "Compare defined-risk spread opportunities across multiple tickers, or compare "
+                "multiple spread structures on one ticker. Supports credit spreads, debit spreads, "
+                "iron condors, and iron butterflies."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "symbols": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of ticker symbols to compare. Use one symbol if comparing spread types on the same stock.",
+                    },
+                    "symbol": {
+                        "type": "string",
+                        "description": "Optional single ticker shortcut when comparing spread types on one stock.",
+                    },
+                    "spread_type": {
+                        "type": "string",
+                        "enum": [
+                            "bull_put_credit_spread",
+                            "bear_call_credit_spread",
+                            "bull_call_debit_spread",
+                            "bear_put_debit_spread",
+                            "iron_condor",
+                            "iron_butterfly",
+                            "auto",
+                        ],
+                        "description": "Primary spread type to evaluate. Use auto when the user did not specify one.",
+                    },
+                    "spread_types": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": [
+                                "bull_put_credit_spread",
+                                "bear_call_credit_spread",
+                                "bull_call_debit_spread",
+                                "bear_put_debit_spread",
+                                "iron_condor",
+                                "iron_butterfly",
+                                "auto",
+                            ],
+                        },
+                        "description": "Optional list of spread structures to compare in the same request.",
+                    },
+                    "directional_view": {
+                        "type": "string",
+                        "enum": ["bullish", "bearish", "neutral", "auto"],
+                        "description": "Directional thesis. Use auto when not specified.",
+                    },
+                    "risk_profile": {
+                        "type": "string",
+                        "enum": ["conservative", "balanced", "aggressive"],
+                        "description": "Risk preference. Defaults to balanced.",
+                    },
+                    "max_dte": {
+                        "type": "integer",
+                        "description": "Maximum days to expiration. When omitted, default to 45 for credit spreads and 60 for debit spreads.",
+                    },
+                    "min_credit": {
+                        "type": "number",
+                        "description": "Minimum credit received for credit spreads. Optional.",
+                    },
+                    "max_debit": {
+                        "type": "number",
+                        "description": "Maximum debit paid for debit spreads. Optional.",
+                    },
+                    "max_risk": {
+                        "type": "number",
+                        "description": "Maximum dollar risk per spread. Optional.",
+                    },
+                    "width": {
+                        "type": "number",
+                        "description": "Preferred strike width, e.g. 5 or 10. Optional.",
+                    },
+                    "min_return_on_risk_pct": {
+                        "type": "number",
+                        "description": "Minimum return-on-risk threshold. For debit spreads this is inferred from reward-to-risk.",
+                    },
+                    "min_probability_of_profit": {
+                        "type": "number",
+                        "description": "Minimum probability of profit threshold. Mostly relevant for credit spreads.",
+                    },
+                    "min_quality_score": {
+                        "type": "number",
+                        "description": "Minimum stock quality score for the underlying.",
+                    },
+                    "max_short_delta": {
+                        "type": "number",
+                        "description": "Maximum absolute short-leg delta.",
+                    },
+                    "exclude_earnings": {
+                        "type": "boolean",
+                        "description": "When true, exclude spreads where earnings occur before expiration.",
                     },
                 },
                 "required": [],
@@ -819,6 +1100,2227 @@ def _normalize_covered_call_strategy(strategy):
     if value in valid:
         return value
     return None
+
+
+def _normalize_spread_type(spread_type):
+    value = str(spread_type or "auto").strip().lower()
+    valid = {
+        "bull_put_credit_spread",
+        "bear_call_credit_spread",
+        "bull_call_debit_spread",
+        "bear_put_debit_spread",
+        "iron_condor",
+        "iron_butterfly",
+        "auto",
+    }
+    if value in valid:
+        return value
+    return "auto"
+
+
+def _normalize_directional_view(directional_view):
+    value = str(directional_view or "auto").strip().lower()
+    if value in {"bullish", "bearish", "neutral", "auto"}:
+        return value
+    return "auto"
+
+
+def _normalize_risk_profile(risk_profile):
+    value = str(risk_profile or "balanced").strip().lower()
+    if value in {"conservative", "balanced", "aggressive"}:
+        return value
+    return "balanced"
+
+
+def _spread_profile(risk_profile, overrides=None):
+    profiles = {
+        "conservative": {
+            "credit_target_delta": 0.18,
+            "neutral_target_delta": 0.15,
+            "debit_target_delta": 0.58,
+            "preferred_min_dte": 21,
+            "preferred_max_dte": 45,
+            "credit_iv_floor": 24,
+            "debit_iv_ceiling": 30,
+            "max_width": 10,
+            "credit_max_dte": 45,
+            "credit_short_delta_min": 0.15,
+            "credit_short_delta_max": 0.30,
+            "credit_min_return_on_risk_pct": 15,
+            "credit_min_probability_of_profit": 65,
+            "credit_min_open_interest": 100,
+            "credit_max_bid_ask_spread_pct": 20,
+            "credit_exclude_earnings_before_expiration": True,
+            "debit_max_dte": 45,
+            "debit_long_delta_min": 0.50,
+            "debit_long_delta_max": 0.70,
+            "debit_short_delta_min": 0.20,
+            "debit_short_delta_max": 0.35,
+            "debit_min_reward_to_risk": 1.6,
+            "debit_max_debit_as_pct_of_width": 45,
+        },
+        "balanced": {
+            "credit_target_delta": 0.25,
+            "neutral_target_delta": 0.20,
+            "debit_target_delta": 0.48,
+            "preferred_min_dte": 21,
+            "preferred_max_dte": 50,
+            "credit_iv_floor": 20,
+            "debit_iv_ceiling": 35,
+            "max_width": 15,
+            "credit_max_dte": 45,
+            "credit_short_delta_min": 0.20,
+            "credit_short_delta_max": 0.35,
+            "credit_min_return_on_risk_pct": 18,
+            "credit_min_probability_of_profit": 60,
+            "credit_min_open_interest": 100,
+            "credit_max_bid_ask_spread_pct": 20,
+            "credit_exclude_earnings_before_expiration": True,
+            "debit_max_dte": 60,
+            "debit_long_delta_min": 0.45,
+            "debit_long_delta_max": 0.70,
+            "debit_short_delta_min": 0.20,
+            "debit_short_delta_max": 0.40,
+            "debit_min_reward_to_risk": 1.5,
+            "debit_max_debit_as_pct_of_width": 50,
+        },
+        "aggressive": {
+            "credit_target_delta": 0.35,
+            "neutral_target_delta": 0.28,
+            "debit_target_delta": 0.38,
+            "preferred_min_dte": 14,
+            "preferred_max_dte": 60,
+            "credit_iv_floor": 16,
+            "debit_iv_ceiling": 40,
+            "max_width": 25,
+            "credit_max_dte": 60,
+            "credit_short_delta_min": 0.30,
+            "credit_short_delta_max": 0.45,
+            "credit_min_return_on_risk_pct": 25,
+            "credit_min_probability_of_profit": 50,
+            "credit_min_open_interest": 100,
+            "credit_max_bid_ask_spread_pct": 25,
+            "credit_exclude_earnings_before_expiration": False,
+            "debit_max_dte": 60,
+            "debit_long_delta_min": 0.40,
+            "debit_long_delta_max": 0.75,
+            "debit_short_delta_min": 0.15,
+            "debit_short_delta_max": 0.45,
+            "debit_min_reward_to_risk": 1.2,
+            "debit_max_debit_as_pct_of_width": 60,
+        },
+    }
+    profile = dict(profiles[_normalize_risk_profile(risk_profile)])
+    if overrides:
+        profile.update(overrides)
+    return profile
+
+
+def _round_if_number(value, digits=2):
+    if value is None:
+        return None
+    return round(value, digits)
+
+
+def _contract_mid(contract):
+    mid = _to_float(contract.get("mid"))
+    if mid is not None:
+        return mid
+    bid = _to_float(contract.get("bid"))
+    ask = _to_float(contract.get("ask"))
+    if bid is not None and ask is not None and ask > 0:
+        return round((bid + ask) / 2, 4)
+    return None
+
+
+def _contract_spread_pct(contract):
+    bid = _to_float(contract.get("bid"))
+    ask = _to_float(contract.get("ask"))
+    if bid is None or ask is None or ask <= 0:
+        return None
+    return ((ask - bid) / ask) * 100
+
+
+def _spread_leg_payload(contract, *, action, option_type):
+    return {
+        "action": action,
+        "option_type": option_type,
+        "strike": _to_float(contract.get("strike")),
+        "bid": _to_float(contract.get("bid")),
+        "ask": _to_float(contract.get("ask")),
+        "mid": _contract_mid(contract),
+        "delta": _to_float(contract.get("delta")),
+        "iv": _to_float(contract.get("iv")),
+        "volume": _to_int(contract.get("volume")),
+        "open_interest": _to_int(contract.get("open_interest")),
+    }
+
+
+def _option_liquidity_metrics(legs):
+    volumes = [leg.get("volume") for leg in legs if leg.get("volume") is not None]
+    open_interest = [
+        leg.get("open_interest")
+        for leg in legs
+        if leg.get("open_interest") is not None
+    ]
+    leg_spreads = []
+    for leg in legs:
+        spread_pct = _contract_spread_pct(leg)
+        if spread_pct is not None:
+            leg_spreads.append(spread_pct)
+    return {
+        "min_volume": min(volumes) if volumes else None,
+        "min_open_interest": min(open_interest) if open_interest else None,
+        "avg_leg_spread_pct": (
+            sum(leg_spreads) / len(leg_spreads) if leg_spreads else None
+        ),
+    }
+
+
+def _spread_liquidity_component(legs):
+    metrics = _option_liquidity_metrics(legs)
+    score = 0
+    reasons = []
+    warnings = []
+
+    min_volume = metrics["min_volume"]
+    if min_volume is not None:
+        if min_volume >= 500:
+            score += 5
+        elif min_volume >= 100:
+            score += 4
+        elif min_volume >= 20:
+            score += 2
+        else:
+            warnings.append("Spread leg volume is low.")
+
+    min_open_interest = metrics["min_open_interest"]
+    if min_open_interest is not None:
+        if min_open_interest >= 2000:
+            score += 5
+        elif min_open_interest >= 500:
+            score += 4
+        elif min_open_interest >= 100:
+            score += 2
+        else:
+            warnings.append("Spread leg open interest is low.")
+
+    avg_leg_spread_pct = metrics["avg_leg_spread_pct"]
+    if avg_leg_spread_pct is not None:
+        if avg_leg_spread_pct <= 5:
+            score += 5
+            reasons.append("Option bid/ask spreads are tight.")
+        elif avg_leg_spread_pct <= 10:
+            score += 4
+        elif avg_leg_spread_pct <= 20:
+            score += 2
+            warnings.append("Spread liquidity is acceptable but not excellent.")
+        else:
+            warnings.append("Option bid/ask spreads are wide.")
+    else:
+        warnings.append("Bid/ask spread data is incomplete.")
+
+    return min(score, 15), reasons, warnings, metrics
+
+
+def _spread_quality_component(quality_score):
+    score = 0
+    reasons = []
+    warnings = []
+    if quality_score is not None:
+        if quality_score >= 85:
+            score = 10
+            reasons.append("Underlying stock quality is high.")
+        elif quality_score >= 75:
+            score = 8
+        elif quality_score >= 65:
+            score = 6
+        elif quality_score >= 55:
+            score = 3
+            warnings.append("Underlying quality score is only moderate.")
+        else:
+            warnings.append("Underlying quality score is weak.")
+    return score, reasons, warnings
+
+
+def _spread_technical_component(*, bias, technical_score):
+    reasons = []
+    warnings = []
+    score = 0
+
+    if bias == "bullish":
+        if technical_score == "Strong Buy":
+            score = 7
+            reasons.append("Technical trend supports a bullish spread.")
+        elif technical_score == "Buy":
+            score = 6
+        elif technical_score == "Neutral":
+            score = 3
+        elif technical_score == "Sell":
+            score = 1
+            warnings.append("Technical trend is not aligned with a bullish thesis.")
+        elif technical_score == "Strong Sell":
+            warnings.append("Technical trend is strongly against a bullish thesis.")
+    elif bias == "bearish":
+        if technical_score == "Strong Sell":
+            score = 7
+            reasons.append("Technical trend supports a bearish spread.")
+        elif technical_score == "Sell":
+            score = 6
+        elif technical_score == "Neutral":
+            score = 3
+        elif technical_score == "Buy":
+            score = 1
+            warnings.append("Technical trend is not aligned with a bearish thesis.")
+        elif technical_score == "Strong Buy":
+            warnings.append("Technical trend is strongly against a bearish thesis.")
+    else:
+        if technical_score == "Neutral":
+            score = 7
+            reasons.append("Neutral technical trend suits a range-bound spread.")
+        elif technical_score in {"Buy", "Sell"}:
+            score = 4
+        elif technical_score in {"Strong Buy", "Strong Sell"}:
+            score = 2
+            warnings.append("A strong trend reduces the appeal of a neutral spread.")
+
+    return score, reasons, warnings
+
+
+def _spread_dte_component(dte, profile):
+    reasons = []
+    warnings = []
+    if profile["preferred_min_dte"] <= dte <= profile["preferred_max_dte"]:
+        return 10, reasons, warnings
+    if dte < 10:
+        warnings.append("DTE is short, which increases gamma risk.")
+        return 4, reasons, warnings
+    if dte > 75:
+        warnings.append("DTE is long, which ties up risk for longer.")
+        return 4, reasons, warnings
+    return 7, reasons, warnings
+
+
+def _spread_iv_component(*, avg_iv, profile, trade_structure):
+    reasons = []
+    warnings = []
+    if avg_iv is None:
+        warnings.append("IV data is incomplete.")
+        return 2, reasons, warnings
+
+    if trade_structure == "credit":
+        if avg_iv >= profile["credit_iv_floor"] + 8:
+            reasons.append("IV is supportive for premium-selling spreads.")
+            return 5, reasons, warnings
+        if avg_iv >= profile["credit_iv_floor"]:
+            return 4, reasons, warnings
+        if avg_iv >= profile["credit_iv_floor"] - 5:
+            warnings.append("IV is only average for a credit spread.")
+            return 2, reasons, warnings
+        warnings.append("IV is low for a premium-selling spread.")
+        return 1, reasons, warnings
+
+    if avg_iv <= max(profile["debit_iv_ceiling"] - 5, 1):
+        reasons.append("IV is favorable for a debit spread.")
+        return 5, reasons, warnings
+    if avg_iv <= profile["debit_iv_ceiling"]:
+        return 4, reasons, warnings
+    if avg_iv <= profile["debit_iv_ceiling"] + 10:
+        warnings.append("IV is somewhat elevated for a debit spread.")
+        return 2, reasons, warnings
+    warnings.append("IV is high for a debit spread.")
+    return 1, reasons, warnings
+
+
+def _spread_delta_fit_component(*, actual_delta, target_delta):
+    reasons = []
+    warnings = []
+    if actual_delta is None:
+        warnings.append("Delta data is incomplete for the spread.")
+        return 4, reasons, warnings
+
+    gap = abs(actual_delta - target_delta)
+    if gap <= 0.05:
+        reasons.append("Delta profile fits the requested risk style.")
+        return 10, reasons, warnings
+    if gap <= 0.10:
+        return 7, reasons, warnings
+    if gap <= 0.15:
+        warnings.append("Delta is a bit outside the preferred risk range.")
+        return 4, reasons, warnings
+    warnings.append("Delta is materially outside the preferred risk range.")
+    return 1, reasons, warnings
+
+
+def _clamp_score(value, *, lower=0.0, upper=1.0):
+    if value is None:
+        return None
+    return max(lower, min(upper, value))
+
+
+def _linear_weighted_component(*, value, floor, ceiling, weight):
+    if value is None:
+        return 0
+    if ceiling <= floor:
+        return weight if value >= ceiling else 0
+    normalized = _clamp_score((value - floor) / (ceiling - floor))
+    return round(normalized * weight, 2)
+
+
+def _credit_spread_filters(profile, *, requested_max_dte=None):
+    profile_max_dte = profile.get("credit_max_dte")
+    if requested_max_dte is None:
+        effective_max_dte = profile_max_dte
+    elif profile_max_dte is None:
+        effective_max_dte = requested_max_dte
+    else:
+        effective_max_dte = min(requested_max_dte, profile_max_dte)
+
+    short_delta_min = profile["credit_short_delta_min"]
+    short_delta_max = profile["credit_short_delta_max"]
+    return {
+        "max_dte": effective_max_dte,
+        "short_delta_min": short_delta_min,
+        "short_delta_max": short_delta_max,
+        "short_delta_target": round((short_delta_min + short_delta_max) / 2, 4),
+        "min_return_on_risk_pct": profile["credit_min_return_on_risk_pct"],
+        "min_probability_of_profit": profile["credit_min_probability_of_profit"],
+        "min_open_interest": profile["credit_min_open_interest"],
+        "max_bid_ask_spread_pct": profile["credit_max_bid_ask_spread_pct"],
+        "exclude_earnings_before_expiration": profile[
+            "credit_exclude_earnings_before_expiration"
+        ],
+        "allow_earnings": not profile["credit_exclude_earnings_before_expiration"],
+    }
+
+
+def _debit_spread_filters(profile, *, requested_max_dte=None):
+    profile_max_dte = profile.get("debit_max_dte")
+    if requested_max_dte is None:
+        effective_max_dte = profile_max_dte
+    elif profile_max_dte is None:
+        effective_max_dte = requested_max_dte
+    else:
+        effective_max_dte = min(requested_max_dte, profile_max_dte)
+
+    return {
+        "max_dte": effective_max_dte,
+        "long_delta_min": profile["debit_long_delta_min"],
+        "long_delta_max": profile["debit_long_delta_max"],
+        "short_delta_min": profile["debit_short_delta_min"],
+        "short_delta_max": profile["debit_short_delta_max"],
+        "long_delta_target": round(
+            (profile["debit_long_delta_min"] + profile["debit_long_delta_max"]) / 2,
+            4,
+        ),
+        "short_delta_target": round(
+            (profile["debit_short_delta_min"] + profile["debit_short_delta_max"]) / 2,
+            4,
+        ),
+        "min_reward_to_risk": profile["debit_min_reward_to_risk"],
+        "max_debit_as_pct_of_width": profile["debit_max_debit_as_pct_of_width"],
+    }
+
+
+def _spread_rating(score):
+    if score >= 80:
+        return "Excellent"
+    if score >= 70:
+        return "Good"
+    if score >= 60:
+        return "Acceptable"
+    return "Avoid"
+
+
+def _average_iv_from_legs(legs, symbol_iv=None):
+    ivs = [leg.get("iv") for leg in legs if leg.get("iv") is not None]
+    if symbol_iv is not None:
+        ivs.append(symbol_iv)
+    if not ivs:
+        return None
+    return round(sum(ivs) / len(ivs), 2)
+
+
+def _width_allowed(width_value, *, preferred_width, max_width):
+    if width_value is None or width_value <= 0:
+        return False
+    if preferred_width is not None:
+        return abs(width_value - preferred_width) <= 0.05
+    return width_value <= max_width
+
+
+def _group_contracts_by_expiration(contracts, *, today, max_dte=None):
+    grouped = {}
+    for contract in contracts:
+        expiration_date = contract.get("expiration_date")
+        if expiration_date is None:
+            continue
+        dte = (expiration_date - today).days
+        if dte <= 0:
+            continue
+        if max_dte is not None and dte > max_dte:
+            continue
+        grouped.setdefault(expiration_date, []).append(contract)
+    for expiration_date in grouped:
+        grouped[expiration_date].sort(key=lambda item: item.get("strike") or 0)
+    return grouped
+
+
+def _resolve_spread_directional_view(*, directional_view, technical_score):
+    normalized = _normalize_directional_view(directional_view)
+    if normalized != "auto":
+        return normalized
+    if technical_score in {"Strong Buy", "Buy"}:
+        return "bullish"
+    if technical_score in {"Strong Sell", "Sell"}:
+        return "bearish"
+    return "neutral"
+
+
+def _candidate_sort_key(candidate):
+    return (
+        candidate.get("spread_score") or 0,
+        candidate.get("estimated_probability_of_profit") or 0,
+        candidate.get("return_on_risk_pct")
+        or candidate.get("reward_to_risk")
+        or 0,
+    )
+
+
+def _spread_candidate_return_on_risk_pct(candidate):
+    value = _to_float(candidate.get("return_on_risk_pct"))
+    if value is not None:
+        return round(value, 2)
+    reward_to_risk = _to_float(candidate.get("reward_to_risk"))
+    if reward_to_risk is None:
+        return None
+    return round(reward_to_risk * 100, 2)
+
+
+def _spread_candidate_short_leg_deltas(candidate):
+    deltas = []
+    for leg in candidate.get("legs") or []:
+        if str(leg.get("action") or "").lower() != "sell":
+            continue
+        delta = _to_float(leg.get("delta"))
+        if delta is not None:
+            deltas.append(round(abs(delta), 4))
+    return deltas
+
+
+def _spread_candidate_earnings_before_expiration(*, next_earnings_date, expiration):
+    expiration_date = _parse_date(expiration)
+    if not next_earnings_date or not expiration_date:
+        return False
+    return bool(date.today() <= next_earnings_date <= expiration_date)
+
+
+def _filter_spread_candidates(
+    evaluation,
+    *,
+    min_return_on_risk_pct=None,
+    min_probability_of_profit=None,
+    max_risk=None,
+    max_short_delta=None,
+    exclude_earnings=None,
+):
+    matched_candidates = []
+    for candidate in evaluation["all_candidates"]:
+        normalized_return_on_risk = _spread_candidate_return_on_risk_pct(candidate)
+        probability_of_profit = _to_float(
+            candidate.get("estimated_probability_of_profit")
+        )
+        candidate_max_loss = _to_float(candidate.get("max_loss"))
+        short_leg_deltas = _spread_candidate_short_leg_deltas(candidate)
+        max_candidate_short_delta = max(short_leg_deltas) if short_leg_deltas else None
+        earnings_before_expiration = _spread_candidate_earnings_before_expiration(
+            next_earnings_date=evaluation["next_earnings_date"],
+            expiration=candidate.get("expiration"),
+        )
+
+        if min_return_on_risk_pct is not None and (
+            normalized_return_on_risk is None
+            or normalized_return_on_risk < min_return_on_risk_pct
+        ):
+            continue
+        if min_probability_of_profit is not None and (
+            probability_of_profit is None
+            or probability_of_profit < min_probability_of_profit
+        ):
+            continue
+        if max_risk is not None and (
+            candidate_max_loss is None or candidate_max_loss > max_risk
+        ):
+            continue
+        if max_short_delta is not None and (
+            max_candidate_short_delta is None
+            or max_candidate_short_delta > abs(max_short_delta)
+        ):
+            continue
+        if exclude_earnings is True and earnings_before_expiration:
+            continue
+
+        enriched_candidate = dict(candidate)
+        enriched_candidate["return_on_risk_pct"] = normalized_return_on_risk
+        enriched_candidate["short_leg_deltas"] = short_leg_deltas
+        enriched_candidate["max_short_delta"] = (
+            round(max_candidate_short_delta, 4)
+            if max_candidate_short_delta is not None
+            else None
+        )
+        enriched_candidate["earnings_before_expiration"] = earnings_before_expiration
+        matched_candidates.append(enriched_candidate)
+
+    matched_candidates.sort(key=_candidate_sort_key, reverse=True)
+    return matched_candidates
+
+
+def _score_vertical_credit_spread(
+    *,
+    net_credit,
+    width_value,
+    buffer_pct,
+    pop,
+    dte,
+    short_delta,
+    avg_iv,
+    legs,
+    quality_score,
+    technical_score,
+    next_earnings_date,
+    expiration_date,
+    profile,
+    bias,
+):
+    reasons = []
+    warnings = []
+    score = 0
+    score_breakdown = {}
+    filter_settings = _credit_spread_filters(profile)
+
+    max_profit = net_credit * 100
+    max_loss = (width_value - net_credit) * 100
+    return_on_risk_pct = (max_profit / max_loss * 100) if max_loss > 0 else None
+    abs_short_delta = abs(short_delta) if short_delta is not None else None
+    earnings_before_expiration = bool(
+        next_earnings_date
+        and expiration_date
+        and next_earnings_date <= expiration_date
+        and date.today() <= next_earnings_date
+    )
+
+    return_component = _linear_weighted_component(
+        value=return_on_risk_pct,
+        floor=filter_settings["min_return_on_risk_pct"],
+        ceiling=max(filter_settings["min_return_on_risk_pct"] + 20, 35),
+        weight=20,
+    )
+    if return_on_risk_pct is not None and return_on_risk_pct >= 25:
+        reasons.append("Return on risk is strong for a defined-risk credit spread.")
+    elif return_on_risk_pct is not None and return_on_risk_pct < filter_settings["min_return_on_risk_pct"]:
+        warnings.append("Return on risk is below the preferred minimum.")
+    score += return_component
+    score_breakdown["return_on_risk"] = return_component
+
+    pop_component = _linear_weighted_component(
+        value=pop,
+        floor=filter_settings["min_probability_of_profit"],
+        ceiling=85,
+        weight=20,
+    )
+    if pop is not None and pop >= 72:
+        reasons.append("Probability of profit is strong for a credit spread.")
+    elif pop is not None and pop < filter_settings["min_probability_of_profit"]:
+        warnings.append("Probability of profit is below the preferred minimum.")
+    score += pop_component
+    score_breakdown["probability_of_profit"] = pop_component
+
+    buffer_component = _linear_weighted_component(
+        value=buffer_pct,
+        floor=2,
+        ceiling=12,
+        weight=15,
+    )
+    if buffer_pct is not None and buffer_pct >= 8:
+        reasons.append("Short strike leaves a healthy buffer from the current price.")
+    elif buffer_pct is not None and buffer_pct < 4:
+        warnings.append("Short strike sits fairly close to the current price.")
+    score += buffer_component
+    score_breakdown["downside_buffer" if bias == "bullish" else "upside_buffer"] = (
+        buffer_component
+    )
+
+    delta_component = 0
+    if abs_short_delta is None:
+        warnings.append("Delta data is incomplete for the spread.")
+    else:
+        delta_center = filter_settings["short_delta_target"]
+        delta_distance = abs(abs_short_delta - delta_center)
+        max_distance = max(
+            delta_center - filter_settings["short_delta_min"],
+            filter_settings["short_delta_max"] - delta_center,
+            0.0001,
+        )
+        delta_component = round(
+            _clamp_score(1 - (delta_distance / max_distance)) * 15,
+            2,
+        )
+        if delta_distance <= 0.03:
+            reasons.append("Short strike delta fits the requested credit-spread risk range.")
+        elif abs_short_delta > filter_settings["short_delta_max"]:
+            warnings.append("Short strike delta is too aggressive for the preferred risk range.")
+        elif abs_short_delta < filter_settings["short_delta_min"]:
+            warnings.append("Short strike delta is below the preferred premium range.")
+    score += delta_component
+    score_breakdown["short_strike_delta"] = delta_component
+
+    liquidity_component = 0
+    liquidity_metrics = _option_liquidity_metrics(legs)
+    min_volume = liquidity_metrics["min_volume"]
+    min_open_interest = liquidity_metrics["min_open_interest"]
+    avg_leg_spread_pct = liquidity_metrics["avg_leg_spread_pct"]
+
+    oi_component = _linear_weighted_component(
+        value=min_open_interest,
+        floor=filter_settings["min_open_interest"],
+        ceiling=max(filter_settings["min_open_interest"] * 8, 800),
+        weight=6,
+    )
+    volume_component = _linear_weighted_component(
+        value=min_volume,
+        floor=20,
+        ceiling=500,
+        weight=4,
+    )
+    spread_component = 0
+    if avg_leg_spread_pct is None:
+        warnings.append("Bid/ask spread data is incomplete.")
+    else:
+        spread_component = round(
+            _clamp_score(
+                (filter_settings["max_bid_ask_spread_pct"] - avg_leg_spread_pct)
+                / filter_settings["max_bid_ask_spread_pct"]
+            )
+            * 5,
+            2,
+        )
+        if avg_leg_spread_pct <= 8:
+            reasons.append("Option bid/ask spreads are tight.")
+        elif avg_leg_spread_pct > filter_settings["max_bid_ask_spread_pct"]:
+            warnings.append("Option bid/ask spreads are wider than the preferred maximum.")
+
+    if min_open_interest is not None and min_open_interest < filter_settings["min_open_interest"]:
+        warnings.append("Spread leg open interest is below the preferred minimum.")
+    if min_volume is not None and min_volume < 20:
+        warnings.append("Spread leg volume is low.")
+    if avg_leg_spread_pct is not None and avg_leg_spread_pct > 10 and avg_leg_spread_pct <= filter_settings["max_bid_ask_spread_pct"]:
+        warnings.append("Spread liquidity is acceptable but not excellent.")
+
+    liquidity_component = round(oi_component + volume_component + spread_component, 2)
+    score += liquidity_component
+    score_breakdown["liquidity_spread_quality"] = liquidity_component
+
+    technical_component = 0
+    if bias == "bullish":
+        if technical_score == "Strong Buy":
+            technical_component = 10
+            reasons.append("Technical trend supports a bullish spread.")
+        elif technical_score == "Buy":
+            technical_component = 8
+        elif technical_score == "Neutral":
+            technical_component = 5
+        elif technical_score == "Sell":
+            technical_component = 2
+            warnings.append("Technical trend is not aligned with a bullish thesis.")
+        elif technical_score == "Strong Sell":
+            warnings.append("Technical trend is strongly against a bullish thesis.")
+    else:
+        if technical_score == "Strong Sell":
+            technical_component = 10
+            reasons.append("Technical trend supports a bearish spread.")
+        elif technical_score == "Sell":
+            technical_component = 8
+        elif technical_score == "Neutral":
+            technical_component = 5
+        elif technical_score == "Buy":
+            technical_component = 2
+            warnings.append("Technical trend is not aligned with a bearish thesis.")
+        elif technical_score == "Strong Buy":
+            warnings.append("Technical trend is strongly against a bearish thesis.")
+    score += technical_component
+    score_breakdown["technical_trend_alignment"] = technical_component
+
+    earnings_component = 5
+    if earnings_before_expiration:
+        earnings_component = 0
+        warnings.append("Earnings before expiration.")
+    score += earnings_component
+    score_breakdown["earnings_risk_penalty"] = earnings_component
+
+    if dte > profile["preferred_max_dte"]:
+        warnings.append("DTE is long, which ties up risk for longer.")
+    elif dte < 10:
+        warnings.append("DTE is short, which increases gamma risk.")
+
+    if avg_iv is not None and avg_iv < profile["credit_iv_floor"]:
+        warnings.append("IV is low for a premium-selling spread.")
+
+    if quality_score is not None:
+        if quality_score >= 85:
+            reasons.append("Underlying stock quality is high.")
+        elif quality_score < 65:
+            warnings.append("Underlying quality score is below the preferred range for assignment comfort.")
+
+    if short_delta is not None and abs(short_delta) >= 0.30:
+        warnings.append("Short strike delta is moderately high.")
+
+    return {
+        "spread_score": max(0, min(100, round(score))),
+        "score_breakdown": score_breakdown,
+        "reasons": _dedupe_preserve_order(reasons),
+        "warnings": _dedupe_preserve_order(warnings),
+        "return_on_risk_pct": (
+            round(return_on_risk_pct, 2) if return_on_risk_pct is not None else None
+        ),
+        "liquidity_metrics": liquidity_metrics,
+        "earnings_before_expiration": earnings_before_expiration,
+        "filters_used": filter_settings,
+    }
+
+
+def _score_vertical_debit_spread(
+    *,
+    net_debit,
+    width_value,
+    move_to_breakeven_pct,
+    pop,
+    dte,
+    long_delta,
+    avg_iv,
+    legs,
+    quality_score,
+    technical_score,
+    next_earnings_date,
+    expiration_date,
+    profile,
+    bias,
+):
+    reasons = []
+    warnings = []
+    score = 0
+    score_breakdown = {}
+    filter_settings = _debit_spread_filters(profile)
+
+    max_profit = (width_value - net_debit) * 100
+    max_loss = net_debit * 100
+    reward_to_risk = (max_profit / max_loss) if max_loss > 0 else None
+    long_delta_component = 0
+    if long_delta is None:
+        warnings.append("Delta data is incomplete for the long option.")
+    else:
+        abs_long_delta = abs(long_delta)
+        target = filter_settings["long_delta_target"]
+        max_distance = max(
+            target - filter_settings["long_delta_min"],
+            filter_settings["long_delta_max"] - target,
+            0.0001,
+        )
+        long_delta_component = round(
+            _clamp_score(1 - (abs(abs_long_delta - target) / max_distance)) * 5,
+            2,
+        )
+        if abs_long_delta < filter_settings["long_delta_min"]:
+            warnings.append("Long strike delta is below the preferred debit-spread range.")
+        elif abs_long_delta > filter_settings["long_delta_max"]:
+            warnings.append("Long strike delta is above the preferred debit-spread range.")
+
+    return_component = _linear_weighted_component(
+        value=reward_to_risk,
+        floor=filter_settings["min_reward_to_risk"],
+        ceiling=max(filter_settings["min_reward_to_risk"] + 1.0, 2.5),
+        weight=25,
+    )
+    if reward_to_risk is not None and reward_to_risk >= 1.8:
+        reasons.append("Reward-to-risk is strong for a debit spread.")
+    elif reward_to_risk is not None and reward_to_risk < filter_settings["min_reward_to_risk"]:
+        warnings.append("Reward-to-risk is below the preferred minimum.")
+    score += return_component
+    score_breakdown["reward_to_risk_ratio"] = return_component
+
+    breakeven_component = _linear_weighted_component(
+        value=(
+            max(0, 8 - move_to_breakeven_pct)
+            if move_to_breakeven_pct is not None
+            else None
+        ),
+        floor=1,
+        ceiling=7,
+        weight=20,
+    )
+    if move_to_breakeven_pct is not None and move_to_breakeven_pct <= 3:
+        reasons.append("The stock does not need to move much to reach breakeven.")
+    elif move_to_breakeven_pct is not None and move_to_breakeven_pct > 7:
+        warnings.append("The stock needs a sizable move to reach breakeven.")
+    score += breakeven_component
+    score_breakdown["breakeven_distance"] = breakeven_component
+
+    technical_component = 0
+    if bias == "bullish":
+        if technical_score == "Strong Buy":
+            technical_component = 20
+            reasons.append("Technical trend strongly supports a bullish debit spread.")
+        elif technical_score == "Buy":
+            technical_component = 16
+        elif technical_score == "Neutral":
+            technical_component = 8
+        elif technical_score == "Sell":
+            technical_component = 2
+            warnings.append("Technical trend does not support a bullish debit spread.")
+        elif technical_score == "Strong Sell":
+            warnings.append("Technical trend is strongly against a bullish debit spread.")
+    else:
+        if technical_score == "Strong Sell":
+            technical_component = 20
+            reasons.append("Technical trend strongly supports a bearish debit spread.")
+        elif technical_score == "Sell":
+            technical_component = 16
+        elif technical_score == "Neutral":
+            technical_component = 8
+        elif technical_score == "Buy":
+            technical_component = 2
+            warnings.append("Technical trend does not support a bearish debit spread.")
+        elif technical_score == "Strong Buy":
+            warnings.append("Technical trend is strongly against a bearish debit spread.")
+    score += technical_component
+    score_breakdown["technical_trend_alignment"] = technical_component
+
+    liquidity_component, liq_reasons, liq_warnings, liquidity_metrics = (
+        _spread_liquidity_component(legs)
+    )
+    score += liquidity_component
+    score_breakdown["liquidity"] = liquidity_component
+    reasons.extend(liq_reasons)
+    warnings.extend(liq_warnings)
+
+    dte_component = 0
+    if filter_settings["max_dte"] is not None and dte > filter_settings["max_dte"]:
+        warnings.append("DTE is above the preferred debit-spread limit.")
+        dte_component = 2
+    elif 21 <= dte <= 45:
+        dte_component = 10
+    elif 14 <= dte <= filter_settings["max_dte"]:
+        dte_component = 8
+    elif dte < 10:
+        dte_component = 3
+        warnings.append("DTE is short, which increases gamma risk.")
+    else:
+        dte_component = 6
+    score += dte_component
+    score_breakdown["dte_suitability"] = dte_component
+
+    iv_component = 0
+    if avg_iv is None:
+        warnings.append("IV data is incomplete.")
+    elif avg_iv <= max(profile["debit_iv_ceiling"] - 8, 1):
+        iv_component = 10
+        reasons.append("IV is favorable for a debit spread.")
+    elif avg_iv <= profile["debit_iv_ceiling"]:
+        iv_component = 8
+    elif avg_iv <= profile["debit_iv_ceiling"] + 5:
+        iv_component = 4
+        warnings.append("IV is somewhat elevated for a debit spread.")
+    else:
+        iv_component = 1
+        warnings.append("IV is high for a debit spread.")
+    score += iv_component
+    score_breakdown["iv_environment"] = iv_component
+
+    if quality_score is not None and quality_score >= 85:
+        reasons.append("Underlying stock quality is high.")
+    elif quality_score is not None and quality_score < 60:
+        warnings.append("Underlying quality score is weak.")
+
+    if (
+        next_earnings_date
+        and expiration_date
+        and next_earnings_date <= expiration_date
+        and date.today() <= next_earnings_date
+    ):
+        warnings.append("Earnings before expiration.")
+
+    return {
+        "spread_score": max(0, min(100, round(score))),
+        "score_breakdown": score_breakdown,
+        "reasons": _dedupe_preserve_order(reasons),
+        "warnings": _dedupe_preserve_order(warnings),
+        "reward_to_risk": round(reward_to_risk, 2) if reward_to_risk is not None else None,
+        "liquidity_metrics": liquidity_metrics,
+        "filters_used": filter_settings,
+        "long_delta_fit_component": long_delta_component,
+    }
+
+
+def _score_neutral_credit_spread(
+    *,
+    net_credit,
+    width_value,
+    inner_buffer_pct,
+    pop,
+    dte,
+    avg_short_delta,
+    avg_iv,
+    legs,
+    quality_score,
+    technical_score,
+    next_earnings_date,
+    expiration_date,
+    profile,
+):
+    reasons = []
+    warnings = []
+    score = 0
+    score_breakdown = {}
+
+    max_profit = net_credit * 100
+    max_loss = (width_value - net_credit) * 100
+    return_on_risk_pct = (max_profit / max_loss * 100) if max_loss > 0 else None
+
+    delta_component, delta_reasons, delta_warnings = _spread_delta_fit_component(
+        actual_delta=avg_short_delta,
+        target_delta=profile["neutral_target_delta"],
+    )
+    score += delta_component
+    score_breakdown["delta_fit"] = delta_component
+    reasons.extend(delta_reasons)
+    warnings.extend(delta_warnings)
+
+    return_component = 0
+    if return_on_risk_pct is not None:
+        if return_on_risk_pct >= 30:
+            return_component = 18
+        elif return_on_risk_pct >= 22:
+            return_component = 15
+        elif return_on_risk_pct >= 16:
+            return_component = 11
+        elif return_on_risk_pct >= 10:
+            return_component = 7
+        else:
+            return_component = 3
+            warnings.append("Credit received is light relative to the risk range.")
+    score += return_component
+    score_breakdown["return_on_risk"] = return_component
+
+    edge_component = 0
+    if pop is not None:
+        if pop >= 70:
+            edge_component += 10
+            reasons.append("Probability of profit is solid for a neutral spread.")
+        elif pop >= 60:
+            edge_component += 8
+        elif pop >= 50:
+            edge_component += 5
+        else:
+            edge_component += 2
+            warnings.append("Probability of profit is only moderate for a neutral setup.")
+    if inner_buffer_pct is not None:
+        if inner_buffer_pct >= 8:
+            edge_component += 8
+        elif inner_buffer_pct >= 5:
+            edge_component += 6
+        elif inner_buffer_pct >= 2:
+            edge_component += 4
+        else:
+            edge_component += 1
+            warnings.append("The short strikes sit close to the current stock price.")
+    score += min(edge_component, 18)
+    score_breakdown["probability_and_range"] = min(edge_component, 18)
+
+    liquidity_component, liq_reasons, liq_warnings, liquidity_metrics = (
+        _spread_liquidity_component(legs)
+    )
+    score += liquidity_component
+    score_breakdown["liquidity"] = liquidity_component
+    reasons.extend(liq_reasons)
+    warnings.extend(liq_warnings)
+
+    dte_component, dte_reasons, dte_warnings = _spread_dte_component(dte, profile)
+    score += dte_component
+    score_breakdown["dte"] = dte_component
+    reasons.extend(dte_reasons)
+    warnings.extend(dte_warnings)
+
+    iv_component, iv_reasons, iv_warnings = _spread_iv_component(
+        avg_iv=avg_iv,
+        profile=profile,
+        trade_structure="credit",
+    )
+    score += iv_component
+    score_breakdown["iv_alignment"] = iv_component
+    reasons.extend(iv_reasons)
+    warnings.extend(iv_warnings)
+
+    quality_component, quality_reasons, quality_warnings = _spread_quality_component(
+        quality_score
+    )
+    score += quality_component
+    score_breakdown["stock_quality_score"] = quality_component
+    reasons.extend(quality_reasons)
+    warnings.extend(quality_warnings)
+
+    technical_component, technical_reasons, technical_warnings = (
+        _spread_technical_component(bias="neutral", technical_score=technical_score)
+    )
+    score += technical_component
+    score_breakdown["technical_alignment"] = technical_component
+    reasons.extend(technical_reasons)
+    warnings.extend(technical_warnings)
+
+    earnings_component = 7
+    if (
+        next_earnings_date
+        and expiration_date
+        and next_earnings_date <= expiration_date
+        and date.today() <= next_earnings_date
+    ):
+        earnings_component = 1
+        warnings.append("Earnings before expiration.")
+    score += earnings_component
+    score_breakdown["earnings_risk"] = earnings_component
+
+    return {
+        "spread_score": max(0, min(100, round(score))),
+        "score_breakdown": score_breakdown,
+        "reasons": _dedupe_preserve_order(reasons),
+        "warnings": _dedupe_preserve_order(warnings),
+        "return_on_risk_pct": (
+            round(return_on_risk_pct, 2) if return_on_risk_pct is not None else None
+        ),
+        "liquidity_metrics": liquidity_metrics,
+    }
+
+
+def _build_bull_put_credit_spreads(
+    *,
+    put_contracts,
+    stock_price,
+    quality_score,
+    technical_score,
+    next_earnings_date,
+    symbol_iv,
+    profile,
+    today,
+    preferred_width=None,
+    max_dte=None,
+    min_credit=None,
+    max_risk=None,
+):
+    grouped_puts = _group_contracts_by_expiration(
+        put_contracts,
+        today=today,
+        max_dte=_credit_spread_filters(profile, requested_max_dte=max_dte)["max_dte"],
+    )
+    candidates = []
+    filter_settings = _credit_spread_filters(profile, requested_max_dte=max_dte)
+
+    for expiration_date, contracts in grouped_puts.items():
+        for short_index, short_put in enumerate(contracts):
+            short_strike = _to_float(short_put.get("strike"))
+            short_mid = _contract_mid(short_put)
+            if short_strike is None or short_mid is None or short_mid <= 0:
+                continue
+            if stock_price is not None and short_strike >= stock_price:
+                continue
+            for long_put in contracts[:short_index]:
+                long_strike = _to_float(long_put.get("strike"))
+                long_mid = _contract_mid(long_put)
+                if long_strike is None or long_mid is None:
+                    continue
+                width_value = short_strike - long_strike
+                if not _width_allowed(
+                    width_value,
+                    preferred_width=preferred_width,
+                    max_width=profile["max_width"],
+                ):
+                    continue
+                net_credit = short_mid - long_mid
+                if net_credit <= 0 or net_credit >= width_value:
+                    continue
+                max_loss = (width_value - net_credit) * 100
+                if min_credit is not None and net_credit < min_credit:
+                    continue
+                if max_risk is not None and max_loss > max_risk:
+                    continue
+
+                short_delta = _to_float(short_put.get("delta"))
+                pop = (
+                    round((1 - abs(short_delta)) * 100, 2)
+                    if short_delta is not None
+                    else None
+                )
+                downside_buffer_pct = (
+                    ((stock_price - short_strike) / stock_price) * 100
+                    if stock_price
+                    else None
+                )
+                return_on_risk_pct = (
+                    (net_credit * 100) / max_loss * 100 if max_loss > 0 else None
+                )
+                min_open_interest = min(
+                    value
+                    for value in (
+                        _to_int(short_put.get("open_interest")),
+                        _to_int(long_put.get("open_interest")),
+                    )
+                    if value is not None
+                ) if any(
+                    value is not None
+                    for value in (
+                        _to_int(short_put.get("open_interest")),
+                        _to_int(long_put.get("open_interest")),
+                    )
+                ) else None
+                avg_leg_spread_pct = _option_liquidity_metrics([short_put, long_put])[
+                    "avg_leg_spread_pct"
+                ]
+                earnings_before_expiration = bool(
+                    next_earnings_date
+                    and today <= next_earnings_date <= expiration_date
+                )
+
+                if short_delta is None:
+                    continue
+                abs_short_delta = abs(short_delta)
+                if not (
+                    filter_settings["short_delta_min"]
+                    <= abs_short_delta
+                    <= filter_settings["short_delta_max"]
+                ):
+                    continue
+                if (
+                    return_on_risk_pct is None
+                    or return_on_risk_pct
+                    < filter_settings["min_return_on_risk_pct"]
+                ):
+                    continue
+                if (
+                    pop is None
+                    or pop < filter_settings["min_probability_of_profit"]
+                ):
+                    continue
+                if (
+                    min_open_interest is not None
+                    and min_open_interest < filter_settings["min_open_interest"]
+                ):
+                    continue
+                if (
+                    avg_leg_spread_pct is None
+                    or avg_leg_spread_pct > filter_settings["max_bid_ask_spread_pct"]
+                ):
+                    continue
+                if (
+                    filter_settings["exclude_earnings_before_expiration"]
+                    and earnings_before_expiration
+                ):
+                    continue
+
+                legs = [short_put, long_put]
+                avg_iv = _average_iv_from_legs(legs, symbol_iv=symbol_iv)
+                scoring = _score_vertical_credit_spread(
+                    net_credit=net_credit,
+                    width_value=width_value,
+                    buffer_pct=downside_buffer_pct,
+                    pop=pop,
+                    dte=(expiration_date - today).days,
+                    short_delta=short_delta,
+                    avg_iv=avg_iv,
+                    legs=legs,
+                    quality_score=quality_score,
+                    technical_score=technical_score,
+                    next_earnings_date=next_earnings_date,
+                    expiration_date=expiration_date,
+                    profile=profile,
+                    bias="bullish",
+                )
+                candidate = {
+                    "spread_type": "bull_put_credit_spread",
+                    "expiration": expiration_date.isoformat(),
+                    "dte": (expiration_date - today).days,
+                    "legs": [
+                        _spread_leg_payload(short_put, action="sell", option_type="put"),
+                        _spread_leg_payload(long_put, action="buy", option_type="put"),
+                    ],
+                    "width": round(width_value, 2),
+                    "net_credit": round(net_credit, 2),
+                    "max_profit": round(net_credit * 100, 2),
+                    "max_loss": round(max_loss, 2),
+                    "breakeven": round(short_strike - net_credit, 2),
+                    "return_on_risk_pct": scoring["return_on_risk_pct"],
+                    "downside_buffer_pct": _round_if_number(downside_buffer_pct),
+                    "estimated_probability_of_profit": _round_if_number(pop),
+                    "avg_iv": avg_iv,
+                    "strategy_fit": "Bullish to neutral-bullish income trade",
+                    "spread_score": scoring["spread_score"],
+                    "score": scoring["spread_score"],
+                    "rating": _spread_rating(scoring["spread_score"]),
+                    "score_breakdown": scoring["score_breakdown"],
+                    "reasons": scoring["reasons"],
+                    "warnings": scoring["warnings"],
+                    "liquidity_metrics": scoring["liquidity_metrics"],
+                    "filters_used": scoring["filters_used"],
+                }
+                candidates.append(candidate)
+
+    return candidates
+
+
+def _build_bear_call_credit_spreads(
+    *,
+    call_contracts,
+    stock_price,
+    quality_score,
+    technical_score,
+    next_earnings_date,
+    symbol_iv,
+    profile,
+    today,
+    preferred_width=None,
+    max_dte=None,
+    min_credit=None,
+    max_risk=None,
+):
+    grouped_calls = _group_contracts_by_expiration(
+        call_contracts,
+        today=today,
+        max_dte=_credit_spread_filters(profile, requested_max_dte=max_dte)["max_dte"],
+    )
+    candidates = []
+    filter_settings = _credit_spread_filters(profile, requested_max_dte=max_dte)
+
+    for expiration_date, contracts in grouped_calls.items():
+        for short_index, short_call in enumerate(contracts):
+            short_strike = _to_float(short_call.get("strike"))
+            short_mid = _contract_mid(short_call)
+            if short_strike is None or short_mid is None or short_mid <= 0:
+                continue
+            if stock_price is not None and short_strike <= stock_price:
+                continue
+            for long_call in contracts[short_index + 1 :]:
+                long_strike = _to_float(long_call.get("strike"))
+                long_mid = _contract_mid(long_call)
+                if long_strike is None or long_mid is None:
+                    continue
+                width_value = long_strike - short_strike
+                if not _width_allowed(
+                    width_value,
+                    preferred_width=preferred_width,
+                    max_width=profile["max_width"],
+                ):
+                    continue
+                net_credit = short_mid - long_mid
+                if net_credit <= 0 or net_credit >= width_value:
+                    continue
+                max_loss = (width_value - net_credit) * 100
+                if min_credit is not None and net_credit < min_credit:
+                    continue
+                if max_risk is not None and max_loss > max_risk:
+                    continue
+
+                short_delta = _to_float(short_call.get("delta"))
+                pop = (
+                    round((1 - abs(short_delta)) * 100, 2)
+                    if short_delta is not None
+                    else None
+                )
+                upside_buffer_pct = (
+                    ((short_strike - stock_price) / stock_price) * 100
+                    if stock_price
+                    else None
+                )
+                return_on_risk_pct = (
+                    (net_credit * 100) / max_loss * 100 if max_loss > 0 else None
+                )
+                min_open_interest = min(
+                    value
+                    for value in (
+                        _to_int(short_call.get("open_interest")),
+                        _to_int(long_call.get("open_interest")),
+                    )
+                    if value is not None
+                ) if any(
+                    value is not None
+                    for value in (
+                        _to_int(short_call.get("open_interest")),
+                        _to_int(long_call.get("open_interest")),
+                    )
+                ) else None
+                avg_leg_spread_pct = _option_liquidity_metrics([short_call, long_call])[
+                    "avg_leg_spread_pct"
+                ]
+                earnings_before_expiration = bool(
+                    next_earnings_date
+                    and today <= next_earnings_date <= expiration_date
+                )
+
+                if short_delta is None:
+                    continue
+                abs_short_delta = abs(short_delta)
+                if not (
+                    filter_settings["short_delta_min"]
+                    <= abs_short_delta
+                    <= filter_settings["short_delta_max"]
+                ):
+                    continue
+                if (
+                    return_on_risk_pct is None
+                    or return_on_risk_pct
+                    < filter_settings["min_return_on_risk_pct"]
+                ):
+                    continue
+                if (
+                    pop is None
+                    or pop < filter_settings["min_probability_of_profit"]
+                ):
+                    continue
+                if (
+                    min_open_interest is not None
+                    and min_open_interest < filter_settings["min_open_interest"]
+                ):
+                    continue
+                if (
+                    avg_leg_spread_pct is None
+                    or avg_leg_spread_pct > filter_settings["max_bid_ask_spread_pct"]
+                ):
+                    continue
+                if (
+                    filter_settings["exclude_earnings_before_expiration"]
+                    and earnings_before_expiration
+                ):
+                    continue
+
+                legs = [short_call, long_call]
+                avg_iv = _average_iv_from_legs(legs, symbol_iv=symbol_iv)
+                scoring = _score_vertical_credit_spread(
+                    net_credit=net_credit,
+                    width_value=width_value,
+                    buffer_pct=upside_buffer_pct,
+                    pop=pop,
+                    dte=(expiration_date - today).days,
+                    short_delta=short_delta,
+                    avg_iv=avg_iv,
+                    legs=legs,
+                    quality_score=quality_score,
+                    technical_score=technical_score,
+                    next_earnings_date=next_earnings_date,
+                    expiration_date=expiration_date,
+                    profile=profile,
+                    bias="bearish",
+                )
+                candidate = {
+                    "spread_type": "bear_call_credit_spread",
+                    "expiration": expiration_date.isoformat(),
+                    "dte": (expiration_date - today).days,
+                    "legs": [
+                        _spread_leg_payload(short_call, action="sell", option_type="call"),
+                        _spread_leg_payload(long_call, action="buy", option_type="call"),
+                    ],
+                    "width": round(width_value, 2),
+                    "net_credit": round(net_credit, 2),
+                    "max_profit": round(net_credit * 100, 2),
+                    "max_loss": round(max_loss, 2),
+                    "breakeven": round(short_strike + net_credit, 2),
+                    "return_on_risk_pct": scoring["return_on_risk_pct"],
+                    "upside_buffer_pct": _round_if_number(upside_buffer_pct),
+                    "estimated_probability_of_profit": _round_if_number(pop),
+                    "avg_iv": avg_iv,
+                    "strategy_fit": "Bearish to neutral-bearish income trade",
+                    "spread_score": scoring["spread_score"],
+                    "score": scoring["spread_score"],
+                    "rating": _spread_rating(scoring["spread_score"]),
+                    "score_breakdown": scoring["score_breakdown"],
+                    "reasons": scoring["reasons"],
+                    "warnings": scoring["warnings"],
+                    "liquidity_metrics": scoring["liquidity_metrics"],
+                    "filters_used": scoring["filters_used"],
+                }
+                candidates.append(candidate)
+
+    return candidates
+
+
+def _build_bull_call_debit_spreads(
+    *,
+    call_contracts,
+    stock_price,
+    quality_score,
+    technical_score,
+    next_earnings_date,
+    symbol_iv,
+    profile,
+    today,
+    preferred_width=None,
+    max_dte=None,
+    max_debit=None,
+    max_risk=None,
+):
+    grouped_calls = _group_contracts_by_expiration(
+        call_contracts,
+        today=today,
+        max_dte=_debit_spread_filters(profile, requested_max_dte=max_dte)["max_dte"],
+    )
+    candidates = []
+    filter_settings = _debit_spread_filters(profile, requested_max_dte=max_dte)
+
+    for expiration_date, contracts in grouped_calls.items():
+        for long_index, long_call in enumerate(contracts):
+            long_strike = _to_float(long_call.get("strike"))
+            long_mid = _contract_mid(long_call)
+            if long_strike is None or long_mid is None or long_mid <= 0:
+                continue
+            for short_call in contracts[long_index + 1 :]:
+                short_strike = _to_float(short_call.get("strike"))
+                short_mid = _contract_mid(short_call)
+                if short_strike is None or short_mid is None:
+                    continue
+                width_value = short_strike - long_strike
+                if not _width_allowed(
+                    width_value,
+                    preferred_width=preferred_width,
+                    max_width=profile["max_width"],
+                ):
+                    continue
+                net_debit = long_mid - short_mid
+                if net_debit <= 0 or net_debit >= width_value:
+                    continue
+                max_loss = net_debit * 100
+                if max_debit is not None and net_debit > max_debit:
+                    continue
+                if max_risk is not None and max_loss > max_risk:
+                    continue
+
+                long_delta = _to_float(long_call.get("delta"))
+                short_delta = _to_float(short_call.get("delta"))
+                pop = round(abs(long_delta) * 100, 2) if long_delta is not None else None
+                breakeven = long_strike + net_debit
+                move_to_breakeven_pct = (
+                    ((breakeven - stock_price) / stock_price) * 100
+                    if stock_price
+                    else None
+                )
+                reward_to_risk = (
+                    ((width_value - net_debit) * 100) / max_loss if max_loss > 0 else None
+                )
+                debit_as_pct_of_width = (net_debit / width_value * 100) if width_value > 0 else None
+
+                if long_delta is None or short_delta is None:
+                    continue
+                abs_long_delta = abs(long_delta)
+                abs_short_delta = abs(short_delta)
+                if not (
+                    filter_settings["long_delta_min"]
+                    <= abs_long_delta
+                    <= filter_settings["long_delta_max"]
+                ):
+                    continue
+                if not (
+                    filter_settings["short_delta_min"]
+                    <= abs_short_delta
+                    <= filter_settings["short_delta_max"]
+                ):
+                    continue
+                if (
+                    reward_to_risk is None
+                    or reward_to_risk < filter_settings["min_reward_to_risk"]
+                ):
+                    continue
+                if (
+                    debit_as_pct_of_width is None
+                    or debit_as_pct_of_width > filter_settings["max_debit_as_pct_of_width"]
+                ):
+                    continue
+
+                legs = [long_call, short_call]
+                avg_iv = _average_iv_from_legs(legs, symbol_iv=symbol_iv)
+                scoring = _score_vertical_debit_spread(
+                    net_debit=net_debit,
+                    width_value=width_value,
+                    move_to_breakeven_pct=move_to_breakeven_pct,
+                    pop=pop,
+                    dte=(expiration_date - today).days,
+                    long_delta=long_delta,
+                    avg_iv=avg_iv,
+                    legs=legs,
+                    quality_score=quality_score,
+                    technical_score=technical_score,
+                    next_earnings_date=next_earnings_date,
+                    expiration_date=expiration_date,
+                    profile=profile,
+                    bias="bullish",
+                )
+                candidate = {
+                    "spread_type": "bull_call_debit_spread",
+                    "expiration": expiration_date.isoformat(),
+                    "dte": (expiration_date - today).days,
+                    "legs": [
+                        _spread_leg_payload(long_call, action="buy", option_type="call"),
+                        _spread_leg_payload(short_call, action="sell", option_type="call"),
+                    ],
+                    "width": round(width_value, 2),
+                    "net_debit": round(net_debit, 2),
+                    "max_profit": round((width_value - net_debit) * 100, 2),
+                    "max_loss": round(max_loss, 2),
+                    "breakeven": round(breakeven, 2),
+                    "reward_to_risk": scoring["reward_to_risk"],
+                    "move_to_breakeven_pct": _round_if_number(move_to_breakeven_pct),
+                    "estimated_probability_of_profit": _round_if_number(pop),
+                    "avg_iv": avg_iv,
+                    "strategy_fit": "Bullish defined-risk upside trade",
+                    "spread_score": scoring["spread_score"],
+                    "score": scoring["spread_score"],
+                    "rating": _spread_rating(scoring["spread_score"]),
+                    "score_breakdown": scoring["score_breakdown"],
+                    "reasons": scoring["reasons"],
+                    "warnings": scoring["warnings"],
+                    "liquidity_metrics": scoring["liquidity_metrics"],
+                    "filters_used": scoring["filters_used"],
+                }
+                candidates.append(candidate)
+
+    return candidates
+
+
+def _build_bear_put_debit_spreads(
+    *,
+    put_contracts,
+    stock_price,
+    quality_score,
+    technical_score,
+    next_earnings_date,
+    symbol_iv,
+    profile,
+    today,
+    preferred_width=None,
+    max_dte=None,
+    max_debit=None,
+    max_risk=None,
+):
+    grouped_puts = _group_contracts_by_expiration(
+        put_contracts,
+        today=today,
+        max_dte=_debit_spread_filters(profile, requested_max_dte=max_dte)["max_dte"],
+    )
+    candidates = []
+    filter_settings = _debit_spread_filters(profile, requested_max_dte=max_dte)
+
+    for expiration_date, contracts in grouped_puts.items():
+        for long_index, long_put in enumerate(contracts):
+            long_strike = _to_float(long_put.get("strike"))
+            long_mid = _contract_mid(long_put)
+            if long_strike is None or long_mid is None or long_mid <= 0:
+                continue
+            for short_put in contracts[:long_index]:
+                short_strike = _to_float(short_put.get("strike"))
+                short_mid = _contract_mid(short_put)
+                if short_strike is None or short_mid is None:
+                    continue
+                width_value = long_strike - short_strike
+                if not _width_allowed(
+                    width_value,
+                    preferred_width=preferred_width,
+                    max_width=profile["max_width"],
+                ):
+                    continue
+                net_debit = long_mid - short_mid
+                if net_debit <= 0 or net_debit >= width_value:
+                    continue
+                max_loss = net_debit * 100
+                if max_debit is not None and net_debit > max_debit:
+                    continue
+                if max_risk is not None and max_loss > max_risk:
+                    continue
+
+                long_delta = _to_float(long_put.get("delta"))
+                short_delta = _to_float(short_put.get("delta"))
+                pop = round(abs(long_delta) * 100, 2) if long_delta is not None else None
+                breakeven = long_strike - net_debit
+                move_to_breakeven_pct = (
+                    ((stock_price - breakeven) / stock_price) * 100
+                    if stock_price
+                    else None
+                )
+                reward_to_risk = (
+                    ((width_value - net_debit) * 100) / max_loss if max_loss > 0 else None
+                )
+                debit_as_pct_of_width = (net_debit / width_value * 100) if width_value > 0 else None
+
+                if long_delta is None or short_delta is None:
+                    continue
+                abs_long_delta = abs(long_delta)
+                abs_short_delta = abs(short_delta)
+                if not (
+                    filter_settings["long_delta_min"]
+                    <= abs_long_delta
+                    <= filter_settings["long_delta_max"]
+                ):
+                    continue
+                if not (
+                    filter_settings["short_delta_min"]
+                    <= abs_short_delta
+                    <= filter_settings["short_delta_max"]
+                ):
+                    continue
+                if (
+                    reward_to_risk is None
+                    or reward_to_risk < filter_settings["min_reward_to_risk"]
+                ):
+                    continue
+                if (
+                    debit_as_pct_of_width is None
+                    or debit_as_pct_of_width > filter_settings["max_debit_as_pct_of_width"]
+                ):
+                    continue
+
+                legs = [long_put, short_put]
+                avg_iv = _average_iv_from_legs(legs, symbol_iv=symbol_iv)
+                scoring = _score_vertical_debit_spread(
+                    net_debit=net_debit,
+                    width_value=width_value,
+                    move_to_breakeven_pct=move_to_breakeven_pct,
+                    pop=pop,
+                    dte=(expiration_date - today).days,
+                    long_delta=long_delta,
+                    avg_iv=avg_iv,
+                    legs=legs,
+                    quality_score=quality_score,
+                    technical_score=technical_score,
+                    next_earnings_date=next_earnings_date,
+                    expiration_date=expiration_date,
+                    profile=profile,
+                    bias="bearish",
+                )
+                candidate = {
+                    "spread_type": "bear_put_debit_spread",
+                    "expiration": expiration_date.isoformat(),
+                    "dte": (expiration_date - today).days,
+                    "legs": [
+                        _spread_leg_payload(long_put, action="buy", option_type="put"),
+                        _spread_leg_payload(short_put, action="sell", option_type="put"),
+                    ],
+                    "width": round(width_value, 2),
+                    "net_debit": round(net_debit, 2),
+                    "max_profit": round((width_value - net_debit) * 100, 2),
+                    "max_loss": round(max_loss, 2),
+                    "breakeven": round(breakeven, 2),
+                    "reward_to_risk": scoring["reward_to_risk"],
+                    "move_to_breakeven_pct": _round_if_number(move_to_breakeven_pct),
+                    "estimated_probability_of_profit": _round_if_number(pop),
+                    "avg_iv": avg_iv,
+                    "strategy_fit": "Bearish defined-risk downside trade",
+                    "spread_score": scoring["spread_score"],
+                    "score": scoring["spread_score"],
+                    "rating": _spread_rating(scoring["spread_score"]),
+                    "score_breakdown": scoring["score_breakdown"],
+                    "reasons": scoring["reasons"],
+                    "warnings": scoring["warnings"],
+                    "liquidity_metrics": scoring["liquidity_metrics"],
+                    "filters_used": scoring["filters_used"],
+                }
+                candidates.append(candidate)
+
+    return candidates
+
+
+def _build_iron_condors(
+    *,
+    put_credit_candidates,
+    call_credit_candidates,
+    stock_price,
+    quality_score,
+    technical_score,
+    next_earnings_date,
+    profile,
+    today,
+    preferred_width=None,
+    min_credit=None,
+    max_risk=None,
+):
+    puts_by_exp = {}
+    for candidate in put_credit_candidates:
+        puts_by_exp.setdefault(candidate["expiration"], []).append(candidate)
+    calls_by_exp = {}
+    for candidate in call_credit_candidates:
+        calls_by_exp.setdefault(candidate["expiration"], []).append(candidate)
+
+    candidates = []
+    for expiration, put_candidates in puts_by_exp.items():
+        call_candidates = calls_by_exp.get(expiration) or []
+        if not call_candidates:
+            continue
+        expiration_date = _parse_date(expiration)
+        dte = (expiration_date - today).days if expiration_date else None
+        for put_candidate in put_candidates:
+            put_short = put_candidate["legs"][0]
+            put_long = put_candidate["legs"][1]
+            put_width = _to_float(put_candidate.get("width"))
+            put_credit = _to_float(put_candidate.get("net_credit"))
+            for call_candidate in call_candidates:
+                call_short = call_candidate["legs"][0]
+                call_long = call_candidate["legs"][1]
+                call_width = _to_float(call_candidate.get("width"))
+                call_credit = _to_float(call_candidate.get("net_credit"))
+                if None in {put_width, call_width, put_credit, call_credit}:
+                    continue
+                if preferred_width is not None:
+                    if (
+                        abs(put_width - preferred_width) > 0.05
+                        or abs(call_width - preferred_width) > 0.05
+                    ):
+                        continue
+                short_put_strike = _to_float(put_short.get("strike"))
+                short_call_strike = _to_float(call_short.get("strike"))
+                if (
+                    short_put_strike is None
+                    or short_call_strike is None
+                    or short_put_strike >= short_call_strike
+                ):
+                    continue
+                net_credit = put_credit + call_credit
+                max_width = max(put_width, call_width)
+                if net_credit <= 0 or net_credit >= max_width:
+                    continue
+                max_loss = (max_width - net_credit) * 100
+                if min_credit is not None and net_credit < min_credit:
+                    continue
+                if max_risk is not None and max_loss > max_risk:
+                    continue
+                put_delta = abs(_to_float(put_short.get("delta")) or 0)
+                call_delta = abs(_to_float(call_short.get("delta")) or 0)
+                pop = max(0, (1 - put_delta - call_delta) * 100)
+                lower_buffer_pct = (
+                    ((stock_price - short_put_strike) / stock_price) * 100
+                    if stock_price
+                    else None
+                )
+                upper_buffer_pct = (
+                    ((short_call_strike - stock_price) / stock_price) * 100
+                    if stock_price
+                    else None
+                )
+                inner_buffer_pct = None
+                if lower_buffer_pct is not None and upper_buffer_pct is not None:
+                    inner_buffer_pct = min(lower_buffer_pct, upper_buffer_pct)
+                legs = [
+                    {
+                        "strike": put_short["strike"],
+                        "bid": put_short["bid"],
+                        "ask": put_short["ask"],
+                        "mid": put_short["mid"],
+                        "delta": put_short["delta"],
+                        "iv": put_short["iv"],
+                        "volume": put_short["volume"],
+                        "open_interest": put_short["open_interest"],
+                    },
+                    {
+                        "strike": put_long["strike"],
+                        "bid": put_long["bid"],
+                        "ask": put_long["ask"],
+                        "mid": put_long["mid"],
+                        "delta": put_long["delta"],
+                        "iv": put_long["iv"],
+                        "volume": put_long["volume"],
+                        "open_interest": put_long["open_interest"],
+                    },
+                    {
+                        "strike": call_short["strike"],
+                        "bid": call_short["bid"],
+                        "ask": call_short["ask"],
+                        "mid": call_short["mid"],
+                        "delta": call_short["delta"],
+                        "iv": call_short["iv"],
+                        "volume": call_short["volume"],
+                        "open_interest": call_short["open_interest"],
+                    },
+                    {
+                        "strike": call_long["strike"],
+                        "bid": call_long["bid"],
+                        "ask": call_long["ask"],
+                        "mid": call_long["mid"],
+                        "delta": call_long["delta"],
+                        "iv": call_long["iv"],
+                        "volume": call_long["volume"],
+                        "open_interest": call_long["open_interest"],
+                    },
+                ]
+                avg_iv = _average_iv_from_legs(legs)
+                scoring = _score_neutral_credit_spread(
+                    net_credit=net_credit,
+                    width_value=max_width,
+                    inner_buffer_pct=inner_buffer_pct,
+                    pop=pop,
+                    dte=dte,
+                    avg_short_delta=round((put_delta + call_delta) / 2, 4),
+                    avg_iv=avg_iv,
+                    legs=legs,
+                    quality_score=quality_score,
+                    technical_score=technical_score,
+                    next_earnings_date=next_earnings_date,
+                    expiration_date=expiration_date,
+                    profile=profile,
+                )
+                candidates.append({
+                    "spread_type": "iron_condor",
+                    "expiration": expiration,
+                    "dte": dte,
+                    "legs": [
+                        dict(put_short, action="sell", option_type="put"),
+                        dict(put_long, action="buy", option_type="put"),
+                        dict(call_short, action="sell", option_type="call"),
+                        dict(call_long, action="buy", option_type="call"),
+                    ],
+                    "width": round(max_width, 2),
+                    "put_width": round(put_width, 2),
+                    "call_width": round(call_width, 2),
+                    "net_credit": round(net_credit, 2),
+                    "max_profit": round(net_credit * 100, 2),
+                    "max_loss": round(max_loss, 2),
+                    "breakeven": {
+                        "low": round(short_put_strike - net_credit, 2),
+                        "high": round(short_call_strike + net_credit, 2),
+                    },
+                    "breakeven_low": round(short_put_strike - net_credit, 2),
+                    "breakeven_high": round(short_call_strike + net_credit, 2),
+                    "return_on_risk_pct": scoring["return_on_risk_pct"],
+                    "downside_buffer_pct": _round_if_number(lower_buffer_pct),
+                    "upside_buffer_pct": _round_if_number(upper_buffer_pct),
+                    "estimated_probability_of_profit": _round_if_number(pop),
+                    "avg_iv": avg_iv,
+                    "strategy_fit": "Neutral income trade",
+                    "spread_score": scoring["spread_score"],
+                    "score": scoring["spread_score"],
+                    "rating": _spread_rating(scoring["spread_score"]),
+                    "score_breakdown": scoring["score_breakdown"],
+                    "reasons": scoring["reasons"],
+                    "warnings": scoring["warnings"],
+                    "liquidity_metrics": scoring["liquidity_metrics"],
+                })
+
+    return candidates
+
+
+def _build_iron_butterflies(
+    *,
+    put_contracts,
+    call_contracts,
+    stock_price,
+    quality_score,
+    technical_score,
+    next_earnings_date,
+    symbol_iv,
+    profile,
+    today,
+    preferred_width=None,
+    max_dte=None,
+    min_credit=None,
+    max_risk=None,
+):
+    grouped_puts = _group_contracts_by_expiration(
+        put_contracts,
+        today=today,
+        max_dte=max_dte,
+    )
+    grouped_calls = _group_contracts_by_expiration(
+        call_contracts,
+        today=today,
+        max_dte=max_dte,
+    )
+    candidates = []
+
+    for expiration_date, puts in grouped_puts.items():
+        calls = grouped_calls.get(expiration_date) or []
+        if not calls:
+            continue
+        put_by_strike = {round(_to_float(item.get("strike")) or 0, 4): item for item in puts}
+        call_by_strike = {round(_to_float(item.get("strike")) or 0, 4): item for item in calls}
+        common_short_strikes = sorted(set(put_by_strike.keys()) & set(call_by_strike.keys()))
+
+        for center_key in common_short_strikes:
+            short_put = put_by_strike[center_key]
+            short_call = call_by_strike[center_key]
+            center_strike = _to_float(short_put.get("strike"))
+            if center_strike is None:
+                continue
+            for long_put in puts:
+                long_put_strike = _to_float(long_put.get("strike"))
+                if long_put_strike is None or long_put_strike >= center_strike:
+                    continue
+                put_width = center_strike - long_put_strike
+                if not _width_allowed(
+                    put_width,
+                    preferred_width=preferred_width,
+                    max_width=profile["max_width"],
+                ):
+                    continue
+                target_call_strike = center_strike + put_width
+                matching_calls = [
+                    item
+                    for item in calls
+                    if abs((_to_float(item.get("strike")) or 0) - target_call_strike) <= 0.05
+                ]
+                for long_call in matching_calls:
+                    short_put_mid = _contract_mid(short_put)
+                    short_call_mid = _contract_mid(short_call)
+                    long_put_mid = _contract_mid(long_put)
+                    long_call_mid = _contract_mid(long_call)
+                    if None in {short_put_mid, short_call_mid, long_put_mid, long_call_mid}:
+                        continue
+                    net_credit = short_put_mid + short_call_mid - long_put_mid - long_call_mid
+                    if net_credit <= 0 or net_credit >= put_width:
+                        continue
+                    max_loss = (put_width - net_credit) * 100
+                    if min_credit is not None and net_credit < min_credit:
+                        continue
+                    if max_risk is not None and max_loss > max_risk:
+                        continue
+                    short_put_delta = abs(_to_float(short_put.get("delta")) or 0)
+                    short_call_delta = abs(_to_float(short_call.get("delta")) or 0)
+                    pop = max(0, (1 - short_put_delta - short_call_delta) * 100)
+                    inner_buffer_pct = (
+                        (put_width / stock_price) * 100 if stock_price else None
+                    )
+                    legs = [short_put, long_put, short_call, long_call]
+                    avg_iv = _average_iv_from_legs(legs, symbol_iv=symbol_iv)
+                    scoring = _score_neutral_credit_spread(
+                        net_credit=net_credit,
+                        width_value=put_width,
+                        inner_buffer_pct=inner_buffer_pct,
+                        pop=pop,
+                        dte=(expiration_date - today).days,
+                        avg_short_delta=round((short_put_delta + short_call_delta) / 2, 4),
+                        avg_iv=avg_iv,
+                        legs=legs,
+                        quality_score=quality_score,
+                        technical_score=technical_score,
+                        next_earnings_date=next_earnings_date,
+                        expiration_date=expiration_date,
+                        profile=profile,
+                    )
+                    candidates.append({
+                        "spread_type": "iron_butterfly",
+                        "expiration": expiration_date.isoformat(),
+                        "dte": (expiration_date - today).days,
+                        "legs": [
+                            _spread_leg_payload(short_put, action="sell", option_type="put"),
+                            _spread_leg_payload(long_put, action="buy", option_type="put"),
+                            _spread_leg_payload(short_call, action="sell", option_type="call"),
+                            _spread_leg_payload(long_call, action="buy", option_type="call"),
+                        ],
+                        "width": round(put_width, 2),
+                        "net_credit": round(net_credit, 2),
+                        "max_profit": round(net_credit * 100, 2),
+                        "max_loss": round(max_loss, 2),
+                        "breakeven": {
+                            "low": round(center_strike - net_credit, 2),
+                            "high": round(center_strike + net_credit, 2),
+                        },
+                        "breakeven_low": round(center_strike - net_credit, 2),
+                        "breakeven_high": round(center_strike + net_credit, 2),
+                        "return_on_risk_pct": scoring["return_on_risk_pct"],
+                        "estimated_probability_of_profit": _round_if_number(pop),
+                        "avg_iv": avg_iv,
+                        "strategy_fit": "Neutral premium-selling trade for low movement",
+                        "spread_score": scoring["spread_score"],
+                        "score": scoring["spread_score"],
+                        "rating": _spread_rating(scoring["spread_score"]),
+                        "score_breakdown": scoring["score_breakdown"],
+                        "reasons": scoring["reasons"],
+                        "warnings": scoring["warnings"],
+                        "liquidity_metrics": scoring["liquidity_metrics"],
+                    })
+
+    return candidates
+
+
+def _evaluate_spread_candidates(
+    *,
+    sym,
+    spread_type,
+    directional_view,
+    risk_profile,
+    profile_overrides=None,
+    max_dte,
+    min_credit,
+    max_debit,
+    max_risk,
+    preferred_width,
+):
+    today = date.today()
+    stock_price = _to_float(sym.price)
+    quality_score = _to_float(sym.score)
+    technical_score = sym.technical_score
+    next_earnings_date = _parse_date(sym.next_earnings_date)
+    symbol_iv = _to_float(sym.option_iv)
+    put_contracts = _extract_put_contracts(sym.option_data or {})
+    call_contracts = _extract_call_contracts(sym.call_data or sym.option_data or {})
+    profile = _spread_profile(risk_profile, overrides=profile_overrides)
+    resolved_view = _resolve_spread_directional_view(
+        directional_view=directional_view,
+        technical_score=technical_score,
+    )
+
+    avg_iv = _average_iv_from_legs(
+        [*put_contracts[:5], *call_contracts[:5]],
+        symbol_iv=symbol_iv,
+    )
+
+    if spread_type == "auto":
+        if resolved_view == "bullish":
+            candidate_types = [
+                "bull_put_credit_spread",
+                "bull_call_debit_spread",
+            ]
+            if avg_iv is not None and avg_iv < profile["credit_iv_floor"]:
+                candidate_types.reverse()
+        elif resolved_view == "bearish":
+            candidate_types = [
+                "bear_call_credit_spread",
+                "bear_put_debit_spread",
+            ]
+            if avg_iv is not None and avg_iv < profile["credit_iv_floor"]:
+                candidate_types.reverse()
+        else:
+            candidate_types = ["iron_condor", "iron_butterfly"]
+            if avg_iv is not None and avg_iv < profile["credit_iv_floor"]:
+                candidate_types.reverse()
+    else:
+        candidate_types = [spread_type]
+
+    bull_put_candidates = []
+    bear_call_candidates = []
+    evaluated_by_type = {}
+
+    if any(
+        spread_name in candidate_types
+        for spread_name in {"bull_put_credit_spread", "iron_condor"}
+    ):
+        bull_put_candidates = _build_bull_put_credit_spreads(
+            put_contracts=put_contracts,
+            stock_price=stock_price,
+            quality_score=quality_score,
+            technical_score=technical_score,
+            next_earnings_date=next_earnings_date,
+            symbol_iv=symbol_iv,
+            profile=profile,
+            today=today,
+            preferred_width=preferred_width,
+            max_dte=max_dte,
+            min_credit=min_credit,
+            max_risk=max_risk,
+        )
+        evaluated_by_type["bull_put_credit_spread"] = bull_put_candidates
+
+    if any(
+        spread_name in candidate_types
+        for spread_name in {"bear_call_credit_spread", "iron_condor"}
+    ):
+        bear_call_candidates = _build_bear_call_credit_spreads(
+            call_contracts=call_contracts,
+            stock_price=stock_price,
+            quality_score=quality_score,
+            technical_score=technical_score,
+            next_earnings_date=next_earnings_date,
+            symbol_iv=symbol_iv,
+            profile=profile,
+            today=today,
+            preferred_width=preferred_width,
+            max_dte=max_dte,
+            min_credit=min_credit,
+            max_risk=max_risk,
+        )
+        evaluated_by_type["bear_call_credit_spread"] = bear_call_candidates
+
+    if "bull_call_debit_spread" in candidate_types:
+        evaluated_by_type["bull_call_debit_spread"] = _build_bull_call_debit_spreads(
+            call_contracts=call_contracts,
+            stock_price=stock_price,
+            quality_score=quality_score,
+            technical_score=technical_score,
+            next_earnings_date=next_earnings_date,
+            symbol_iv=symbol_iv,
+            profile=profile,
+            today=today,
+            preferred_width=preferred_width,
+            max_dte=max_dte,
+            max_debit=max_debit,
+            max_risk=max_risk,
+        )
+
+    if "bear_put_debit_spread" in candidate_types:
+        evaluated_by_type["bear_put_debit_spread"] = _build_bear_put_debit_spreads(
+            put_contracts=put_contracts,
+            stock_price=stock_price,
+            quality_score=quality_score,
+            technical_score=technical_score,
+            next_earnings_date=next_earnings_date,
+            symbol_iv=symbol_iv,
+            profile=profile,
+            today=today,
+            preferred_width=preferred_width,
+            max_dte=max_dte,
+            max_debit=max_debit,
+            max_risk=max_risk,
+        )
+
+    if "iron_condor" in candidate_types:
+        evaluated_by_type["iron_condor"] = _build_iron_condors(
+            put_credit_candidates=bull_put_candidates,
+            call_credit_candidates=bear_call_candidates,
+            stock_price=stock_price,
+            quality_score=quality_score,
+            technical_score=technical_score,
+            next_earnings_date=next_earnings_date,
+            profile=profile,
+            today=today,
+            preferred_width=preferred_width,
+            min_credit=min_credit,
+            max_risk=max_risk,
+        )
+
+    if "iron_butterfly" in candidate_types:
+        evaluated_by_type["iron_butterfly"] = _build_iron_butterflies(
+            put_contracts=put_contracts,
+            call_contracts=call_contracts,
+            stock_price=stock_price,
+            quality_score=quality_score,
+            technical_score=technical_score,
+            next_earnings_date=next_earnings_date,
+            symbol_iv=symbol_iv,
+            profile=profile,
+            today=today,
+            preferred_width=preferred_width,
+            max_dte=max_dte,
+            min_credit=min_credit,
+            max_risk=max_risk,
+        )
+
+    all_candidates = []
+    for spread_name in candidate_types:
+        all_candidates.extend(evaluated_by_type.get(spread_name) or [])
+
+    all_candidates.sort(key=_candidate_sort_key, reverse=True)
+
+    return {
+        "stock_price": stock_price,
+        "quality_score": quality_score,
+        "technical_score": technical_score,
+        "next_earnings_date": next_earnings_date,
+        "resolved_view": resolved_view,
+        "avg_iv": avg_iv,
+        "profile": profile,
+        "candidate_types": candidate_types,
+        "all_candidates": all_candidates,
+        "evaluated_by_type": evaluated_by_type,
+        "put_contract_count": len(put_contracts),
+        "call_contract_count": len(call_contracts),
+    }
 
 
 def _covered_call_profile(style):
@@ -2261,6 +4763,136 @@ def _handle_covered_call_opportunity(args: dict) -> str:
     return json.dumps(result, default=_json_default)
 
 
+def _handle_spread_opportunity(args: dict) -> str:
+    symbol = str(args.get("symbol") or "").strip().upper()
+    if not symbol:
+        return json.dumps({"error": "Missing required symbol"})
+
+    if not re.match(r"^[A-Z0-9.\-]{1,10}$", symbol):
+        return json.dumps({"error": "Invalid ticker symbol", "symbol": symbol})
+
+    spread_type = _normalize_spread_type(args.get("spread_type"))
+    directional_view = _normalize_directional_view(args.get("directional_view"))
+    risk_profile = _normalize_risk_profile(args.get("risk_profile"))
+    max_dte = _to_int(args.get("max_dte"))
+    min_credit = _to_float(args.get("min_credit"))
+    max_debit = _to_float(args.get("max_debit"))
+    max_risk = _to_float(args.get("max_risk"))
+    preferred_width = _to_float(args.get("width"))
+
+    try:
+        sym = Symbol.objects.filter(ticker__iexact=symbol).first()
+    except Exception as e:
+        return json.dumps({
+            "error": "Database error while fetching symbol data",
+            "details": str(e),
+            "symbol": symbol,
+        })
+
+    if sym is None:
+        return json.dumps({
+            "error": f"No data found in database for {symbol}",
+            "symbol": symbol,
+        })
+
+    evaluation = _evaluate_spread_candidates(
+        sym=sym,
+        spread_type=spread_type,
+        directional_view=directional_view,
+        risk_profile=risk_profile,
+        max_dte=max_dte,
+        min_credit=min_credit,
+        max_debit=max_debit,
+        max_risk=max_risk,
+        preferred_width=preferred_width,
+    )
+    credit_filter_settings = _credit_spread_filters(
+        evaluation["profile"],
+        requested_max_dte=max_dte,
+    )
+    debit_filter_settings = _debit_spread_filters(
+        evaluation["profile"],
+        requested_max_dte=max_dte,
+    )
+
+    base_payload = {
+        "symbol": sym.ticker,
+        "current_price": evaluation["stock_price"],
+        "stock_quality_score": evaluation["quality_score"],
+        "quality_score": evaluation["quality_score"],
+        "technical_score": evaluation["technical_score"],
+        "classification": sym.classification,
+        "next_earnings_date": (
+            evaluation["next_earnings_date"].isoformat()
+            if evaluation["next_earnings_date"]
+            else None
+        ),
+        "spread_type_requested": spread_type,
+        "spread_types_evaluated": evaluation["candidate_types"],
+        "directional_view_requested": directional_view,
+        "resolved_directional_view": evaluation["resolved_view"],
+        "risk_profile": risk_profile,
+        "underlying_iv": evaluation["avg_iv"],
+        "filters_applied": {
+            "max_dte": max_dte,
+            "min_credit": min_credit,
+            "max_debit": max_debit,
+            "max_risk": max_risk,
+            "width": preferred_width,
+            "credit_filters": credit_filter_settings,
+            "debit_filters": debit_filter_settings,
+        },
+    }
+
+    if not evaluation["all_candidates"]:
+        base_payload.update({
+            "top_candidates": [],
+            "warnings": [],
+            "error": (
+                "No spread candidates passed the available option-chain data and filter constraints."
+            ),
+            "option_chain_summary": {
+                "put_contracts": evaluation["put_contract_count"],
+                "call_contracts": evaluation["call_contract_count"],
+            },
+        })
+        return json.dumps(base_payload, default=_json_default)
+
+    best_spread = evaluation["all_candidates"][0]
+    top_candidates = evaluation["all_candidates"][:5]
+    warnings = list(best_spread.get("warnings") or [])
+    if evaluation["put_contract_count"] == 0:
+        warnings.append("No put contracts were available in the stored chain.")
+    if evaluation["call_contract_count"] == 0 and any(
+        spread_name in evaluation["candidate_types"]
+        for spread_name in {
+            "bear_call_credit_spread",
+            "bull_call_debit_spread",
+            "iron_condor",
+            "iron_butterfly",
+        }
+    ):
+        warnings.append("No call contracts were available in the stored chain.")
+
+    base_payload.update({
+        "best_spread": best_spread,
+        "top_candidates": top_candidates,
+        "warnings": _dedupe_preserve_order(warnings),
+        "summary": {
+            "rating": best_spread.get("rating"),
+            "score": best_spread.get("spread_score"),
+            "spread_score": best_spread.get("spread_score"),
+            "spread_type": best_spread.get("spread_type"),
+            "expiration": best_spread.get("expiration"),
+            "dte": best_spread.get("dte"),
+            "estimated_probability_of_profit": best_spread.get(
+                "estimated_probability_of_profit"
+            ),
+        },
+    })
+    return json.dumps(base_payload, default=_json_default)
+
+
 def _handle_scan_put_opportunities(args: dict) -> str:
     limit = int(args.get("limit") or 10)
     min_score = float(args.get("min_score") or 50)
@@ -2369,6 +5001,153 @@ def _handle_scan_put_opportunities(args: dict) -> str:
     }, default=_json_default)
 
 
+def _handle_scan_spread_opportunities(args: dict) -> str:
+    spread_type = _normalize_spread_type(args.get("spread_type"))
+    directional_view = _normalize_directional_view(args.get("directional_view"))
+    risk_profile = _normalize_risk_profile(args.get("risk_profile"))
+    limit = int(args.get("limit") or 10)
+    max_dte = _to_int(args.get("max_dte"))
+    min_return_on_risk_pct = _to_float(args.get("min_return_on_risk_pct"))
+    min_probability_of_profit = _to_float(args.get("min_probability_of_profit"))
+    max_risk = _to_float(args.get("max_risk"))
+    min_quality_score = _to_float(args.get("min_quality_score"))
+    max_short_delta = _to_float(args.get("max_short_delta"))
+    exclude_earnings = args.get("exclude_earnings")
+    today = date.today()
+
+    profile_overrides = {}
+    if exclude_earnings is not None:
+        profile_overrides["credit_exclude_earnings_before_expiration"] = bool(
+            exclude_earnings
+        )
+    if min_return_on_risk_pct is not None:
+        profile_overrides["credit_min_return_on_risk_pct"] = min_return_on_risk_pct
+        profile_overrides["debit_min_reward_to_risk"] = max(
+            min_return_on_risk_pct / 100,
+            0,
+        )
+    if min_probability_of_profit is not None:
+        profile_overrides["credit_min_probability_of_profit"] = (
+            min_probability_of_profit
+        )
+    if max_short_delta is not None:
+        clamped_short_delta = max(0, abs(max_short_delta))
+        profile_overrides["credit_short_delta_min"] = 0.01
+        profile_overrides["credit_short_delta_max"] = clamped_short_delta
+        profile_overrides["debit_short_delta_min"] = 0.01
+        profile_overrides["debit_short_delta_max"] = clamped_short_delta
+
+    try:
+        symbols = Symbol.objects.filter(
+            Q(option_data__isnull=False) | Q(call_data__isnull=False)
+        )
+    except Exception as e:
+        return json.dumps({"error": "Database error", "details": str(e)})
+
+    results = []
+
+    for sym in symbols:
+        evaluation = _evaluate_spread_candidates(
+            sym=sym,
+            spread_type=spread_type,
+            directional_view=directional_view,
+            risk_profile=risk_profile,
+            profile_overrides=profile_overrides or None,
+            max_dte=max_dte,
+            min_credit=None,
+            max_debit=None,
+            max_risk=max_risk,
+            preferred_width=None,
+        )
+
+        quality_score = _to_float(evaluation["quality_score"])
+        if min_quality_score is not None and (
+            quality_score is None or quality_score < min_quality_score
+        ):
+            continue
+
+        matched_candidates = _filter_spread_candidates(
+            evaluation,
+            min_return_on_risk_pct=min_return_on_risk_pct,
+            min_probability_of_profit=min_probability_of_profit,
+            max_risk=max_risk,
+            max_short_delta=max_short_delta,
+            exclude_earnings=exclude_earnings,
+        )
+
+        if not matched_candidates:
+            continue
+
+        best = matched_candidates[0]
+        results.append({
+            "ticker": sym.ticker,
+            "price": evaluation["stock_price"],
+            "classification": sym.classification,
+            "stock_quality_score": quality_score,
+            "quality_score": quality_score,
+            "technical_score": evaluation["technical_score"],
+            "next_earnings_date": (
+                evaluation["next_earnings_date"].isoformat()
+                if evaluation["next_earnings_date"]
+                else None
+            ),
+            "resolved_directional_view": evaluation["resolved_view"],
+            "score": best.get("spread_score"),
+            "spread_score": best.get("spread_score"),
+            "rating": best.get("rating"),
+            "spread_type": best.get("spread_type"),
+            "expiration": best.get("expiration"),
+            "dte": best.get("dte"),
+            "width": best.get("width"),
+            "net_credit": best.get("net_credit"),
+            "net_debit": best.get("net_debit"),
+            "max_profit": best.get("max_profit"),
+            "max_loss": best.get("max_loss"),
+            "breakeven": best.get("breakeven"),
+            "breakeven_low": best.get("breakeven_low"),
+            "breakeven_high": best.get("breakeven_high"),
+            "return_on_risk_pct": best.get("return_on_risk_pct"),
+            "reward_to_risk": best.get("reward_to_risk"),
+            "estimated_probability_of_profit": best.get(
+                "estimated_probability_of_profit"
+            ),
+            "avg_iv": best.get("avg_iv"),
+            "max_short_delta": best.get("max_short_delta"),
+            "short_leg_deltas": best.get("short_leg_deltas") or [],
+            "earnings_before_expiration": best.get("earnings_before_expiration"),
+            "warnings": best.get("warnings") or [],
+            "reasons": best.get("reasons") or [],
+            "strategy_fit": best.get("strategy_fit"),
+            "legs": best.get("legs") or [],
+        })
+
+    results.sort(key=_candidate_sort_key, reverse=True)
+    top = results[:limit]
+
+    return json.dumps({
+        "scan_date": today.isoformat(),
+        "total_symbols_scanned": symbols.count(),
+        "results_returned": len(top),
+        "spread_type_requested": spread_type,
+        "directional_view_requested": directional_view,
+        "risk_profile_used": risk_profile,
+        "filters_applied": {
+            "spread_type": spread_type,
+            "directional_view": directional_view,
+            "risk_profile": risk_profile,
+            "limit": limit,
+            "max_dte": max_dte,
+            "min_return_on_risk_pct": min_return_on_risk_pct,
+            "min_probability_of_profit": min_probability_of_profit,
+            "max_risk": max_risk,
+            "min_quality_score": min_quality_score,
+            "max_short_delta": max_short_delta,
+            "exclude_earnings": exclude_earnings,
+        },
+        "opportunities": top,
+    }, default=_json_default)
+
+
 def _handle_scan_covered_call_opportunities(args: dict) -> str:
     limit = int(args.get("limit") or 10)
     min_roi = _to_float(args.get("min_roi"))
@@ -2454,6 +5233,212 @@ def _handle_scan_covered_call_opportunities(args: dict) -> str:
         },
         "opportunities": top,
     }, default=_json_default)
+
+
+def _handle_compare_spread_candidates(args: dict) -> str:
+    raw_symbols = args.get("symbols") or []
+    if raw_symbols and not isinstance(raw_symbols, list):
+        return json.dumps({"error": "symbols must be a list when provided"})
+
+    symbols = []
+    for value in raw_symbols:
+        if value is None:
+            continue
+        symbol = str(value).strip().upper()
+        if symbol and symbol not in symbols:
+            symbols.append(symbol)
+
+    single_symbol = str(args.get("symbol") or "").strip().upper()
+    if single_symbol and single_symbol not in symbols:
+        symbols.append(single_symbol)
+
+    if not symbols:
+        return json.dumps(
+            {"error": "Provide `symbols` or `symbol` for spread comparison."}
+        )
+
+    spread_types = []
+    raw_spread_types = args.get("spread_types") or []
+    if raw_spread_types and not isinstance(raw_spread_types, list):
+        return json.dumps({"error": "spread_types must be a list when provided"})
+    for value in raw_spread_types:
+        normalized = _normalize_spread_type(value)
+        if normalized not in spread_types:
+            spread_types.append(normalized)
+    if not spread_types:
+        spread_types = [_normalize_spread_type(args.get("spread_type"))]
+
+    directional_view = _normalize_directional_view(args.get("directional_view"))
+    risk_profile = _normalize_risk_profile(args.get("risk_profile"))
+    max_dte = _to_int(args.get("max_dte"))
+    min_credit = _to_float(args.get("min_credit"))
+    max_debit = _to_float(args.get("max_debit"))
+    max_risk = _to_float(args.get("max_risk"))
+    preferred_width = _to_float(args.get("width"))
+    min_return_on_risk_pct = _to_float(args.get("min_return_on_risk_pct"))
+    min_probability_of_profit = _to_float(args.get("min_probability_of_profit"))
+    min_quality_score = _to_float(args.get("min_quality_score"))
+    max_short_delta = _to_float(args.get("max_short_delta"))
+    exclude_earnings = args.get("exclude_earnings")
+
+    profile_overrides = {}
+    if exclude_earnings is not None:
+        profile_overrides["credit_exclude_earnings_before_expiration"] = bool(
+            exclude_earnings
+        )
+    if min_return_on_risk_pct is not None:
+        profile_overrides["credit_min_return_on_risk_pct"] = min_return_on_risk_pct
+        profile_overrides["debit_min_reward_to_risk"] = max(
+            min_return_on_risk_pct / 100,
+            0,
+        )
+    if min_probability_of_profit is not None:
+        profile_overrides["credit_min_probability_of_profit"] = (
+            min_probability_of_profit
+        )
+    if max_short_delta is not None:
+        clamped_short_delta = max(0, abs(max_short_delta))
+        profile_overrides["credit_short_delta_min"] = 0.01
+        profile_overrides["credit_short_delta_max"] = clamped_short_delta
+        profile_overrides["debit_short_delta_min"] = 0.01
+        profile_overrides["debit_short_delta_max"] = clamped_short_delta
+
+    ranked_candidates = []
+    skipped = []
+
+    for symbol in symbols:
+        try:
+            sym = Symbol.objects.filter(ticker__iexact=symbol).first()
+        except Exception as e:
+            skipped.append(
+                {
+                    "symbol": symbol,
+                    "error": f"Database error while fetching symbol data: {str(e)}",
+                }
+            )
+            continue
+
+        if sym is None:
+            skipped.append(
+                {"symbol": symbol, "error": f"No data found in database for {symbol}"}
+            )
+            continue
+
+        for requested_spread_type in spread_types:
+            evaluation = _evaluate_spread_candidates(
+                sym=sym,
+                spread_type=requested_spread_type,
+                directional_view=directional_view,
+                risk_profile=risk_profile,
+                profile_overrides=profile_overrides or None,
+                max_dte=max_dte,
+                min_credit=min_credit,
+                max_debit=max_debit,
+                max_risk=max_risk,
+                preferred_width=preferred_width,
+            )
+
+            quality_score = _to_float(evaluation["quality_score"])
+            if min_quality_score is not None and (
+                quality_score is None or quality_score < min_quality_score
+            ):
+                skipped.append(
+                    {
+                        "symbol": symbol,
+                        "spread_type_requested": requested_spread_type,
+                        "error": (
+                            "Underlying quality score below min_quality_score filter "
+                            f"({min_quality_score})."
+                        ),
+                    }
+                )
+                continue
+
+            matched_candidates = _filter_spread_candidates(
+                evaluation,
+                min_return_on_risk_pct=min_return_on_risk_pct,
+                min_probability_of_profit=min_probability_of_profit,
+                max_risk=max_risk,
+                max_short_delta=max_short_delta,
+                exclude_earnings=exclude_earnings,
+            )
+            if not matched_candidates:
+                skipped.append(
+                    {
+                        "symbol": symbol,
+                        "spread_type_requested": requested_spread_type,
+                        "error": (
+                            "No spread candidates passed the available option-chain data "
+                            "and filter constraints."
+                        ),
+                    }
+                )
+                continue
+
+            best = matched_candidates[0]
+            ranked_candidates.append(
+                {
+                    "symbol": symbol,
+                    "spread_type_requested": requested_spread_type,
+                    "price": evaluation["stock_price"],
+                    "classification": sym.classification,
+                    "stock_quality_score": quality_score,
+                    "quality_score": quality_score,
+                    "technical_score": evaluation["technical_score"],
+                    "resolved_directional_view": evaluation["resolved_view"],
+                    "comparison_score": best.get("spread_score"),
+                    "spread_score": best.get("spread_score"),
+                    "score": best.get("spread_score"),
+                    "rating": best.get("rating"),
+                    "warnings": best.get("warnings") or [],
+                    "reasons": best.get("reasons") or [],
+                    "best_spread": best,
+                }
+            )
+
+    ranked_candidates.sort(
+        key=lambda item: (
+            item.get("comparison_score") or 0,
+            item.get("stock_quality_score") or 0,
+            item.get("best_spread", {}).get("return_on_risk_pct")
+            or item.get("best_spread", {}).get("reward_to_risk")
+            or 0,
+        ),
+        reverse=True,
+    )
+
+    comparison_mode = "ticker_comparison"
+    if len(symbols) == 1 and len(spread_types) > 1:
+        comparison_mode = "spread_type_comparison"
+    elif len(symbols) > 1 and len(spread_types) > 1:
+        comparison_mode = "matrix_comparison"
+
+    return json.dumps(
+        {
+            "symbols_requested": symbols,
+            "spread_types_requested": spread_types,
+            "comparison_mode": comparison_mode,
+            "candidates_compared": len(ranked_candidates),
+            "winner": ranked_candidates[0] if ranked_candidates else None,
+            "ranked_candidates": ranked_candidates,
+            "skipped": skipped,
+            "filters_applied": {
+                "directional_view": directional_view,
+                "risk_profile": risk_profile,
+                "max_dte": max_dte,
+                "min_credit": min_credit,
+                "max_debit": max_debit,
+                "max_risk": max_risk,
+                "width": preferred_width,
+                "min_return_on_risk_pct": min_return_on_risk_pct,
+                "min_probability_of_profit": min_probability_of_profit,
+                "min_quality_score": min_quality_score,
+                "max_short_delta": max_short_delta,
+                "exclude_earnings": exclude_earnings,
+            },
+        },
+        default=_json_default,
+    )
 
 
 def _handle_compare_put_candidates(args: dict) -> str:
@@ -2717,11 +5702,20 @@ def handle_tool_call(tool_name: str, tool_args: dict) -> str:
     if tool_name == "get_covered_call_opportunity":
         return _handle_covered_call_opportunity(tool_args)
 
+    if tool_name == "get_spread_opportunity":
+        return _handle_spread_opportunity(tool_args)
+
     if tool_name == "scan_put_opportunities":
         return _handle_scan_put_opportunities(tool_args)
 
+    if tool_name == "scan_spread_opportunities":
+        return _handle_scan_spread_opportunities(tool_args)
+
     if tool_name == "scan_covered_call_opportunities":
         return _handle_scan_covered_call_opportunities(tool_args)
+
+    if tool_name == "compare_spread_candidates":
+        return _handle_compare_spread_candidates(tool_args)
 
     if tool_name == "compare_put_candidates":
         return _handle_compare_put_candidates(tool_args)

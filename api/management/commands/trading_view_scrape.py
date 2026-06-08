@@ -90,10 +90,24 @@ class TradingViewOptions:
         "https://scanner.tradingview.com/global/scan2?label-product=options-builder"
     )
     SYMBOL_URL = "https://scanner.tradingview.com/symbol"
+    VOI_LENS_URL = (
+        "https://options-charting.tradingview.com/v1/"
+        "voi-lens/{symbol}?label-product=product_page_volume_tab"
+    )
     HEADERS = {
         "User-Agent": "Mozilla/5.0",
         "Accept": "application/json",
         "Content-Type": "text/plain;charset=UTF-8",
+        "Referer": "https://www.tradingview.com/",
+    }
+    VOI_LENS_HEADERS = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/148.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json",
+        "Origin": "https://www.tradingview.com",
         "Referer": "https://www.tradingview.com/",
     }
 
@@ -255,6 +269,21 @@ class TradingViewOptions:
         }
         return self.post_options(payload)
 
+    def get_expiration_volume(
+        self,
+        exchange: str,
+        ticker: str,
+        expiration: int,
+    ) -> int | None:
+        encoded_symbol = urllib.parse.quote(f"{exchange}:{ticker}", safe="")
+        response = self._request(
+            "GET",
+            self.VOI_LENS_URL.format(symbol=encoded_symbol),
+            headers=self.VOI_LENS_HEADERS,
+            timeout=30,
+        )
+        return self.parse_expiration_volume(response.json(), expiration)
+
     @staticmethod
     def parse_chain_response(data: dict[str, Any]) -> list[dict[str, Any]]:
         fields = data["fields"]
@@ -268,6 +297,50 @@ class TradingViewOptions:
             rows.append(row)
 
         return rows
+
+    @classmethod
+    def parse_expiration_volume(
+        cls,
+        data: dict[str, Any],
+        expiration: int,
+    ) -> int | None:
+        items = data.get("items")
+        if not isinstance(items, list):
+            raise ValueError("Missing or invalid VOI lens items payload")
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if cls._coerce_int(item.get("exp")) != expiration:
+                continue
+
+            strikes = item.get("strikes")
+            if not isinstance(strikes, list):
+                raise ValueError("Missing or invalid VOI lens strikes payload")
+
+            total_volume = 0
+            for row in strikes:
+                if not isinstance(row, dict):
+                    continue
+                total_volume += cls._nested_volume(row.get("c"))
+                total_volume += cls._nested_volume(row.get("p"))
+
+            return total_volume
+
+        return None
+
+    @staticmethod
+    def _nested_volume(payload: Any) -> int:
+        if not isinstance(payload, dict):
+            return 0
+        return TradingViewOptions._coerce_int(payload.get("v")) or 0
+
+    @staticmethod
+    def _coerce_int(value: Any) -> int | None:
+        try:
+            return int(Decimal(str(value)))
+        except (InvalidOperation, TypeError, ValueError):
+            return None
 
 class FinancialModelingPrepClient:
     BASE_URL = "https://financialmodelingprep.com/stable"
@@ -622,10 +695,11 @@ class Command(BaseCommand):
         if price_client is None:
             underlying_price = self._to_decimal(symbol.price)
             monthly_rsi = symbol.rsi
-            fmp_volume = None
         else:
             try:
-                underlying_price_raw, fmp_volume = price_client.get_price_and_volume(symbol.ticker)
+                underlying_price_raw, _quote_volume = price_client.get_price_and_volume(
+                    symbol.ticker
+                )
                 underlying_price = self._to_decimal(underlying_price_raw)
                 monthly_rsi = (
                     self._to_decimal(price_client.get_rsi(symbol.ticker))
@@ -718,6 +792,26 @@ class Command(BaseCommand):
                 f"TradingView returned invalid chain data for {exchange}:{symbol.ticker} {selected}."
             ) from exc
 
+        try:
+            expiration_volume = client.get_expiration_volume(
+                exchange=exchange,
+                ticker=symbol.ticker,
+                expiration=selected,
+            )
+        except requests.RequestException as exc:
+            raise CommandError(
+                self._format_tradingview_request_error(
+                    exchange=exchange,
+                    ticker=symbol.ticker,
+                    exc=exc,
+                    context=f"volume {selected}",
+                )
+            ) from exc
+        except (KeyError, TypeError, ValueError) as exc:
+            raise CommandError(
+                f"TradingView returned invalid volume data for {exchange}:{symbol.ticker} {selected}."
+            ) from exc
+
         roi_candidates = self._build_roi_candidates(
             chain=chain,
             delta_min=delta_min,
@@ -766,7 +860,7 @@ class Command(BaseCommand):
             if best_candidate is not None
             else None
         )
-        option_volume = self._to_int(fmp_volume) if best_candidate else None
+        option_volume = self._to_int(expiration_volume)
         option_iv = self._to_decimal(best_candidate.get("iv")) if best_candidate else None
         self._validate_snapshot_consistency(
             ticker=symbol.ticker,
