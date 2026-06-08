@@ -1988,8 +1988,8 @@ class TradingViewScrapeCommandTests(APITestCase):
             "iv": iv,
         }
 
-    def test_parse_expiration_volume_sums_call_and_put_volume_for_selected_expiration(self) -> None:
-        volume = TradingViewOptions.parse_expiration_volume(
+    def test_parse_expiration_volume_data_sums_and_indexes_selected_expiration(self) -> None:
+        volume_data = TradingViewOptions.parse_expiration_volume_data(
             {
                 "items": [
                     {
@@ -2005,7 +2005,15 @@ class TradingViewScrapeCommandTests(APITestCase):
             20260717,
         )
 
-        self.assertEqual(volume, 240)
+        self.assertEqual(volume_data["total_volume"], 240)
+        self.assertEqual(
+            volume_data["strike_volumes"]["95"],
+            {"call_volume": 120, "put_volume": 80, "total_volume": 200},
+        )
+        self.assertEqual(
+            volume_data["strike_volumes"]["100"],
+            {"call_volume": 15, "put_volume": 25, "total_volume": 40},
+        )
 
     def test_parse_expiration_volume_returns_none_when_expiration_missing(self) -> None:
         volume = TradingViewOptions.parse_expiration_volume(
@@ -2021,6 +2029,43 @@ class TradingViewScrapeCommandTests(APITestCase):
         )
 
         self.assertIsNone(volume)
+
+    def test_apply_contract_volumes_maps_lens_data_onto_chain_rows(self) -> None:
+        chain = [
+            self._option_row(
+                strike="95",
+                bid="1.00",
+                ask="1.20",
+                delta="-0.30",
+                option_symbol="AAPL_PUT_95",
+                option_type="put",
+            ),
+            self._option_row(
+                strike="95",
+                bid="0.80",
+                ask="1.00",
+                delta="0.25",
+                option_symbol="AAPL_CALL_95",
+                option_type="call",
+            ),
+        ]
+
+        TradingViewOptions.apply_contract_volumes(
+            chain,
+            {
+                "95": {
+                    "call_volume": 44,
+                    "put_volume": 66,
+                    "total_volume": 110,
+                }
+            },
+        )
+
+        self.assertEqual(chain[0]["contract_volume"], 66)
+        self.assertEqual(chain[0]["put_volume"], 66)
+        self.assertEqual(chain[0]["call_volume"], 44)
+        self.assertEqual(chain[0]["total_volume_at_strike"], 110)
+        self.assertEqual(chain[1]["contract_volume"], 44)
 
     @patch("api.management.commands.trading_view_scrape.certifi.where", return_value="dummy.pem")
     @patch("api.management.commands.trading_view_scrape.urllib.request.urlopen")
@@ -2190,7 +2235,10 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.price_client.get_rsi.return_value = "55.75"
         client = MagicMock()
         client.get_expirations.return_value = [expiration]
-        client.get_expiration_volume.return_value = 1240
+        client.get_expiration_volume_data.return_value = {
+            "total_volume": 1240,
+            "strike_volumes": {"95": {"call_volume": 300, "put_volume": 940, "total_volume": 1240}},
+        }
         client.get_chain.return_value = [
             self._option_row(
                 strike="95",
@@ -2221,6 +2269,10 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.assertEqual(self.symbol.rsi, Decimal("55.75"))
         self.assertEqual(self.symbol.option_volume, 1240)
         self.assertEqual(self.symbol.option_iv, Decimal("24.1250"))
+        self.assertEqual(self.symbol.option_data["contract_volume"], 940)
+        self.assertEqual(self.symbol.option_data["put_volume"], 940)
+        self.assertEqual(self.symbol.option_data["call_volume"], 300)
+        self.assertEqual(self.symbol.option_data["total_volume_at_strike"], 1240)
         self.price_client.get_rsi.assert_called_once_with("AAPL")
 
     def test_process_symbol_reports_429_with_operator_guidance(self) -> None:
@@ -2255,7 +2307,14 @@ class TradingViewScrapeCommandTests(APITestCase):
         client = MagicMock()
         self.price_client.get_rsi.return_value = "55.75"
         client.get_expirations.return_value = [expiration]
-        client.get_expiration_volume.return_value = 980
+        client.get_expiration_volume_data.return_value = {
+            "total_volume": 980,
+            "strike_volumes": {
+                "95": {"call_volume": 180, "put_volume": 500, "total_volume": 680},
+                "94": {"call_volume": 90, "put_volume": 140, "total_volume": 230},
+                "93": {"call_volume": 15, "put_volume": 55, "total_volume": 70},
+            },
+        }
         client.get_chain.return_value = [
             self._option_row(
                 strike="95",
@@ -2308,6 +2367,7 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.assertEqual(self.symbol.option_data["strike_price"], 95.0)
         self.assertEqual(self.symbol.option_volume, 980)
         self.assertEqual(self.symbol.option_iv, Decimal("24.1250"))
+        self.assertEqual(self.symbol.option_data["contract_volume"], 500)
         self.assertEqual(
             [item["option_symbol"] for item in self.symbol.option_data["alternatives"]],
             ["AAPL_ALT_1", "AAPL_ALT_2"],
@@ -2315,6 +2375,10 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.assertEqual(
             [item["delta"] for item in self.symbol.option_data["alternatives"]],
             [-0.31, -0.28],
+        )
+        self.assertEqual(
+            [item["contract_volume"] for item in self.symbol.option_data["alternatives"]],
+            [140, 55],
         )
 
     def test_process_symbol_refreshes_option_volume_and_clears_iv_without_roi_candidate(self) -> None:
@@ -2330,7 +2394,10 @@ class TradingViewScrapeCommandTests(APITestCase):
         client = MagicMock()
         self.price_client.get_rsi.return_value = "55.75"
         client.get_expirations.return_value = [expiration]
-        client.get_expiration_volume.return_value = 620
+        client.get_expiration_volume_data.return_value = {
+            "total_volume": 620,
+            "strike_volumes": {"95": {"call_volume": 20, "put_volume": 140, "total_volume": 160}},
+        }
         client.get_chain.return_value = [
             self._option_row(
                 strike="95",
@@ -2368,7 +2435,14 @@ class TradingViewScrapeCommandTests(APITestCase):
         client = MagicMock()
         self.price_client.get_rsi.return_value = "55.75"
         client.get_expirations.return_value = [expiration]
-        client.get_expiration_volume.return_value = 840
+        client.get_expiration_volume_data.return_value = {
+            "total_volume": 840,
+            "strike_volumes": {
+                "95": {"call_volume": 90, "put_volume": 130, "total_volume": 220},
+                "110": {"call_volume": 250, "put_volume": 40, "total_volume": 290},
+                "115": {"call_volume": 330, "put_volume": 0, "total_volume": 330},
+            },
+        }
         client.get_chain.return_value = [
             self._option_row(
                 strike="95",
@@ -2421,13 +2495,27 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.assertIsNone(self.symbol.option_data)
         self.assertEqual(self.symbol.option_volume, 840)
         self.assertEqual(len(self.symbol.call_data), 2)
+        self.assertEqual(
+            [item["contract_volume"] for item in self.symbol.call_data],
+            [250, 330],
+        )
+        self.assertEqual(
+            [item["total_volume_at_strike"] for item in self.symbol.call_data],
+            [290, 330],
+        )
 
     def test_process_symbol_reports_no_qualifying_calls_when_no_put_candidate(self) -> None:
         expiration = self._expiration_int()
         client = MagicMock()
         self.price_client.get_rsi.return_value = "55.75"
         client.get_expirations.return_value = [expiration]
-        client.get_expiration_volume.return_value = 410
+        client.get_expiration_volume_data.return_value = {
+            "total_volume": 410,
+            "strike_volumes": {
+                "95": {"call_volume": 50, "put_volume": 140, "total_volume": 190},
+                "130": {"call_volume": 60, "put_volume": 10, "total_volume": 70},
+            },
+        }
         client.get_chain.return_value = [
             self._option_row(
                 strike="95",
@@ -2566,7 +2654,10 @@ class TradingViewScrapeCommandTests(APITestCase):
 
         client = MagicMock()
         client.get_expirations.return_value = [expiration]
-        client.get_expiration_volume.return_value = 560
+        client.get_expiration_volume_data.return_value = {
+            "total_volume": 560,
+            "strike_volumes": {"95": {"call_volume": 110, "put_volume": 210, "total_volume": 320}},
+        }
         client.get_chain.return_value = [
             self._option_row(
                 strike="95",
@@ -2601,7 +2692,10 @@ class TradingViewScrapeCommandTests(APITestCase):
         expiration = self._expiration_int()
         client = MagicMock()
         client.get_expirations.return_value = [expiration]
-        client.get_expiration_volume.return_value = 730
+        client.get_expiration_volume_data.return_value = {
+            "total_volume": 730,
+            "strike_volumes": {"95": {"call_volume": 120, "put_volume": 260, "total_volume": 380}},
+        }
         client.get_chain.return_value = [
             self._option_row(
                 strike="95",
@@ -2639,7 +2733,10 @@ class TradingViewScrapeCommandTests(APITestCase):
         client = MagicMock()
         self.price_client.get_rsi.return_value = "60.02"
         client.get_expirations.return_value = [expiration]
-        client.get_expiration_volume.return_value = 205
+        client.get_expiration_volume_data.return_value = {
+            "total_volume": 205,
+            "strike_volumes": {"245": {"call_volume": 5, "put_volume": 25, "total_volume": 30}},
+        }
         client.get_chain.return_value = [
             self._option_row(
                 strike="245",
@@ -2698,7 +2795,10 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.price_client.get_rsi.return_value = "55.75"
         client = MagicMock()
         client.get_expirations.return_value = [expiration]
-        client.get_expiration_volume.return_value = 654
+        client.get_expiration_volume_data.return_value = {
+            "total_volume": 654,
+            "strike_volumes": {"95": {"call_volume": 200, "put_volume": 454, "total_volume": 654}},
+        }
         client.get_chain.return_value = [
             self._option_row(
                 strike="95",
@@ -2726,6 +2826,7 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.assertFalse(was_cleared)
         self.symbol.refresh_from_db()
         self.assertEqual(self.symbol.option_volume, 654)
+        self.assertEqual(self.symbol.option_data["contract_volume"], 454)
         self.price_client.get_price_and_volume.assert_called_once_with("AAPL")
 
     def test_symbol_serializer_returns_raw_option_and_call_data(self) -> None:

@@ -269,12 +269,12 @@ class TradingViewOptions:
         }
         return self.post_options(payload)
 
-    def get_expiration_volume(
+    def get_expiration_volume_data(
         self,
         exchange: str,
         ticker: str,
         expiration: int,
-    ) -> int | None:
+    ) -> dict[str, Any]:
         encoded_symbol = urllib.parse.quote(f"{exchange}:{ticker}", safe="")
         response = self._request(
             "GET",
@@ -282,7 +282,19 @@ class TradingViewOptions:
             headers=self.VOI_LENS_HEADERS,
             timeout=30,
         )
-        return self.parse_expiration_volume(response.json(), expiration)
+        return self.parse_expiration_volume_data(response.json(), expiration)
+
+    def get_expiration_volume(
+        self,
+        exchange: str,
+        ticker: str,
+        expiration: int,
+    ) -> int | None:
+        return self.get_expiration_volume_data(
+            exchange=exchange,
+            ticker=ticker,
+            expiration=expiration,
+        ).get("total_volume")
 
     @staticmethod
     def parse_chain_response(data: dict[str, Any]) -> list[dict[str, Any]]:
@@ -299,11 +311,11 @@ class TradingViewOptions:
         return rows
 
     @classmethod
-    def parse_expiration_volume(
+    def parse_expiration_volume_data(
         cls,
         data: dict[str, Any],
         expiration: int,
-    ) -> int | None:
+    ) -> dict[str, Any]:
         items = data.get("items")
         if not isinstance(items, list):
             raise ValueError("Missing or invalid VOI lens items payload")
@@ -319,21 +331,93 @@ class TradingViewOptions:
                 raise ValueError("Missing or invalid VOI lens strikes payload")
 
             total_volume = 0
+            strike_volumes: dict[str, dict[str, int]] = {}
             for row in strikes:
                 if not isinstance(row, dict):
                     continue
-                total_volume += cls._nested_volume(row.get("c"))
-                total_volume += cls._nested_volume(row.get("p"))
+                call_volume = cls._nested_volume(row.get("c"))
+                put_volume = cls._nested_volume(row.get("p"))
+                strike_total = call_volume + put_volume
+                total_volume += strike_total
 
-            return total_volume
+                strike_key = cls._strike_key(row.get("s"))
+                if strike_key is None:
+                    continue
 
-        return None
+                strike_volumes[strike_key] = {
+                    "call_volume": call_volume,
+                    "put_volume": put_volume,
+                    "total_volume": strike_total,
+                }
+
+            return {
+                "total_volume": total_volume,
+                "strike_volumes": strike_volumes,
+            }
+
+        return {
+            "total_volume": None,
+            "strike_volumes": {},
+        }
+
+    @classmethod
+    def parse_expiration_volume(
+        cls,
+        data: dict[str, Any],
+        expiration: int,
+    ) -> int | None:
+        return cls.parse_expiration_volume_data(data, expiration).get("total_volume")
+
+    @classmethod
+    def apply_contract_volumes(
+        cls,
+        chain: list[dict[str, Any]],
+        strike_volumes: dict[str, dict[str, int]],
+    ) -> list[dict[str, Any]]:
+        for row in chain:
+            strike_key = cls._strike_key(row.get("strike_price") or row.get("strike"))
+            if strike_key is None:
+                continue
+
+            volume_data = strike_volumes.get(strike_key)
+            if not volume_data:
+                continue
+
+            row["call_volume"] = volume_data["call_volume"]
+            row["put_volume"] = volume_data["put_volume"]
+            row["total_volume_at_strike"] = volume_data["total_volume"]
+
+            option_type = str(row.get("option_type", "")).strip().lower()
+            if option_type == "call":
+                row["contract_volume"] = volume_data["call_volume"]
+            elif option_type == "put":
+                row["contract_volume"] = volume_data["put_volume"]
+
+        return chain
 
     @staticmethod
     def _nested_volume(payload: Any) -> int:
         if not isinstance(payload, dict):
             return 0
         return TradingViewOptions._coerce_int(payload.get("v")) or 0
+
+    @staticmethod
+    def _coerce_decimal(value: Any) -> Decimal | None:
+        try:
+            return Decimal(str(value))
+        except (InvalidOperation, TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _strike_key(cls, value: Any) -> str | None:
+        decimal_value = cls._coerce_decimal(value)
+        if decimal_value is None:
+            return None
+
+        text = format(decimal_value.normalize(), "f")
+        if "." in text:
+            text = text.rstrip("0").rstrip(".")
+        return text
 
     @staticmethod
     def _coerce_int(value: Any) -> int | None:
@@ -793,7 +877,7 @@ class Command(BaseCommand):
             ) from exc
 
         try:
-            expiration_volume = client.get_expiration_volume(
+            volume_data = client.get_expiration_volume_data(
                 exchange=exchange,
                 ticker=symbol.ticker,
                 expiration=selected,
@@ -811,6 +895,12 @@ class Command(BaseCommand):
             raise CommandError(
                 f"TradingView returned invalid volume data for {exchange}:{symbol.ticker} {selected}."
             ) from exc
+
+        expiration_volume = self._to_int(volume_data.get("total_volume"))
+        chain = client.apply_contract_volumes(
+            chain,
+            volume_data.get("strike_volumes", {}),
+        )
 
         roi_candidates = self._build_roi_candidates(
             chain=chain,
