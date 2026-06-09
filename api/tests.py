@@ -3200,6 +3200,192 @@ class PutWheelAgentViewTests(APITestCase):
             any(item["symbol"] == "MISSING" for item in payload["skipped"])
         )
 
+    def test_handle_put_wheel_opportunity_applies_cash_budget(self) -> None:
+        expiration = date.today() + timedelta(days=31)
+        Symbol.objects.create(
+            ticker="BUD",
+            price=Decimal("115.00"),
+            rsi=Decimal("48.00"),
+            score=88,
+            classification="High-quality compounder",
+            liquidity=Symbol.LIQUIDITY_GOOD,
+            technical_score=Symbol.TechnicalScore.BUY,
+            option_data={
+                "puts": [
+                    {
+                        "strike": 110,
+                        "expiration": expiration.isoformat(),
+                        "bid": 5.80,
+                        "ask": 6.20,
+                        "delta": -0.28,
+                        "iv": 38.00,
+                        "volume": 220,
+                        "open_interest": 950,
+                    },
+                    {
+                        "strike": 95,
+                        "expiration": expiration.isoformat(),
+                        "bid": 2.30,
+                        "ask": 2.50,
+                        "delta": -0.22,
+                        "iv": 34.00,
+                        "volume": 240,
+                        "open_interest": 1200,
+                    },
+                ]
+            },
+        )
+
+        payload = json.loads(
+            agent_views._handle_put_wheel_opportunity(
+                "BUD",
+                account_size=10_000,
+            )
+        )
+
+        self.assertEqual(payload["best_put_opportunity"]["contract"]["strike"], 95)
+        self.assertEqual(payload["best_put_opportunity"]["contract"]["cash_required"], 9500)
+        self.assertEqual(payload["best_put_opportunity"]["contract"]["premium_received"], 240.0)
+        self.assertEqual(payload["best_put_opportunity"]["contract"]["breakeven"], 92.6)
+        self.assertEqual(payload["best_put_opportunity"]["contract"]["contracts_affordable"], 1)
+        self.assertEqual(payload["summary"]["cash_required"], 9500)
+        self.assertEqual(payload["summary"]["contracts_affordable"], 1)
+        self.assertEqual(payload["filters_applied"]["effective_max_cash_required"], 10000)
+        self.assertEqual(len(payload["top_put_candidates"]), 1)
+
+    def test_handle_compare_put_candidates_respects_cash_budget(self) -> None:
+        expiration = date.today() + timedelta(days=31)
+        Symbol.objects.create(
+            ticker="FIT",
+            price=Decimal("102.00"),
+            rsi=Decimal("49.00"),
+            score=84,
+            classification="High-quality compounder",
+            liquidity=Symbol.LIQUIDITY_GOOD,
+            technical_score=Symbol.TechnicalScore.BUY,
+            option_data={
+                "puts": [
+                    {
+                        "strike": 95,
+                        "expiration": expiration.isoformat(),
+                        "bid": 2.00,
+                        "ask": 2.20,
+                        "delta": -0.24,
+                        "iv": 31.00,
+                        "volume": 180,
+                        "open_interest": 900,
+                    }
+                ]
+            },
+        )
+        Symbol.objects.create(
+            ticker="RICH",
+            price=Decimal("140.00"),
+            rsi=Decimal("46.00"),
+            score=90,
+            classification="High-quality compounder",
+            liquidity=Symbol.LIQUIDITY_GOOD,
+            technical_score=Symbol.TechnicalScore.BUY,
+            option_data={
+                "puts": [
+                    {
+                        "strike": 120,
+                        "expiration": expiration.isoformat(),
+                        "bid": 4.40,
+                        "ask": 4.80,
+                        "delta": -0.25,
+                        "iv": 35.00,
+                        "volume": 210,
+                        "open_interest": 1100,
+                    }
+                ]
+            },
+        )
+
+        payload = json.loads(
+            agent_views._handle_compare_put_candidates(
+                {
+                    "symbols": ["FIT", "RICH"],
+                    "account_size": 10_000,
+                }
+            )
+        )
+
+        self.assertEqual(payload["symbols_compared"], 1)
+        self.assertEqual(payload["winner"]["symbol"], "FIT")
+        self.assertEqual(payload["winner"]["best_contract"]["cash_required"], 9500)
+        self.assertEqual(payload["filters_applied"]["effective_max_cash_required"], 10000)
+        self.assertTrue(
+            any(
+                item["symbol"] == "RICH"
+                and item["error"] == "No put contracts fit the cash-secured budget constraint."
+                for item in payload["skipped"]
+            )
+        )
+
+    def test_handle_scan_put_opportunities_respects_cash_budget(self) -> None:
+        expiration = date.today() + timedelta(days=31)
+        Symbol.objects.create(
+            ticker="SMALL",
+            price=Decimal("104.00"),
+            rsi=Decimal("51.00"),
+            score=86,
+            classification="High-quality compounder",
+            liquidity=Symbol.LIQUIDITY_GOOD,
+            technical_score=Symbol.TechnicalScore.BUY,
+            option_data={
+                "puts": [
+                    {
+                        "strike": 95,
+                        "expiration": expiration.isoformat(),
+                        "bid": 2.10,
+                        "ask": 2.30,
+                        "delta": -0.23,
+                        "iv": 29.00,
+                        "volume": 240,
+                        "open_interest": 1400,
+                    }
+                ]
+            },
+        )
+        Symbol.objects.create(
+            ticker="LARGE",
+            price=Decimal("130.00"),
+            rsi=Decimal("47.00"),
+            score=92,
+            classification="High-quality compounder",
+            liquidity=Symbol.LIQUIDITY_GOOD,
+            technical_score=Symbol.TechnicalScore.STRONG_BUY,
+            option_data={
+                "puts": [
+                    {
+                        "strike": 115,
+                        "expiration": expiration.isoformat(),
+                        "bid": 5.00,
+                        "ask": 5.40,
+                        "delta": -0.24,
+                        "iv": 36.00,
+                        "volume": 280,
+                        "open_interest": 1600,
+                    }
+                ]
+            },
+        )
+
+        payload = json.loads(
+            agent_views._handle_scan_put_opportunities(
+                {"account_size": 10_000}
+            )
+        )
+
+        self.assertEqual(payload["results_returned"], 1)
+        self.assertEqual(payload["opportunities"][0]["ticker"], "SMALL")
+        self.assertEqual(payload["opportunities"][0]["cash_required"], 9500)
+        self.assertEqual(payload["opportunities"][0]["premium_received"], 220.0)
+        self.assertEqual(payload["opportunities"][0]["breakeven"], 92.8)
+        self.assertEqual(payload["opportunities"][0]["contracts_affordable"], 1)
+        self.assertEqual(payload["filters_applied"]["effective_max_cash_required"], 10000)
+
     def test_handle_compare_covered_call_candidates_ranks_symbols_and_filters_errors(
         self,
     ) -> None:
@@ -4806,4 +4992,3 @@ class PutWheelAgentViewTests(APITestCase):
             [item["spread_type_requested"] for item in payload["ranked_candidates"]],
             ["bull_call_debit_spread", "bull_put_credit_spread"],
         )
-

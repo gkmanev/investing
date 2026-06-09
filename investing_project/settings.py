@@ -32,6 +32,13 @@ SECRET_KEY = os.getenv(
 )
 
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+AGENT_MODEL_PROVIDER = os.getenv("AGENT_MODEL_PROVIDER", "anthropic").lower()
+AGENT_MODEL = os.getenv(
+    "AGENT_MODEL",
+    "claude-sonnet-4-5" if AGENT_MODEL_PROVIDER == "anthropic" else "gpt-4o-mini",
+)
+AGENT_ANTHROPIC_MAX_TOKENS = int(os.getenv("AGENT_ANTHROPIC_MAX_TOKENS", "4096"))
 AGENT_MAX_ITERATIONS = int(os.getenv("AGENT_MAX_ITERATIONS", "10"))
 AGENT_OPENAI_TIMEOUT_SECONDS = int(os.getenv("AGENT_OPENAI_TIMEOUT_SECONDS", "45"))
 AGENT_OVERALL_TIMEOUT_SECONDS = int(os.getenv("AGENT_OVERALL_TIMEOUT_SECONDS", "90"))

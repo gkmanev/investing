@@ -9,6 +9,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Dict, List
 
+from anthropic import Anthropic
 from django.conf import settings
 from django.db.models import Q
 from openai import OpenAI
@@ -50,7 +51,9 @@ Never give direct buy/sell recommendations — frame as analytical observations.
 If the analyze_stock tool returns an error, report the exact error message to the user without rephrasing or softening it.
 
 If the user asks about selling puts, wheel strategy, CSP, income, assignment comfort, option strike, expiration, delta, ROI, IV, or whether a specific ticker is good for put selling now, call get_put_wheel_opportunity.
-- Always cite the specific ROI %, IV %, volume, current stock price, strike, delta, expiration, stock technical score, stock quality score, and put opportunity rating/score from the tool response.
+- If the user provides account size, available cash, buying power, or a maximum cash-secured put budget, treat it as a hard collateral cap and pass it through as `account_size` or `max_cash_required`.
+- Always cite the specific ROI %, IV %, volume, current stock price, strike, delta, expiration, cash required, premium received, breakeven, stock technical score, stock quality score, and put opportunity rating/score from the tool response.
+- Include `contracts_affordable` whenever the tool returns it.
 - Use `technical_score` only for the stock's technical rating (`Strong Buy`, `Buy`, `Neutral`, `Sell`, `Strong Sell`).
 - Use `stock_quality_score` / `quality_score` only for the underlying stock's quality score. 
 - Use `rating` / `score` only for the evaluated put contract opportunity. Never call the opportunity score a technical score.
@@ -162,12 +165,13 @@ Always cite the specific numbers returned by the tool:
 - warnings
 
 
-If the user asks for best ideas for PUTs, Wheels and CSP - Cash Secured Puts across the market, top candidates, screeners, scans, or ranked opportunities, call scan_put_opportunities.
+If the user asks for best ideas for PUTs, Wheels and CSP - Cash Secured Puts across the market, top candidates, screeners, scans, ranked opportunities, or generally asks which puts to suggest without naming a ticker, call scan_put_opportunities.
 - The tool scans all tracked symbols and returns the highest-scoring cash-secured put contracts ranked by opportunity score.
-- Optional filters: limit (number of results), min_roi (%), max_dte (days to expiration), min_price, max_price, max_delta.
+- Optional filters: limit (number of results), min_roi (%), max_dte (days to expiration), min_price, max_price, max_delta, and `account_size` / `max_cash_required` for CSP affordability.
 
 When interpreting scan_put_opportunities results:
-- Present results as a ranked list with ticker, strike, expiration, IV %, ROI %, stock quality score, stock technical score, delta, and put opportunity rating/score.
+- If the user provides a dollar budget for cash-secured puts, treat it as a hard affordability filter rather than a preference.
+- Present results as a ranked list with ticker, strike, expiration, IV %, ROI %, cash required, premium received, breakeven, contracts affordable when available, stock quality score, stock technical score, delta, and put opportunity rating/score.
 - Highlight any warnings (wide spreads, low liquidity, earnings risk) for each candidate.
 - Use `technical_score` only for the stock's technical rating and `stock_quality_score` / `quality_score` only for the underlying stock's quality score.
 - Use `rating` / `score` only for the evaluated put contract opportunity.
@@ -188,6 +192,7 @@ Do not call scan_put_opportunities if the user gives a specific list of tickers.
 Use scan_put_opportunities only when the user asks for the best candidates across the whole market or all tracked symbols.
 
 When interpreting compare_put_candidates results:
+- If the user provides a dollar budget for cash-secured puts, treat it as a hard affordability filter rather than a preference.
 - Present the results as a ranked comparison.
 - Clearly separate option attractiveness from assignment comfort.
 - Do not choose only by ROI. A high ROI with poor fundamentals, weak technicals, wide spreads, or earnings risk should not be ranked as conservative.
@@ -203,6 +208,10 @@ Always cite the specific numbers returned by the tool:
 - delta
 - IV %
 - ROI %
+- cash required
+- premium received
+- breakeven
+- contracts affordable, if available
 - downside buffer %
 - volume and open interest, if available
 - bid/ask spread, if available
@@ -254,7 +263,15 @@ TOOLS = [
                     "symbol": {
                         "type": "string",
                         "description": "Stock ticker symbol e.g. AAPL, MSFT, NVDA",
-                    }
+                    },
+                    "account_size": {
+                        "type": "number",
+                        "description": "Optional total cash available for the cash-secured put, e.g. 10000.",
+                    },
+                    "max_cash_required": {
+                        "type": "number",
+                        "description": "Optional maximum collateral allowed for one cash-secured put position.",
+                    },
                 },
                 "required": ["symbol"],
             },
@@ -467,6 +484,14 @@ TOOLS = [
                     "max_delta": {
                         "type": "number",
                         "description": "Maximum absolute delta to include (for example 0.30). Optional.",
+                    },
+                    "account_size": {
+                        "type": "number",
+                        "description": "Optional total cash available for cash-secured puts, e.g. 10000.",
+                    },
+                    "max_cash_required": {
+                        "type": "number",
+                        "description": "Optional maximum collateral allowed for one cash-secured put position.",
                     },
                 },
                 "required": [],
@@ -702,6 +727,14 @@ TOOLS = [
                         "type": "number",
                         "description": "Minimum stock quality score",
                     },
+                    "account_size": {
+                        "type": "number",
+                        "description": "Optional total cash available for cash-secured puts, e.g. 10000.",
+                    },
+                    "max_cash_required": {
+                        "type": "number",
+                        "description": "Optional maximum collateral allowed for one cash-secured put position.",
+                    },
                 },
                 "required": ["symbols"],
             },
@@ -736,6 +769,15 @@ TOOLS = [
             },
         },
     }
+]
+
+ANTHROPIC_TOOLS = [
+    {
+        "name": tool["function"]["name"],
+        "description": tool["function"]["description"],
+        "input_schema": tool["function"]["parameters"],
+    }
+    for tool in TOOLS
 ]
 
 class FMPClient:
@@ -831,6 +873,37 @@ def _parse_date(value):
         return datetime.fromisoformat(s).date()
     except Exception:
         return None
+
+
+def _resolve_cash_secured_budget(*values):
+    candidates = [value for value in values if value is not None and value > 0]
+    if not candidates:
+        return None
+    return min(candidates)
+
+
+def _build_put_contract_cash_metrics(strike, mid, budget=None):
+    if strike is None:
+        return {
+            "cash_required": None,
+            "premium_received": None,
+            "breakeven": None,
+            "contracts_affordable": None,
+        }
+
+    cash_required = round(strike * 100, 2)
+    premium_received = round(mid * 100, 2) if mid is not None else None
+    breakeven = round(strike - mid, 2) if mid is not None else None
+    contracts_affordable = None
+    if budget is not None and cash_required > 0:
+        contracts_affordable = int(budget // cash_required)
+
+    return {
+        "cash_required": cash_required,
+        "premium_received": premium_received,
+        "breakeven": breakeven,
+        "contracts_affordable": contracts_affordable,
+    }
 
 
 def _extract_put_contracts(option_data):
@@ -4327,7 +4400,8 @@ def _score_put_contract(
     quality_score,
     technical_score,
     next_earnings_date,
-    today
+    today,
+    budget=None,
 ):
     strike = contract["strike"]
     expiration_date = contract["expiration_date"]
@@ -4349,6 +4423,7 @@ def _score_put_contract(
 
     roi = (mid / strike) * 100
     downside_buffer = ((stock_price - strike) / stock_price) * 100
+    cash_metrics = _build_put_contract_cash_metrics(strike, mid, budget=budget)
 
     spread_pct = None
     if bid is not None and ask is not None and ask > 0:
@@ -4515,6 +4590,10 @@ def _score_put_contract(
             "roi": round(roi, 2),
             "downside_buffer": round(downside_buffer, 2),
             "spread_pct": round(spread_pct, 2) if spread_pct is not None else None,
+            "cash_required": cash_metrics["cash_required"],
+            "premium_received": cash_metrics["premium_received"],
+            "breakeven": cash_metrics["breakeven"],
+            "contracts_affordable": cash_metrics["contracts_affordable"],
         },
         "cumulative_score": score,
         "rating": rating,
@@ -4525,13 +4604,22 @@ def _score_put_contract(
 
 
 
-def _handle_put_wheel_opportunity(symbol: str) -> str:
+def _handle_put_wheel_opportunity(
+    symbol: str,
+    *,
+    account_size=None,
+    max_cash_required=None,
+) -> str:
     if not symbol:
         return json.dumps({
             "error": "Missing required symbol"
         })
 
     symbol = symbol.strip().upper()
+    effective_cash_budget = _resolve_cash_secured_budget(
+        account_size,
+        max_cash_required,
+    )
 
     if not re.match(r"^[A-Z0-9.\-]{1,10}$", symbol):
         return json.dumps({
@@ -4581,10 +4669,17 @@ def _handle_put_wheel_opportunity(symbol: str) -> str:
                 if next_earnings_date
                 else None
             ),
+            "filters_applied": {
+                "account_size": account_size,
+                "max_cash_required": max_cash_required,
+                "effective_max_cash_required": effective_cash_budget,
+            },
             "error": "No put contracts found in option_data."
         }, default=_json_default)
 
     evaluated = []
+    total_valid_contracts = 0
+    min_cash_required_seen = None
 
     for contract in put_contracts:
         scored = _score_put_contract(
@@ -4595,12 +4690,29 @@ def _handle_put_wheel_opportunity(symbol: str) -> str:
             technical_score=technical_score,
             next_earnings_date=next_earnings_date,
             today=today,
+            budget=effective_cash_budget,
         )
 
         if scored:
+            total_valid_contracts += 1
+            cash_required = scored["contract"].get("cash_required")
+            if cash_required is not None:
+                if min_cash_required_seen is None or cash_required < min_cash_required_seen:
+                    min_cash_required_seen = cash_required
+            if (
+                effective_cash_budget is not None
+                and cash_required is not None
+                and cash_required > effective_cash_budget
+            ):
+                continue
             evaluated.append(scored)
 
     if not evaluated:
+        error_message = "Put contracts were found, but none had enough valid data to evaluate."
+        if total_valid_contracts > 0 and effective_cash_budget is not None:
+            error_message = (
+                "No put contracts fit the cash-secured budget constraint."
+            )
         return json.dumps({
             "symbol": symbol,
             "price": stock_price,
@@ -4616,7 +4728,13 @@ def _handle_put_wheel_opportunity(symbol: str) -> str:
                 if next_earnings_date
                 else None
             ),
-            "error": "Put contracts were found, but none had enough valid data to evaluate."
+            "filters_applied": {
+                "account_size": account_size,
+                "max_cash_required": max_cash_required,
+                "effective_max_cash_required": effective_cash_budget,
+            },
+            "smallest_cash_required": min_cash_required_seen,
+            "error": error_message,
         }, default=_json_default)
 
     evaluated = sorted(
@@ -4666,6 +4784,11 @@ def _handle_put_wheel_opportunity(symbol: str) -> str:
             if next_earnings_date
             else None
         ),
+        "filters_applied": {
+            "account_size": account_size,
+            "max_cash_required": max_cash_required,
+            "effective_max_cash_required": effective_cash_budget,
+        },
 
         "best_put_opportunity": best,
         "top_put_candidates": top_candidates,
@@ -4682,6 +4805,10 @@ def _handle_put_wheel_opportunity(symbol: str) -> str:
             "best_dte": best["contract"]["dte"],
             "best_roi": best["contract"]["roi"],
             "best_delta": best["contract"]["delta"],
+            "cash_required": best["contract"].get("cash_required"),
+            "premium_received": best["contract"].get("premium_received"),
+            "breakeven": best["contract"].get("breakeven"),
+            "contracts_affordable": best["contract"].get("contracts_affordable"),
             "earnings_risk": best["earnings_before_expiration"],
             "quality_score": quality_score,
             "stock_quality_score": quality_score,
@@ -4906,6 +5033,12 @@ def _handle_scan_put_opportunities(args: dict) -> str:
     min_price = _to_float(args.get("min_price"))
     max_price = _to_float(args.get("max_price"))
     max_delta = _to_float(args.get("max_delta"))
+    account_size = _to_float(args.get("account_size"))
+    max_cash_required = _to_float(args.get("max_cash_required"))
+    effective_cash_budget = _resolve_cash_secured_budget(
+        account_size,
+        max_cash_required,
+    )
     
     today = date.today()
 
@@ -4940,6 +5073,7 @@ def _handle_scan_put_opportunities(args: dict) -> str:
                 technical_score=technical_score,
                 next_earnings_date=next_earnings_date,
                 today=today,
+                budget=effective_cash_budget,
             )
             if scored is None:
                 continue
@@ -4967,6 +5101,12 @@ def _handle_scan_put_opportunities(args: dict) -> str:
             contract_delta = c.get("delta")
             if contract_delta is None or abs(contract_delta) > max_delta:
                 continue
+        if (
+            effective_cash_budget is not None
+            and c.get("cash_required") is not None
+            and c["cash_required"] > effective_cash_budget
+        ):
+            continue
 
         results.append({
             "ticker": sym.ticker,
@@ -4980,6 +5120,10 @@ def _handle_scan_put_opportunities(args: dict) -> str:
             "delta": c["delta"],
             "iv": c["iv"],
             "downside_buffer": c["downside_buffer"],
+            "cash_required": c.get("cash_required"),
+            "premium_received": c.get("premium_received"),
+            "breakeven": c.get("breakeven"),
+            "contracts_affordable": c.get("contracts_affordable"),
             "earnings_risk": best_scored["earnings_before_expiration"],
             
             "stock_quality_score": quality_score,
@@ -5001,6 +5145,9 @@ def _handle_scan_put_opportunities(args: dict) -> str:
             "min_price": min_price,
             "max_price": max_price,
             "max_delta": max_delta,
+            "account_size": account_size,
+            "max_cash_required": max_cash_required,
+            "effective_max_cash_required": effective_cash_budget,
         },
         "opportunities": top,
     }, default=_json_default)
@@ -5454,6 +5601,12 @@ def _handle_compare_put_candidates(args: dict) -> str:
     max_delta = _to_float(args.get("max_delta"))
     min_roi = _to_float(args.get("min_roi"))
     min_quality_score = _to_float(args.get("min_quality_score"))
+    account_size = _to_float(args.get("account_size"))
+    max_cash_required = _to_float(args.get("max_cash_required"))
+    effective_cash_budget = _resolve_cash_secured_budget(
+        account_size,
+        max_cash_required,
+    )
 
     symbols = []
     for value in raw_symbols:
@@ -5470,7 +5623,13 @@ def _handle_compare_put_candidates(args: dict) -> str:
     skipped = []
 
     for symbol in symbols:
-        payload = json.loads(_handle_put_wheel_opportunity(symbol))
+        payload = json.loads(
+            _handle_put_wheel_opportunity(
+                symbol,
+                account_size=account_size,
+                max_cash_required=max_cash_required,
+            )
+        )
         if payload.get("error"):
             skipped.append({"symbol": symbol, "error": payload["error"]})
             continue
@@ -5546,6 +5705,9 @@ def _handle_compare_put_candidates(args: dict) -> str:
             "max_delta": max_delta,
             "min_roi": min_roi,
             "min_quality_score": min_quality_score,
+            "account_size": account_size,
+            "max_cash_required": max_cash_required,
+            "effective_max_cash_required": effective_cash_budget,
         },
     }, default=_json_default)
 
@@ -5702,7 +5864,11 @@ def handle_tool_call(tool_name: str, tool_args: dict) -> str:
             return json.dumps({"error": str(e), "symbol": symbol})
 
     if tool_name == "get_put_wheel_opportunity":
-        return _handle_put_wheel_opportunity(tool_args["symbol"])
+        return _handle_put_wheel_opportunity(
+            tool_args["symbol"],
+            account_size=_to_float(tool_args.get("account_size")),
+            max_cash_required=_to_float(tool_args.get("max_cash_required")),
+        )
 
     if tool_name == "get_covered_call_opportunity":
         return _handle_covered_call_opportunity(tool_args)
@@ -5731,6 +5897,24 @@ def handle_tool_call(tool_name: str, tool_args: dict) -> str:
     return json.dumps({"error": f"Unknown tool: {tool_name}"})
 
 
+def _get_agent_provider() -> str:
+    provider = str(getattr(settings, "AGENT_MODEL_PROVIDER", "anthropic")).strip().lower()
+    if provider not in {"anthropic", "openai"}:
+        raise ValueError(
+            "AGENT_MODEL_PROVIDER must be either 'anthropic' or 'openai'"
+        )
+    return provider
+
+
+def _get_agent_model(provider: str) -> str:
+    configured_model = str(getattr(settings, "AGENT_MODEL", "")).strip()
+    if configured_model:
+        return configured_model
+    if provider == "anthropic":
+        return "claude-sonnet-4-5"
+    return "gpt-4o-mini"
+
+
 def run_agent(
     query: str,
     history: list[dict[str, Any]] | None = None,
@@ -5745,37 +5929,69 @@ def run_agent(
         raise ValueError("history must be a list")
 
     conversation_history = history or []
+    provider = _get_agent_provider()
+    model_name = _get_agent_model(provider)
     max_iterations = max(1, int(getattr(settings, "AGENT_MAX_ITERATIONS", 10)))
-    openai_timeout_seconds = max(
+    llm_timeout_seconds = max(
         1, int(getattr(settings, "AGENT_OPENAI_TIMEOUT_SECONDS", 45))
     )
     overall_timeout_seconds = max(
-        openai_timeout_seconds,
+        llm_timeout_seconds,
         int(getattr(settings, "AGENT_OVERALL_TIMEOUT_SECONDS", 90)),
     )
     openai_max_retries = max(
         0, int(getattr(settings, "AGENT_OPENAI_MAX_RETRIES", 1))
     )
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        *conversation_history,
-        {"role": "user", "content": normalized_query},
-    ]
 
-    client = OpenAI(
-        api_key=os.environ.get("OPENAI_API_KEY"),
-        timeout=openai_timeout_seconds,
-        max_retries=openai_max_retries,
-    )
+    if provider == "anthropic":
+        api_key = getattr(settings, "ANTHROPIC_API_KEY", None) or os.environ.get(
+            "ANTHROPIC_API_KEY"
+        )
+        if not api_key:
+            raise RuntimeError(
+                "ANTHROPIC_API_KEY is not set. Configure it for the service running agent jobs."
+            )
+        anthropic_max_tokens = max(
+            1, int(getattr(settings, "AGENT_ANTHROPIC_MAX_TOKENS", 4096))
+        )
+        messages = [
+            *conversation_history,
+            {"role": "user", "content": normalized_query},
+        ]
+        client = Anthropic(
+            api_key=api_key,
+            timeout=llm_timeout_seconds,
+        )
+    else:
+        api_key = getattr(settings, "OPENAI_API_KEY", None) or os.environ.get(
+            "OPENAI_API_KEY"
+        )
+        if not api_key:
+            raise RuntimeError(
+                "OPENAI_API_KEY is not set. Configure it for the service running agent jobs."
+            )
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            *conversation_history,
+            {"role": "user", "content": normalized_query},
+        ]
+        client = OpenAI(
+            api_key=api_key,
+            timeout=llm_timeout_seconds,
+            max_retries=openai_max_retries,
+        )
+
     started_at = time.monotonic()
 
     logger.info(
-        "Agent run started run_id=%s query_length=%s history_items=%s max_iterations=%s openai_timeout=%ss overall_timeout=%ss",
+        "Agent run started run_id=%s provider=%s model=%s query_length=%s history_items=%s max_iterations=%s llm_timeout=%ss overall_timeout=%ss",
         agent_run_id,
+        provider,
+        model_name,
         len(normalized_query),
         len(conversation_history),
         max_iterations,
-        openai_timeout_seconds,
+        llm_timeout_seconds,
         overall_timeout_seconds,
     )
 
@@ -5793,72 +6009,159 @@ def run_agent(
             iteration,
             elapsed_before_request,
         )
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            tools=TOOLS,
-            tool_choice="auto",
-        )
+        if provider == "anthropic":
+            response = client.messages.create(
+                model=model_name,
+                system=SYSTEM_PROMPT,
+                messages=messages,
+                tools=ANTHROPIC_TOOLS,
+                tool_choice={"type": "auto"},
+                max_tokens=anthropic_max_tokens,
+            )
 
-        message = response.choices[0].message
-        tool_calls = message.tool_calls or []
+            tool_uses = [
+                block for block in response.content if getattr(block, "type", None) == "tool_use"
+            ]
+            text_blocks = [
+                block.text for block in response.content if getattr(block, "type", None) == "text"
+            ]
 
-        logger.info(
-            "Agent iteration complete run_id=%s iteration=%s tool_calls=%s elapsed=%.2fs",
-            agent_run_id,
-            iteration,
-            len(tool_calls),
-            time.monotonic() - started_at,
-        )
-
-        if not tool_calls:
             logger.info(
-                "Agent run completed run_id=%s iterations=%s total_elapsed=%.2fs",
+                "Agent iteration complete run_id=%s iteration=%s tool_calls=%s elapsed=%.2fs",
                 agent_run_id,
                 iteration,
+                len(tool_uses),
                 time.monotonic() - started_at,
             )
-            return {
-                "answer": message.content,
-                "history": [
-                    *conversation_history,
-                    {"role": "user", "content": normalized_query},
-                    {"role": "assistant", "content": message.content},
-                ],
-            }
 
-        messages.append(message.model_dump(exclude_none=True))
-
-        for tool_call in tool_calls:
-            tool_started_at = time.monotonic()
-            logger.info(
-                "Agent tool start run_id=%s iteration=%s tool=%s",
-                agent_run_id,
-                iteration,
-                tool_call.function.name,
-            )
-            result = handle_tool_call(
-                tool_call.function.name,
-                json.loads(tool_call.function.arguments),
-            )
-            logger.info(
-                "Agent tool complete run_id=%s iteration=%s tool=%s duration=%.2fs",
-                agent_run_id,
-                iteration,
-                tool_call.function.name,
-                time.monotonic() - tool_started_at,
-            )
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call.id,
-                "content": result,
-            })
-
-            elapsed_after_tool = time.monotonic() - started_at
-            if elapsed_after_tool >= overall_timeout_seconds:
-                raise RuntimeError(
-                    f"Agent run exceeded overall timeout ({overall_timeout_seconds}s)"
+            if not tool_uses:
+                answer = "\n".join(block for block in text_blocks if block).strip()
+                logger.info(
+                    "Agent run completed run_id=%s iterations=%s total_elapsed=%.2fs",
+                    agent_run_id,
+                    iteration,
+                    time.monotonic() - started_at,
                 )
+                return {
+                    "answer": answer,
+                    "history": [
+                        *conversation_history,
+                        {"role": "user", "content": normalized_query},
+                        {"role": "assistant", "content": answer},
+                    ],
+                }
+
+            assistant_content = []
+            for block in response.content:
+                if getattr(block, "type", None) == "text":
+                    assistant_content.append({"type": "text", "text": block.text})
+                elif getattr(block, "type", None) == "tool_use":
+                    assistant_content.append({
+                        "type": "tool_use",
+                        "id": block.id,
+                        "name": block.name,
+                        "input": block.input,
+                    })
+
+            messages.append({"role": "assistant", "content": assistant_content})
+
+            tool_results = []
+            for tool_use in tool_uses:
+                tool_started_at = time.monotonic()
+                logger.info(
+                    "Agent tool start run_id=%s iteration=%s tool=%s",
+                    agent_run_id,
+                    iteration,
+                    tool_use.name,
+                )
+                result = handle_tool_call(tool_use.name, tool_use.input)
+                logger.info(
+                    "Agent tool complete run_id=%s iteration=%s tool=%s duration=%.2fs",
+                    agent_run_id,
+                    iteration,
+                    tool_use.name,
+                    time.monotonic() - tool_started_at,
+                )
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tool_use.id,
+                    "content": result,
+                })
+
+                elapsed_after_tool = time.monotonic() - started_at
+                if elapsed_after_tool >= overall_timeout_seconds:
+                    raise RuntimeError(
+                        f"Agent run exceeded overall timeout ({overall_timeout_seconds}s)"
+                    )
+
+            messages.append({"role": "user", "content": tool_results})
+        else:
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                tools=TOOLS,
+                tool_choice="auto",
+            )
+
+            message = response.choices[0].message
+            tool_calls = message.tool_calls or []
+
+            logger.info(
+                "Agent iteration complete run_id=%s iteration=%s tool_calls=%s elapsed=%.2fs",
+                agent_run_id,
+                iteration,
+                len(tool_calls),
+                time.monotonic() - started_at,
+            )
+
+            if not tool_calls:
+                logger.info(
+                    "Agent run completed run_id=%s iterations=%s total_elapsed=%.2fs",
+                    agent_run_id,
+                    iteration,
+                    time.monotonic() - started_at,
+                )
+                return {
+                    "answer": message.content,
+                    "history": [
+                        *conversation_history,
+                        {"role": "user", "content": normalized_query},
+                        {"role": "assistant", "content": message.content},
+                    ],
+                }
+
+            messages.append(message.model_dump(exclude_none=True))
+
+            for tool_call in tool_calls:
+                tool_started_at = time.monotonic()
+                logger.info(
+                    "Agent tool start run_id=%s iteration=%s tool=%s",
+                    agent_run_id,
+                    iteration,
+                    tool_call.function.name,
+                )
+                result = handle_tool_call(
+                    tool_call.function.name,
+                    json.loads(tool_call.function.arguments),
+                )
+                logger.info(
+                    "Agent tool complete run_id=%s iteration=%s tool=%s duration=%.2fs",
+                    agent_run_id,
+                    iteration,
+                    tool_call.function.name,
+                    time.monotonic() - tool_started_at,
+                )
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": result,
+                })
+
+                elapsed_after_tool = time.monotonic() - started_at
+                if elapsed_after_tool >= overall_timeout_seconds:
+                    raise RuntimeError(
+                        f"Agent run exceeded overall timeout ({overall_timeout_seconds}s)"
+                    )
 
     raise RuntimeError(f"Agent loop exceeded maximum iterations ({max_iterations})")
 

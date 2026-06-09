@@ -9,6 +9,11 @@ from api.tasks import run_agent_run
 
 
 class RunAgentTests(TestCase):
+    @override_settings(
+        AGENT_MODEL_PROVIDER="openai",
+        AGENT_MODEL="gpt-4o-mini",
+        OPENAI_API_KEY="test-openai-key",
+    )
     @patch("api.agent_views.OpenAI")
     def test_run_agent_returns_answer_and_history(self, mock_openai: MagicMock) -> None:
         message = MagicMock()
@@ -32,6 +37,88 @@ class RunAgentTests(TestCase):
         self.assertEqual(kwargs["timeout"], 45)
         self.assertEqual(kwargs["max_retries"], 1)
 
+    @override_settings(
+        AGENT_MODEL_PROVIDER="anthropic",
+        AGENT_MODEL="claude-sonnet-4-5",
+        ANTHROPIC_API_KEY="test-anthropic-key",
+        AGENT_ANTHROPIC_MAX_TOKENS=2048,
+    )
+    @patch("api.agent_views.Anthropic")
+    def test_run_agent_returns_answer_with_anthropic(
+        self,
+        mock_anthropic: MagicMock,
+    ) -> None:
+        text_block = MagicMock()
+        text_block.type = "text"
+        text_block.text = "Anthropic answer"
+
+        response_payload = MagicMock()
+        response_payload.content = [text_block]
+
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = response_payload
+        mock_anthropic.return_value = mock_client
+
+        result = run_agent("Hello", [{"role": "assistant", "content": "Earlier"}])
+
+        self.assertEqual(result["answer"], "Anthropic answer")
+        self.assertEqual(result["history"][-1]["content"], "Anthropic answer")
+        self.assertEqual(result["history"][-2]["content"], "Hello")
+        mock_client.messages.create.assert_called_once()
+        _, kwargs = mock_anthropic.call_args
+        self.assertEqual(kwargs["timeout"], 45)
+
+    @override_settings(
+        AGENT_MODEL_PROVIDER="anthropic",
+        AGENT_MODEL="claude-sonnet-4-5",
+        ANTHROPIC_API_KEY="test-anthropic-key",
+        AGENT_ANTHROPIC_MAX_TOKENS=2048,
+    )
+    @patch("api.agent_views.handle_tool_call", return_value='{"ok": true}')
+    @patch("api.agent_views.Anthropic")
+    def test_run_agent_executes_anthropic_tool_calls_before_returning_answer(
+        self,
+        mock_anthropic: MagicMock,
+        mock_handle_tool_call: MagicMock,
+    ) -> None:
+        tool_use = MagicMock()
+        tool_use.type = "tool_use"
+        tool_use.id = "toolu_1"
+        tool_use.name = "analyze_stock"
+        tool_use.input = {"symbol": "AAPL"}
+
+        first_response = MagicMock()
+        first_response.content = [tool_use]
+
+        text_block = MagicMock()
+        text_block.type = "text"
+        text_block.text = "Final answer"
+
+        second_response = MagicMock()
+        second_response.content = [text_block]
+
+        mock_client = MagicMock()
+        mock_client.messages.create.side_effect = [first_response, second_response]
+        mock_anthropic.return_value = mock_client
+
+        result = run_agent("Analyze AAPL", [])
+
+        self.assertEqual(result["answer"], "Final answer")
+        self.assertEqual(mock_client.messages.create.call_count, 2)
+        mock_handle_tool_call.assert_called_once_with("analyze_stock", {"symbol": "AAPL"})
+
+        second_call_messages = mock_client.messages.create.call_args_list[1].kwargs["messages"]
+        self.assertEqual(second_call_messages[-1]["role"], "user")
+        self.assertEqual(
+            second_call_messages[-1]["content"][0]["tool_use_id"],
+            "toolu_1",
+        )
+
+    @override_settings(
+        AGENT_MODEL_PROVIDER="openai",
+        AGENT_MODEL="gpt-4o-mini",
+        OPENAI_API_KEY="test-openai-key",
+    )
     @patch("api.agent_views.handle_tool_call", return_value='{"ok": true}')
     @patch("api.agent_views.OpenAI")
     def test_run_agent_executes_tool_calls_before_returning_answer(
@@ -67,6 +154,11 @@ class RunAgentTests(TestCase):
         self.assertEqual(mock_client.chat.completions.create.call_count, 2)
         mock_handle_tool_call.assert_called_once_with("analyze_stock", {"symbol": "AAPL"})
 
+    @override_settings(
+        AGENT_MODEL_PROVIDER="openai",
+        AGENT_MODEL="gpt-4o-mini",
+        OPENAI_API_KEY="test-openai-key",
+    )
     @override_settings(AGENT_MAX_ITERATIONS=2)
     @patch("api.agent_views.OpenAI")
     def test_run_agent_enforces_max_iterations(self, mock_openai: MagicMock) -> None:
@@ -92,6 +184,9 @@ class RunAgentTests(TestCase):
         self.assertIn("maximum iterations (2)", str(exc.exception))
 
     @override_settings(
+        AGENT_MODEL_PROVIDER="openai",
+        AGENT_MODEL="gpt-4o-mini",
+        OPENAI_API_KEY="test-openai-key",
         AGENT_OPENAI_TIMEOUT_SECONDS=5,
         AGENT_OVERALL_TIMEOUT_SECONDS=7,
         AGENT_OPENAI_MAX_RETRIES=3,
