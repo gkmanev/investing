@@ -33,10 +33,21 @@ SECRET_KEY = os.getenv(
 
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_OPENAI_BASE_URL = os.getenv(
+    "GEMINI_OPENAI_BASE_URL",
+    "https://generativelanguage.googleapis.com/v1beta/openai/",
+)
 AGENT_MODEL_PROVIDER = os.getenv("AGENT_MODEL_PROVIDER", "anthropic").lower()
 AGENT_MODEL = os.getenv(
     "AGENT_MODEL",
-    "claude-sonnet-4-5" if AGENT_MODEL_PROVIDER == "anthropic" else "gpt-4o-mini",
+    (
+        "claude-sonnet-4-5"
+        if AGENT_MODEL_PROVIDER == "anthropic"
+        else "gemini-2.5-flash"
+        if AGENT_MODEL_PROVIDER == "gemini"
+        else "gpt-4o-mini"
+    ),
 )
 AGENT_ANTHROPIC_MAX_TOKENS = int(os.getenv("AGENT_ANTHROPIC_MAX_TOKENS", "4096"))
 AGENT_MAX_ITERATIONS = int(os.getenv("AGENT_MAX_ITERATIONS", "10"))

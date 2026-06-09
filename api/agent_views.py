@@ -5899,9 +5899,9 @@ def handle_tool_call(tool_name: str, tool_args: dict) -> str:
 
 def _get_agent_provider() -> str:
     provider = str(getattr(settings, "AGENT_MODEL_PROVIDER", "anthropic")).strip().lower()
-    if provider not in {"anthropic", "openai"}:
+    if provider not in {"anthropic", "openai", "gemini"}:
         raise ValueError(
-            "AGENT_MODEL_PROVIDER must be either 'anthropic' or 'openai'"
+            "AGENT_MODEL_PROVIDER must be one of 'anthropic', 'openai', or 'gemini'"
         )
     return provider
 
@@ -5912,6 +5912,8 @@ def _get_agent_model(provider: str) -> str:
         return configured_model
     if provider == "anthropic":
         return "claude-sonnet-4-5"
+    if provider == "gemini":
+        return "gemini-2.5-flash"
     return "gpt-4o-mini"
 
 
@@ -5963,22 +5965,32 @@ def run_agent(
             timeout=llm_timeout_seconds,
         )
     else:
-        api_key = getattr(settings, "OPENAI_API_KEY", None) or os.environ.get(
-            "OPENAI_API_KEY"
+        api_key_setting_name = "GEMINI_API_KEY" if provider == "gemini" else "OPENAI_API_KEY"
+        api_key = getattr(settings, api_key_setting_name, None) or os.environ.get(
+            api_key_setting_name
         )
         if not api_key:
             raise RuntimeError(
-                "OPENAI_API_KEY is not set. Configure it for the service running agent jobs."
+                f"{api_key_setting_name} is not set. Configure it for the service running agent jobs."
             )
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             *conversation_history,
             {"role": "user", "content": normalized_query},
         ]
+        openai_client_kwargs = {
+            "api_key": api_key,
+            "timeout": llm_timeout_seconds,
+            "max_retries": openai_max_retries,
+        }
+        if provider == "gemini":
+            openai_client_kwargs["base_url"] = getattr(
+                settings,
+                "GEMINI_OPENAI_BASE_URL",
+                "https://generativelanguage.googleapis.com/v1beta/openai/",
+            )
         client = OpenAI(
-            api_key=api_key,
-            timeout=llm_timeout_seconds,
-            max_retries=openai_max_retries,
+            **openai_client_kwargs,
         )
 
     started_at = time.monotonic()

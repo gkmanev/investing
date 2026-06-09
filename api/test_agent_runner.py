@@ -38,6 +38,42 @@ class RunAgentTests(TestCase):
         self.assertEqual(kwargs["max_retries"], 1)
 
     @override_settings(
+        AGENT_MODEL_PROVIDER="gemini",
+        AGENT_MODEL="gemini-2.5-flash",
+        GEMINI_API_KEY="test-gemini-key",
+        GEMINI_OPENAI_BASE_URL="https://generativelanguage.googleapis.com/v1beta/openai/",
+    )
+    @patch("api.agent_views.OpenAI")
+    def test_run_agent_returns_answer_with_gemini_openai_compat(
+        self,
+        mock_openai: MagicMock,
+    ) -> None:
+        message = MagicMock()
+        message.tool_calls = None
+        message.content = "Gemini answer"
+
+        response_payload = MagicMock()
+        response_payload.choices = [MagicMock(message=message)]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = response_payload
+        mock_openai.return_value = mock_client
+
+        result = run_agent("Hello", [{"role": "assistant", "content": "Earlier"}])
+
+        self.assertEqual(result["answer"], "Gemini answer")
+        self.assertEqual(result["history"][-1]["content"], "Gemini answer")
+        mock_client.chat.completions.create.assert_called_once()
+        _, kwargs = mock_openai.call_args
+        self.assertEqual(kwargs["api_key"], "test-gemini-key")
+        self.assertEqual(
+            kwargs["base_url"],
+            "https://generativelanguage.googleapis.com/v1beta/openai/",
+        )
+        self.assertEqual(kwargs["timeout"], 45)
+        self.assertEqual(kwargs["max_retries"], 1)
+
+    @override_settings(
         AGENT_MODEL_PROVIDER="anthropic",
         AGENT_MODEL="claude-sonnet-4-5",
         ANTHROPIC_API_KEY="test-anthropic-key",
