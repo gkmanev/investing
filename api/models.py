@@ -247,6 +247,42 @@ class EmailVerificationToken(models.Model):
         return f"{self.user} email verification token"
 
 
+class AgentRun(models.Model):
+    """Tracks a persisted agent execution request and outcome."""
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        RUNNING = "running", "Running"
+        COMPLETED = "completed", "Completed"
+        FAILED = "failed", "Failed"
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="agent_runs",
+        on_delete=models.CASCADE,
+    )
+    query = models.TextField()
+    history_json = models.JSONField(default=list, blank=True)
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True,
+    )
+    result_text = models.TextField(blank=True, default="")
+    error_text = models.TextField(blank=True, default="")
+    started_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    finished_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:  # pragma: no cover - simple data representation
+        return f"Agent run #{self.pk} for user {self.user_id} ({self.status})"
+
+
 class DailyBriefSubscription(models.Model):
     """Tracks a user's Daily Top 3 email subscription state."""
 

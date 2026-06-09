@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 import time
@@ -10,12 +11,16 @@ from typing import Any, Dict, List
 
 from django.conf import settings
 from django.db.models import Q
-from openai import OpenAI, OpenAIError
+from openai import OpenAI
+from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from api.helper import FinancialMetricsCalculator
-from api.models import Symbol
+from api.models import AgentRun, Symbol
+
+
+logger = logging.getLogger(__name__)
 
 
 SYSTEM_PROMPT = """
@@ -5726,6 +5731,150 @@ def handle_tool_call(tool_name: str, tool_args: dict) -> str:
     return json.dumps({"error": f"Unknown tool: {tool_name}"})
 
 
+def run_agent(
+    query: str,
+    history: list[dict[str, Any]] | None = None,
+    *,
+    agent_run_id: int | None = None,
+) -> dict[str, Any]:
+    normalized_query = (query or "").strip()
+    if not normalized_query:
+        raise ValueError("query is required")
+
+    if history is not None and not isinstance(history, list):
+        raise ValueError("history must be a list")
+
+    conversation_history = history or []
+    max_iterations = max(1, int(getattr(settings, "AGENT_MAX_ITERATIONS", 10)))
+    openai_timeout_seconds = max(
+        1, int(getattr(settings, "AGENT_OPENAI_TIMEOUT_SECONDS", 45))
+    )
+    overall_timeout_seconds = max(
+        openai_timeout_seconds,
+        int(getattr(settings, "AGENT_OVERALL_TIMEOUT_SECONDS", 90)),
+    )
+    openai_max_retries = max(
+        0, int(getattr(settings, "AGENT_OPENAI_MAX_RETRIES", 1))
+    )
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        *conversation_history,
+        {"role": "user", "content": normalized_query},
+    ]
+
+    client = OpenAI(
+        api_key=os.environ.get("OPENAI_API_KEY"),
+        timeout=openai_timeout_seconds,
+        max_retries=openai_max_retries,
+    )
+    started_at = time.monotonic()
+
+    logger.info(
+        "Agent run started run_id=%s query_length=%s history_items=%s max_iterations=%s openai_timeout=%ss overall_timeout=%ss",
+        agent_run_id,
+        len(normalized_query),
+        len(conversation_history),
+        max_iterations,
+        openai_timeout_seconds,
+        overall_timeout_seconds,
+    )
+
+    # Agentic loop keeps running until the model stops calling tools.
+    for iteration in range(1, max_iterations + 1):
+        elapsed_before_request = time.monotonic() - started_at
+        if elapsed_before_request >= overall_timeout_seconds:
+            raise RuntimeError(
+                f"Agent run exceeded overall timeout ({overall_timeout_seconds}s)"
+            )
+
+        logger.info(
+            "Agent iteration start run_id=%s iteration=%s elapsed=%.2fs",
+            agent_run_id,
+            iteration,
+            elapsed_before_request,
+        )
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,
+            tools=TOOLS,
+            tool_choice="auto",
+        )
+
+        message = response.choices[0].message
+        tool_calls = message.tool_calls or []
+
+        logger.info(
+            "Agent iteration complete run_id=%s iteration=%s tool_calls=%s elapsed=%.2fs",
+            agent_run_id,
+            iteration,
+            len(tool_calls),
+            time.monotonic() - started_at,
+        )
+
+        if not tool_calls:
+            logger.info(
+                "Agent run completed run_id=%s iterations=%s total_elapsed=%.2fs",
+                agent_run_id,
+                iteration,
+                time.monotonic() - started_at,
+            )
+            return {
+                "answer": message.content,
+                "history": [
+                    *conversation_history,
+                    {"role": "user", "content": normalized_query},
+                    {"role": "assistant", "content": message.content},
+                ],
+            }
+
+        messages.append(message.model_dump(exclude_none=True))
+
+        for tool_call in tool_calls:
+            tool_started_at = time.monotonic()
+            logger.info(
+                "Agent tool start run_id=%s iteration=%s tool=%s",
+                agent_run_id,
+                iteration,
+                tool_call.function.name,
+            )
+            result = handle_tool_call(
+                tool_call.function.name,
+                json.loads(tool_call.function.arguments),
+            )
+            logger.info(
+                "Agent tool complete run_id=%s iteration=%s tool=%s duration=%.2fs",
+                agent_run_id,
+                iteration,
+                tool_call.function.name,
+                time.monotonic() - tool_started_at,
+            )
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": result,
+            })
+
+            elapsed_after_tool = time.monotonic() - started_at
+            if elapsed_after_tool >= overall_timeout_seconds:
+                raise RuntimeError(
+                    f"Agent run exceeded overall timeout ({overall_timeout_seconds}s)"
+                )
+
+    raise RuntimeError(f"Agent loop exceeded maximum iterations ({max_iterations})")
+
+
+def serialize_agent_run(agent_run: AgentRun) -> dict[str, Any]:
+    return {
+        "job_id": agent_run.id,
+        "status": agent_run.status,
+        "answer": agent_run.result_text,
+        "error": agent_run.error_text,
+        "created_at": agent_run.created_at.isoformat() if agent_run.created_at else None,
+        "started_at": agent_run.started_at.isoformat() if agent_run.started_at else None,
+        "finished_at": agent_run.finished_at.isoformat() if agent_run.finished_at else None,
+    }
+
+
 class AgentView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -5736,55 +5885,26 @@ class AgentView(APIView):
 
         # Restore conversation history from the request (client sends it back)
         history = request.data.get("history", [])
+        if history is not None and not isinstance(history, list):
+            return Response({"error": "history must be a list"}, status=400)
 
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            *history,
-            {"role": "user", "content": query},
-        ]
+        agent_run = AgentRun.objects.create(
+            user=request.user,
+            query=query,
+            history_json=history or [],
+        )
+        from api.tasks import run_agent_run
 
-        client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+        run_agent_run.delay(agent_run.id)
+        return Response(
+            serialize_agent_run(agent_run),
+            status=status.HTTP_202_ACCEPTED,
+        )
 
-        try:
-            # Agentic loop — keeps running until the model stops calling tools
-            for _ in range(10):
-                response = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=messages,
-                    tools=TOOLS,
-                    tool_choice="auto",
-                )
-
-                message = response.choices[0].message
-
-                # No tool calls → final answer, we're done
-                if not message.tool_calls:
-                    return Response({
-                        "answer": message.content,
-                        "history": [
-                            *history,
-                            {"role": "user", "content": query},
-                            {"role": "assistant", "content": message.content},
-                        ],
-                    })
-
-                # Append the assistant's tool-call message to history
-                messages.append(message.model_dump(exclude_none=True))
-
-                # Execute each tool call and feed results back
-                for tool_call in message.tool_calls:
-                    result = handle_tool_call(
-                        tool_call.function.name,
-                        json.loads(tool_call.function.arguments),
-                    )
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": result,
-                    })
-
-            else:
-                return Response({"error": "Agent loop exceeded maximum iterations"}, status=500)
-
-        except OpenAIError as e:
-            return Response({"error": f"AI service error: {str(e)}"}, status=502)
+    def get(self, request, job_id: int | None = None):
+        if job_id is None:
+            return Response({"error": "job_id is required"}, status=400)
+        agent_run = AgentRun.objects.filter(pk=job_id, user=request.user).first()
+        if agent_run is None:
+            return Response({"error": "Agent run not found"}, status=404)
+        return Response(serialize_agent_run(agent_run))

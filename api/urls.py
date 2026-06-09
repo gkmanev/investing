@@ -75,5 +75,6 @@ urlpatterns = [
     ),
     path("webhooks/stripe/", StripeWebhookView.as_view(), name="webhooks-stripe"),
     path("agent/", AgentView.as_view(), name="agent"),
+    path("agent/<int:job_id>/", AgentView.as_view(), name="agent-detail"),
     path("", include(router.urls)),
 ]

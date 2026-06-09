@@ -4806,3 +4806,4 @@ class PutWheelAgentViewTests(APITestCase):
             [item["spread_type_requested"] for item in payload["ranked_candidates"]],
             ["bull_call_debit_spread", "bull_put_credit_spread"],
         )
+

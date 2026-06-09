@@ -1,6 +1,7 @@
 from django.contrib import admin
 
 from .models import (
+    AgentRun,
     DailyBriefEdition,
     DailyBriefSubscription,
     EmailVerificationToken,
@@ -8,6 +9,32 @@ from .models import (
     ScreenerFilter,
     ScreenerType,
 )
+
+
+@admin.register(AgentRun)
+class AgentRunAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "user",
+        "status",
+        "started_at",
+        "finished_at",
+        "created_at",
+    )
+    list_filter = ("status", "started_at", "finished_at", "created_at")
+    search_fields = ("user__username", "user__email", "query", "result_text", "error_text")
+    readonly_fields = (
+        "user",
+        "query",
+        "history_json",
+        "status",
+        "result_text",
+        "error_text",
+        "started_at",
+        "finished_at",
+        "created_at",
+        "updated_at",
+    )
 
 
 @admin.register(Investment)
