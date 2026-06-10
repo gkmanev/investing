@@ -3128,6 +3128,69 @@ class PutWheelAgentViewTests(APITestCase):
         self.assertEqual(payload["summary"]["best_roi"], 2.93)
         self.assertEqual(payload["best_put_opportunity"]["contract"]["roi"], 2.93)
 
+    def test_handle_put_wheel_opportunity_ignores_zero_bid_zero_ask_and_low_volume(
+        self,
+    ) -> None:
+        expiration = date.today() + timedelta(days=31)
+        Symbol.objects.create(
+            ticker="AVGO",
+            price=Decimal("250.00"),
+            rsi=Decimal("48.00"),
+            score=88,
+            classification="High-quality compounder",
+            liquidity=Symbol.LIQUIDITY_GOOD,
+            technical_score=Symbol.TechnicalScore.BUY,
+            option_data={
+                "puts": [
+                    {
+                        "strike": 235,
+                        "expiration": expiration.isoformat(),
+                        "bid": 0,
+                        "ask": 3.40,
+                        "delta": -0.24,
+                        "iv": 29.0,
+                        "volume": 180,
+                        "open_interest": 1200,
+                    },
+                    {
+                        "strike": 230,
+                        "expiration": expiration.isoformat(),
+                        "bid": 3.10,
+                        "ask": 0,
+                        "delta": -0.22,
+                        "iv": 27.5,
+                        "volume": 160,
+                        "open_interest": 1000,
+                    },
+                    {
+                        "strike": 225,
+                        "expiration": expiration.isoformat(),
+                        "bid": 2.60,
+                        "ask": 2.90,
+                        "delta": -0.20,
+                        "iv": 26.0,
+                        "volume": 40,
+                        "open_interest": 900,
+                    },
+                    {
+                        "strike": 220,
+                        "expiration": expiration.isoformat(),
+                        "bid": 2.00,
+                        "ask": 2.20,
+                        "delta": -0.19,
+                        "iv": 25.0,
+                        "volume": 140,
+                        "open_interest": 850,
+                    },
+                ]
+            },
+        )
+
+        payload = json.loads(agent_views._handle_put_wheel_opportunity("AVGO"))
+
+        self.assertEqual(payload["best_put_opportunity"]["contract"]["strike"], 220.0)
+        self.assertEqual(payload["best_put_opportunity"]["contract"]["volume"], 140)
+
     def test_handle_compare_put_candidates_ranks_symbols_and_filters_errors(
         self,
     ) -> None:
@@ -3620,6 +3683,66 @@ class PutWheelAgentViewTests(APITestCase):
         self.assertEqual(payload["filters_applied"]["style_max_dte"], 45)
         self.assertFalse(payload["ex_dividend_risk"]["data_available"])
         self.assertIn("Ex-dividend data is unavailable.", payload["warnings"])
+
+    def test_handle_covered_call_opportunity_ignores_invalid_tradeable_contracts(
+        self,
+    ) -> None:
+        expiration = date.today() + timedelta(days=28)
+        Symbol.objects.create(
+            ticker="META",
+            price=Decimal("500.00"),
+            score=86,
+            classification="High-quality compounder",
+            technical_score=Symbol.TechnicalScore.NEUTRAL,
+            next_earnings_date=date.today() + timedelta(days=60),
+            call_data={
+                "calls": [
+                    {
+                        "strike": 520,
+                        "expiration": expiration.isoformat(),
+                        "bid": 6.10,
+                        "ask": 0,
+                        "delta": 0.29,
+                        "iv": 23.0,
+                        "volume": 900,
+                        "open_interest": 2500,
+                    },
+                    {
+                        "strike": 525,
+                        "expiration": expiration.isoformat(),
+                        "bid": 4.90,
+                        "ask": 5.20,
+                        "delta": 0.30,
+                        "iv": 22.0,
+                        "volume": 45,
+                        "open_interest": 2100,
+                    },
+                    {
+                        "strike": 530,
+                        "expiration": expiration.isoformat(),
+                        "bid": 4.20,
+                        "ask": 4.50,
+                        "delta": 0.28,
+                        "iv": 21.5,
+                        "volume": 300,
+                        "open_interest": 2400,
+                    },
+                ]
+            },
+        )
+
+        payload = json.loads(
+            agent_views._handle_covered_call_opportunity(
+                {
+                    "symbol": "META",
+                    "shares_owned": 100,
+                    "style": "balanced",
+                }
+            )
+        )
+
+        self.assertEqual(payload["best_contract"]["strike"], 530.0)
+        self.assertEqual(payload["best_contract"]["volume"], 300)
 
     def test_handle_covered_call_opportunity_style_filters_change_selected_contract(self) -> None:
         expiration = date.today() + timedelta(days=28)
@@ -4180,6 +4303,68 @@ class PutWheelAgentViewTests(APITestCase):
         self.assertEqual(payload["best_spread"]["dte"], 39)
         self.assertEqual(len(payload["best_spread"]["legs"]), 2)
         self.assertEqual(payload["summary"]["spread_type"], "bull_put_credit_spread")
+
+    def test_handle_spread_opportunity_ignores_low_volume_legs(self) -> None:
+        expiration = date.today() + timedelta(days=35)
+        Symbol.objects.create(
+            ticker="CRM",
+            price=Decimal("250.00"),
+            score=82,
+            classification="High-quality compounder",
+            technical_score=Symbol.TechnicalScore.BUY,
+            next_earnings_date=date.today() + timedelta(days=80),
+            option_data={
+                "puts": [
+                    {
+                        "strike": 230,
+                        "expiration": expiration.isoformat(),
+                        "bid": 1.10,
+                        "ask": 1.20,
+                        "mid": 1.15,
+                        "delta": -0.18,
+                        "iv": 26.0,
+                        "volume": 400,
+                        "open_interest": 3000,
+                    },
+                    {
+                        "strike": 235,
+                        "expiration": expiration.isoformat(),
+                        "bid": 2.10,
+                        "ask": 2.25,
+                        "mid": 2.18,
+                        "delta": -0.26,
+                        "iv": 27.0,
+                        "volume": 40,
+                        "open_interest": 2800,
+                    },
+                    {
+                        "strike": 240,
+                        "expiration": expiration.isoformat(),
+                        "bid": 3.20,
+                        "ask": 3.35,
+                        "mid": 3.28,
+                        "delta": -0.30,
+                        "iv": 28.0,
+                        "volume": 320,
+                        "open_interest": 3400,
+                    },
+                ]
+            },
+        )
+
+        payload = json.loads(
+            agent_views._handle_spread_opportunity(
+                {
+                    "symbol": "CRM",
+                    "spread_type": "bull_put_credit_spread",
+                    "risk_profile": "balanced",
+                    "width": 10,
+                }
+            )
+        )
+
+        self.assertEqual(payload["best_spread"]["legs"][0]["strike"], 240.0)
+        self.assertEqual(payload["best_spread"]["legs"][1]["strike"], 230.0)
 
     def test_handle_spread_opportunity_auto_prefers_bull_call_debit_when_iv_is_low(
         self,

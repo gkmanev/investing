@@ -1011,6 +1011,9 @@ def _extract_put_contracts(option_data):
         volume = _to_int(c.get("volume"))
         open_interest = _to_int(c.get("open_interest") or c.get("oi"))
 
+        if not _is_tradeable_option_contract(bid=bid, ask=ask, volume=volume):
+            continue
+
         contracts.append({
             "raw": c,
             "expiration": expiration,
@@ -1130,6 +1133,9 @@ def _extract_call_contracts(option_data):
         volume = _to_int(c.get("volume"))
         open_interest = _to_int(c.get("open_interest") or c.get("oi"))
 
+        if not _is_tradeable_option_contract(bid=bid, ask=ask, volume=volume):
+            continue
+
         contracts.append({
             "raw": c,
             "expiration": expiration,
@@ -1156,6 +1162,16 @@ def _dedupe_preserve_order(items):
         seen.add(item)
         output.append(item)
     return output
+
+
+def _is_tradeable_option_contract(*, bid, ask, volume):
+    if bid is not None and bid <= 0:
+        return False
+    if ask is not None and ask <= 0:
+        return False
+    if volume is not None and volume < 50:
+        return False
+    return True
 
 
 def _normalize_covered_call_style(style):
