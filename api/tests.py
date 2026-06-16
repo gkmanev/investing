@@ -3611,6 +3611,178 @@ class PutWheelAgentViewTests(APITestCase):
             )
         )
 
+    def test_handle_build_monthly_income_plan_combines_covered_calls_and_puts(self) -> None:
+        call_expiration = date.today() + timedelta(days=28)
+        put_expiration = date.today() + timedelta(days=31)
+        Symbol.objects.create(
+            ticker="AAPL",
+            price=Decimal("195.00"),
+            score=84,
+            classification="High-quality compounder",
+            technical_score=Symbol.TechnicalScore.NEUTRAL,
+            call_data={
+                "calls": [
+                    {
+                        "strike": 210,
+                        "expiration": call_expiration.isoformat(),
+                        "bid": 4.00,
+                        "ask": 4.20,
+                        "delta": 0.28,
+                        "iv": 24.0,
+                        "volume": 800,
+                        "open_interest": 3000,
+                    }
+                ]
+            },
+        )
+        Symbol.objects.create(
+            ticker="SMALL",
+            price=Decimal("104.00"),
+            rsi=Decimal("51.00"),
+            score=86,
+            classification="High-quality compounder",
+            liquidity=Symbol.LIQUIDITY_GOOD,
+            technical_score=Symbol.TechnicalScore.BUY,
+            option_data={
+                "puts": [
+                    {
+                        "strike": 95,
+                        "expiration": put_expiration.isoformat(),
+                        "bid": 2.10,
+                        "ask": 2.30,
+                        "delta": -0.23,
+                        "iv": 29.00,
+                        "volume": 240,
+                        "open_interest": 1400,
+                    }
+                ]
+            },
+        )
+
+        payload = json.loads(
+            agent_views._handle_build_monthly_income_plan(
+                {
+                    "positions": [{"symbol": "AAPL", "shares_owned": 200, "cost_basis": 180}],
+                    "account_size": 10_000,
+                    "monthly_income_target": 600,
+                }
+            )
+        )
+
+        self.assertEqual(payload["plan_type"], "mixed_income_plan")
+        self.assertEqual(payload["covered_call_positions_evaluated"], 1)
+        self.assertEqual(payload["covered_call_positions"][0]["symbol"], "AAPL")
+        self.assertEqual(payload["covered_call_positions"][0]["best_contract"]["strike"], 210.0)
+        self.assertEqual(payload["primary_put_idea"]["ticker"], "SMALL")
+        self.assertEqual(payload["primary_put_idea"]["cash_required"], 9500)
+        self.assertEqual(payload["summary"]["monthly_income_target"], 600.0)
+        self.assertFalse(payload["summary"]["target_met"])
+        self.assertGreater(payload["summary"]["estimated_total_monthly_income"], 0)
+
+    def test_handle_build_monthly_income_plan_positions_only_returns_covered_calls(self) -> None:
+        expiration = date.today() + timedelta(days=28)
+        Symbol.objects.create(
+            ticker="MSFT",
+            price=Decimal("420.00"),
+            score=88,
+            classification="High-quality compounder",
+            technical_score=Symbol.TechnicalScore.NEUTRAL,
+            call_data={
+                "calls": [
+                    {
+                        "strike": 440,
+                        "expiration": expiration.isoformat(),
+                        "bid": 5.20,
+                        "ask": 5.40,
+                        "delta": 0.29,
+                        "iv": 21.0,
+                        "volume": 700,
+                        "open_interest": 3200,
+                    }
+                ]
+            },
+        )
+
+        payload = json.loads(
+            agent_views._handle_build_monthly_income_plan(
+                {
+                    "positions": [{"symbol": "MSFT", "shares_owned": 100}],
+                }
+            )
+        )
+
+        self.assertEqual(payload["plan_type"], "covered_calls_only")
+        self.assertEqual(payload["covered_call_positions"][0]["symbol"], "MSFT")
+        self.assertIsNone(payload["primary_put_idea"])
+        self.assertGreater(
+            payload["summary"]["estimated_monthly_income_from_covered_calls"],
+            0,
+        )
+
+    def test_handle_build_monthly_income_plan_without_positions_defaults_to_puts(self) -> None:
+        expiration = date.today() + timedelta(days=31)
+        Symbol.objects.create(
+            ticker="FIT",
+            price=Decimal("102.00"),
+            rsi=Decimal("49.00"),
+            score=84,
+            classification="High-quality compounder",
+            liquidity=Symbol.LIQUIDITY_GOOD,
+            technical_score=Symbol.TechnicalScore.BUY,
+            option_data={
+                "puts": [
+                    {
+                        "strike": 95,
+                        "expiration": expiration.isoformat(),
+                        "bid": 2.00,
+                        "ask": 2.20,
+                        "delta": -0.24,
+                        "iv": 31.00,
+                        "volume": 180,
+                        "open_interest": 900,
+                    }
+                ]
+            },
+        )
+        Symbol.objects.create(
+            ticker="RICH",
+            price=Decimal("140.00"),
+            rsi=Decimal("46.00"),
+            score=90,
+            classification="High-quality compounder",
+            liquidity=Symbol.LIQUIDITY_GOOD,
+            technical_score=Symbol.TechnicalScore.BUY,
+            option_data={
+                "puts": [
+                    {
+                        "strike": 120,
+                        "expiration": expiration.isoformat(),
+                        "bid": 4.40,
+                        "ask": 4.80,
+                        "delta": -0.25,
+                        "iv": 35.00,
+                        "volume": 210,
+                        "open_interest": 1100,
+                    }
+                ]
+            },
+        )
+
+        payload = json.loads(
+            agent_views._handle_build_monthly_income_plan(
+                {"account_size": 10_000, "monthly_income_target": 250}
+            )
+        )
+
+        self.assertEqual(payload["plan_type"], "cash_secured_puts_only")
+        self.assertEqual(payload["primary_put_idea"]["ticker"], "FIT")
+        self.assertEqual(payload["primary_put_idea"]["cash_required"], 9500)
+        self.assertEqual(payload["summary"]["target_met"], False)
+        self.assertIn(
+            "No owned positions were provided, so the plan defaults to cash-secured put / wheel ideas only.",
+            payload["warnings"],
+        )
+
     def test_handle_covered_call_opportunity_returns_ranked_call_candidates(self) -> None:
         expiration = date.today() + timedelta(days=28)
         Symbol.objects.create(

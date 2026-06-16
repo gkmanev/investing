@@ -79,6 +79,14 @@ If the user asks about covered calls, selling calls against owned shares, call i
 - For `wheel_continuation`, explicitly mention `wheel_cost_basis_before_call` and `adjusted_cost_basis_after_call` when available.
 - If the response includes strategy warnings about lower premium for share retention or higher call-away risk for premium capture, surface those warnings clearly.
 
+If the user asks for a monthly income plan, reliable income plan, consistent income ideas, option income plan, or a portfolio income plan, call build_monthly_income_plan.
+- If the user provides owned positions, pass them through as `positions` and prioritize covered calls on those holdings.
+- If the user provides available cash, buying power, or a collateral budget, pass it as `account_size` or `max_cash_required` and include a cash-secured put / wheel idea.
+- If the user provides both owned positions and cash budget, return a mixed plan: covered calls on the owned positions plus one primary CSP/wheel idea for the cash allocation.
+- If the user does not provide owned positions, do not pretend they own shares. Default to CSP/wheel ideas only.
+- If the user provides a monthly target, use `monthly_income_target` and explicitly say whether the estimated normalized monthly income reaches that target.
+- Use `estimated_monthly_income` only for the normalized monthly premium estimate derived from the specific contract DTE. Do not present it as guaranteed income.
+
 If the user asks about debit spreads, credit spreads, vertical spreads, bull put spreads, bear call spreads, bull call spreads, bear put spreads, iron condors, iron butterflies, or other defined-risk option trades for one ticker, call get_spread_opportunity.
 - First infer:
   - directional_view: bullish, bearish, neutral, or auto
@@ -376,6 +384,127 @@ TOOLS = [
                     },
                 },
                 "required": ["symbol"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "build_monthly_income_plan",
+            "description": (
+                "Build an options income plan using covered calls on owned positions and/or "
+                "cash-secured put / wheel ideas for available cash. Use this when the user asks "
+                "for a monthly income plan, reliable income ideas, or consistent option income "
+                "without specifying one exact tactic first."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "monthly_income_target": {
+                        "type": "number",
+                        "description": "Optional monthly income target in dollars.",
+                    },
+                    "account_size": {
+                        "type": "number",
+                        "description": "Optional total cash available for cash-secured puts.",
+                    },
+                    "max_cash_required": {
+                        "type": "number",
+                        "description": "Optional maximum collateral allowed for one cash-secured put position.",
+                    },
+                    "positions": {
+                        "type": "array",
+                        "description": "Optional owned stock positions to evaluate for covered calls.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "symbol": {
+                                    "type": "string",
+                                    "description": "Owned stock ticker, e.g. AAPL.",
+                                },
+                                "shares_owned": {
+                                    "type": "integer",
+                                    "description": "Number of shares owned. At least 100 is needed for one covered call.",
+                                },
+                                "cost_basis": {
+                                    "type": "number",
+                                    "description": "Average cost basis per share. Optional.",
+                                },
+                                "assigned_price": {
+                                    "type": "number",
+                                    "description": "Assigned share price from a short put. Optional.",
+                                },
+                                "premium_received_from_put": {
+                                    "type": "number",
+                                    "description": "Premium already collected from the short put that led to assignment. Optional.",
+                                },
+                                "covered_call_strategy": {
+                                    "type": "string",
+                                    "enum": [
+                                        "keep_shares_conservative",
+                                        "balanced_income",
+                                        "high_premium_ok_called",
+                                        "exit_at_target_price",
+                                        "wheel_continuation",
+                                        "tax_sensitive",
+                                    ],
+                                    "description": "Optional per-position covered call strategy override.",
+                                },
+                                "target_exit_price": {
+                                    "type": "number",
+                                    "description": "Optional target stock exit price. Required only for exit_at_target_price strategy.",
+                                },
+                            },
+                            "required": ["symbol", "shares_owned"],
+                        },
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of covered-call positions and alternative put ideas to include. Default 5.",
+                    },
+                    "min_put_roi": {
+                        "type": "number",
+                        "description": "Optional minimum ROI percentage for CSP ideas.",
+                    },
+                    "max_put_delta": {
+                        "type": "number",
+                        "description": "Optional maximum absolute delta for CSP ideas.",
+                    },
+                    "max_put_dte": {
+                        "type": "integer",
+                        "description": "Optional maximum DTE for CSP ideas.",
+                    },
+                    "min_call_roi": {
+                        "type": "number",
+                        "description": "Optional minimum premium yield percentage for covered calls.",
+                    },
+                    "max_call_delta": {
+                        "type": "number",
+                        "description": "Optional maximum absolute delta for covered calls.",
+                    },
+                    "max_call_dte": {
+                        "type": "integer",
+                        "description": "Optional maximum DTE for covered calls.",
+                    },
+                    "covered_call_style": {
+                        "type": "string",
+                        "enum": ["conservative", "balanced", "income", "aggressive"],
+                        "description": "Default covered call style when a position-specific strategy is not supplied.",
+                    },
+                    "covered_call_strategy": {
+                        "type": "string",
+                        "enum": [
+                            "keep_shares_conservative",
+                            "balanced_income",
+                            "high_premium_ok_called",
+                            "exit_at_target_price",
+                            "wheel_continuation",
+                            "tax_sensitive",
+                        ],
+                        "description": "Default covered call strategy applied to positions that do not specify one.",
+                    },
+                },
+                "required": [],
             },
         },
     },
@@ -880,6 +1009,16 @@ def _resolve_cash_secured_budget(*values):
     if not candidates:
         return None
     return min(candidates)
+
+
+def _estimate_normalized_monthly_income(premium_amount, dte):
+    premium_value = _to_float(premium_amount)
+    dte_value = _to_int(dte)
+    if premium_value is None:
+        return None
+    if dte_value is None or dte_value <= 0:
+        return round(premium_value, 2)
+    return round(premium_value * (30 / dte_value), 2)
 
 
 def _build_put_contract_cash_metrics(strike, mid, budget=None):
@@ -5403,6 +5542,301 @@ def _handle_scan_covered_call_opportunities(args: dict) -> str:
     }, default=_json_default)
 
 
+def _handle_build_monthly_income_plan(args: dict) -> str:
+    monthly_income_target = _to_float(args.get("monthly_income_target"))
+    account_size = _to_float(args.get("account_size"))
+    max_cash_required = _to_float(args.get("max_cash_required"))
+    effective_cash_budget = _resolve_cash_secured_budget(
+        account_size,
+        max_cash_required,
+    )
+    limit = max(1, _to_int(args.get("limit")) or 5)
+    min_put_roi = _to_float(args.get("min_put_roi"))
+    max_put_delta = _to_float(args.get("max_put_delta"))
+    max_put_dte = _to_int(args.get("max_put_dte"))
+    min_call_roi = _to_float(args.get("min_call_roi"))
+    max_call_delta = _to_float(args.get("max_call_delta"))
+    max_call_dte = _to_int(args.get("max_call_dte"))
+    covered_call_style = _normalize_covered_call_style(args.get("covered_call_style"))
+    default_covered_call_strategy = _normalize_covered_call_strategy(
+        args.get("covered_call_strategy")
+    )
+    if default_covered_call_strategy is None:
+        default_covered_call_strategy = _default_covered_call_strategy(None) or "balanced_income"
+
+    raw_positions = args.get("positions") or []
+    if raw_positions and not isinstance(raw_positions, list):
+        return json.dumps({"error": "positions must be a list"})
+
+    covered_call_positions = []
+    skipped_positions = []
+
+    for index, raw_position in enumerate(raw_positions):
+        if not isinstance(raw_position, dict):
+            skipped_positions.append({
+                "position_index": index,
+                "error": "Each position must be an object.",
+            })
+            continue
+
+        symbol = str(raw_position.get("symbol") or "").strip().upper()
+        shares_owned = _to_int(raw_position.get("shares_owned"))
+        if not symbol:
+            skipped_positions.append({
+                "position_index": index,
+                "error": "Position is missing symbol.",
+            })
+            continue
+        if shares_owned is None:
+            skipped_positions.append({
+                "position_index": index,
+                "symbol": symbol,
+                "error": "Position is missing shares_owned.",
+            })
+            continue
+        if shares_owned < 100:
+            skipped_positions.append({
+                "position_index": index,
+                "symbol": symbol,
+                "shares_owned": shares_owned,
+                "error": "At least 100 shares are required to sell one standard covered call.",
+            })
+            continue
+
+        position_strategy = _normalize_covered_call_strategy(
+            raw_position.get("covered_call_strategy")
+        ) or default_covered_call_strategy
+        target_exit_price = _to_float(raw_position.get("target_exit_price"))
+        position_args = {
+            "symbol": symbol,
+            "shares_owned": shares_owned,
+            "cost_basis": _to_float(raw_position.get("cost_basis")),
+            "assigned_price": _to_float(raw_position.get("assigned_price")),
+            "premium_received_from_put": _to_float(
+                raw_position.get("premium_received_from_put")
+            ),
+            "covered_call_strategy": position_strategy,
+            "target_exit_price": target_exit_price,
+            "style": covered_call_style,
+            "max_dte": max_call_dte,
+            "min_roi": min_call_roi,
+        }
+
+        payload = json.loads(_handle_covered_call_opportunity(position_args))
+        if payload.get("error"):
+            skipped_positions.append({
+                "position_index": index,
+                "symbol": symbol,
+                "shares_owned": shares_owned,
+                "error": payload["error"],
+            })
+            continue
+
+        best_contract = payload.get("best_contract") or {}
+        contract_delta = _to_float(best_contract.get("delta"))
+        if max_call_delta is not None and (
+            contract_delta is None or abs(contract_delta) > max_call_delta
+        ):
+            skipped_positions.append({
+                "position_index": index,
+                "symbol": symbol,
+                "shares_owned": shares_owned,
+                "error": (
+                    "Best covered call opportunity did not satisfy max_call_delta filter "
+                    f"({max_call_delta})."
+                ),
+            })
+            continue
+
+        covered_call_positions.append({
+            "symbol": symbol,
+            "shares_owned": shares_owned,
+            "covered_share_lots": payload.get("covered_share_lots"),
+            "cost_basis": payload.get("cost_basis"),
+            "classification": payload.get("classification"),
+            "stock_quality_score": payload.get("stock_quality_score"),
+            "quality_score": payload.get("quality_score"),
+            "technical_score": payload.get("technical_score"),
+            "covered_call_strategy": payload.get("covered_call_strategy"),
+            "best_contract": best_contract,
+            "estimated_monthly_income": _estimate_normalized_monthly_income(
+                best_contract.get("premium_income"),
+                best_contract.get("dte"),
+            ),
+            "warnings": payload.get("warnings") or [],
+            "ex_dividend_risk": payload.get("ex_dividend_risk"),
+            "summary": payload.get("summary") or {},
+        })
+
+    covered_call_positions.sort(
+        key=lambda item: (
+            _to_float(item.get("best_contract", {}).get("covered_call_score")) or 0,
+            _to_float(item.get("estimated_monthly_income")) or 0,
+        ),
+        reverse=True,
+    )
+    covered_call_positions = covered_call_positions[:limit]
+
+    primary_put_idea = None
+    alternative_put_ideas = []
+    put_plan_warning = None
+    include_put_ideas = bool(not raw_positions or effective_cash_budget is not None)
+
+    if include_put_ideas:
+        put_scan_args = {"limit": max(3, limit)}
+        if account_size is not None:
+            put_scan_args["account_size"] = account_size
+        if max_cash_required is not None:
+            put_scan_args["max_cash_required"] = max_cash_required
+        if min_put_roi is not None:
+            put_scan_args["min_roi"] = min_put_roi
+        if max_put_delta is not None:
+            put_scan_args["max_delta"] = max_put_delta
+        if max_put_dte is not None:
+            put_scan_args["max_dte"] = max_put_dte
+
+        put_payload = json.loads(_handle_scan_put_opportunities(put_scan_args))
+        if put_payload.get("error"):
+            put_plan_warning = put_payload["error"]
+        else:
+            put_opportunities = put_payload.get("opportunities") or []
+            if put_opportunities:
+                primary_put_idea = {
+                    **put_opportunities[0],
+                    "estimated_monthly_income": _estimate_normalized_monthly_income(
+                        put_opportunities[0].get("premium_received"),
+                        put_opportunities[0].get("dte"),
+                    ),
+                }
+                alternative_put_ideas = [
+                    {
+                        **item,
+                        "estimated_monthly_income": _estimate_normalized_monthly_income(
+                            item.get("premium_received"),
+                            item.get("dte"),
+                        ),
+                    }
+                    for item in put_opportunities[1:limit]
+                ]
+            else:
+                put_plan_warning = "No cash-secured put ideas matched the current filters."
+
+    covered_call_monthly_income = round(
+        sum(
+            _to_float(position.get("estimated_monthly_income")) or 0
+            for position in covered_call_positions
+        ),
+        2,
+    )
+    primary_put_monthly_income = (
+        _to_float(primary_put_idea.get("estimated_monthly_income"))
+        if primary_put_idea
+        else None
+    )
+    total_estimated_monthly_income = round(
+        covered_call_monthly_income + (primary_put_monthly_income or 0),
+        2,
+    )
+
+    warnings = []
+    if not raw_positions:
+        warnings.append(
+            "No owned positions were provided, so the plan defaults to cash-secured put / wheel ideas only."
+        )
+    elif skipped_positions:
+        warnings.append(
+            "Some provided positions could not be used for covered calls and were skipped."
+        )
+    if put_plan_warning:
+        warnings.append(put_plan_warning)
+    if primary_put_idea and len(alternative_put_ideas) > 0:
+        warnings.append(
+            "Alternative CSP ideas reuse the same capital conceptually; do not sum their premiums on top of the primary put idea."
+        )
+    if monthly_income_target is not None:
+        warnings.append(
+            "Monthly estimates are normalized from current option premium and DTE, not guaranteed recurring income."
+        )
+
+    target_met = None
+    estimated_gap_to_target = None
+    if monthly_income_target is not None:
+        target_met = total_estimated_monthly_income >= monthly_income_target
+        estimated_gap_to_target = round(
+            monthly_income_target - total_estimated_monthly_income,
+            2,
+        )
+
+    if covered_call_positions and primary_put_idea:
+        plan_type = "mixed_income_plan"
+    elif covered_call_positions:
+        plan_type = "covered_calls_only"
+    elif primary_put_idea:
+        plan_type = "cash_secured_puts_only"
+    else:
+        return json.dumps(
+            {
+                "error": "No valid monthly income plan candidates found.",
+                "skipped_positions": skipped_positions,
+                "filters_applied": {
+                    "monthly_income_target": monthly_income_target,
+                    "account_size": account_size,
+                    "max_cash_required": max_cash_required,
+                    "effective_max_cash_required": effective_cash_budget,
+                    "min_put_roi": min_put_roi,
+                    "max_put_delta": max_put_delta,
+                    "max_put_dte": max_put_dte,
+                    "min_call_roi": min_call_roi,
+                    "max_call_delta": max_call_delta,
+                    "max_call_dte": max_call_dte,
+                    "covered_call_style": covered_call_style,
+                    "covered_call_strategy": default_covered_call_strategy,
+                },
+                "warnings": _dedupe_preserve_order(warnings),
+            },
+            default=_json_default,
+        )
+
+    return json.dumps(
+        {
+            "plan_type": plan_type,
+            "monthly_income_target": monthly_income_target,
+            "owned_positions_provided": bool(raw_positions),
+            "covered_call_positions_evaluated": len(covered_call_positions),
+            "primary_put_idea_included": primary_put_idea is not None,
+            "covered_call_positions": covered_call_positions,
+            "primary_put_idea": primary_put_idea,
+            "alternative_put_ideas": alternative_put_ideas,
+            "skipped_positions": skipped_positions,
+            "summary": {
+                "estimated_monthly_income_from_covered_calls": covered_call_monthly_income,
+                "estimated_monthly_income_from_primary_put": primary_put_monthly_income,
+                "estimated_total_monthly_income": total_estimated_monthly_income,
+                "monthly_income_target": monthly_income_target,
+                "target_met": target_met,
+                "estimated_gap_to_target": estimated_gap_to_target,
+            },
+            "filters_applied": {
+                "monthly_income_target": monthly_income_target,
+                "account_size": account_size,
+                "max_cash_required": max_cash_required,
+                "effective_max_cash_required": effective_cash_budget,
+                "limit": limit,
+                "min_put_roi": min_put_roi,
+                "max_put_delta": max_put_delta,
+                "max_put_dte": max_put_dte,
+                "min_call_roi": min_call_roi,
+                "max_call_delta": max_call_delta,
+                "max_call_dte": max_call_dte,
+                "covered_call_style": covered_call_style,
+                "covered_call_strategy": default_covered_call_strategy,
+            },
+            "warnings": _dedupe_preserve_order(warnings),
+        },
+        default=_json_default,
+    )
+
+
 def _handle_compare_spread_candidates(args: dict) -> str:
     raw_symbols = args.get("symbols") or []
     if raw_symbols and not isinstance(raw_symbols, list):
@@ -5888,6 +6322,9 @@ def handle_tool_call(tool_name: str, tool_args: dict) -> str:
 
     if tool_name == "get_covered_call_opportunity":
         return _handle_covered_call_opportunity(tool_args)
+
+    if tool_name == "build_monthly_income_plan":
+        return _handle_build_monthly_income_plan(tool_args)
 
     if tool_name == "get_spread_opportunity":
         return _handle_spread_opportunity(tool_args)
