@@ -64,6 +64,8 @@ If the user asks about covered calls, selling calls against owned shares, call i
 - Use `technical_score` only for the stock's technical rating (`Strong Buy`, `Buy`, `Neutral`, `Sell`, `Strong Sell`).
 - Use `stock_quality_score` / `quality_score` only for the underlying stock's quality score.
 - Use `covered_call_score`, `score`, or `rating` only for the evaluated covered call opportunity.
+- If the user says they own a stock "at 70", "at $70", or similar, treat that as `cost_basis` / entry price, not the current market price.
+- Never state a current stock price from the user's entry price. Current price must come from tool output only.
 - If the user provided a cost basis, comment on whether the recommended strike stays above it.
 - If the tool returns earnings or ex-dividend warnings, mention them explicitly.
 - If the user is explicit about their intention (keep shares, maximize premium, sell at a target price, continue the wheel, or avoid assignment for tax reasons), use `covered_call_strategy` to reflect that goal.
@@ -1009,6 +1011,100 @@ def _resolve_cash_secured_budget(*values):
     if not candidates:
         return None
     return min(candidates)
+
+
+def _extract_owned_positions_from_query(query: str) -> list[dict[str, Any]]:
+    if not query:
+        return []
+
+    matches = list(
+        re.finditer(
+            r"\b([A-Za-z][A-Za-z0-9.\-]{0,9})\b\s*(?:at|@)\s*\$?\s*(\d+(?:\.\d+)?)",
+            query,
+        )
+    )
+    if not matches:
+        return []
+
+    global_shares = None
+    shares_each_match = re.search(r"\b(\d+(?:\.\d+)?)\s+shares?\s+each\b", query, re.IGNORECASE)
+    if shares_each_match:
+        global_shares = _to_int(shares_each_match.group(1))
+
+    positions = []
+    seen_symbols = set()
+    ownership_hint_pattern = re.compile(
+        r"\b(own|owned|hold|holding|bought|position|positions|shares?)\b",
+        re.IGNORECASE,
+    )
+
+    for match in matches:
+        symbol = str(match.group(1) or "").strip().upper()
+        cost_basis = _to_float(match.group(2))
+        if not symbol or cost_basis is None:
+            continue
+        if symbol in seen_symbols:
+            continue
+
+        prefix = query[max(0, match.start() - 40):match.start()]
+        if not positions and not ownership_hint_pattern.search(prefix):
+            continue
+
+        suffix = query[match.end():match.end() + 30]
+        shares_owned = None
+        shares_nearby_match = re.search(r"^\s*(?:,|-)?\s*(\d+(?:\.\d+)?)\s+shares?\b", suffix, re.IGNORECASE)
+        if shares_nearby_match:
+            shares_owned = _to_int(shares_nearby_match.group(1))
+        elif global_shares is not None:
+            shares_owned = global_shares
+
+        position = {
+            "symbol": symbol,
+            "cost_basis": cost_basis,
+        }
+        if shares_owned is not None:
+            position["shares_owned"] = shares_owned
+
+        positions.append(position)
+        seen_symbols.add(symbol)
+
+    return positions
+
+
+def _build_structured_query_context(query: str) -> str:
+    positions = _extract_owned_positions_from_query(query)
+    if not positions:
+        return ""
+
+    lines = [
+        "Structured holdings extracted from the user's message:",
+    ]
+    for index, position in enumerate(positions, start=1):
+        line = (
+            f"- position_{index}: symbol={position['symbol']}; "
+            f"cost_basis={position['cost_basis']}"
+        )
+        if position.get("shares_owned") is not None:
+            line += f"; shares_owned={position['shares_owned']}"
+        lines.append(line)
+
+    lines.append(
+        "Important: treat `cost_basis` / entry price as separate from `current_price`. "
+        "Any current stock price must come from tool data or stored market data, not from the entry price in the user's message."
+    )
+    return "\n".join(lines)
+
+
+def _prepare_agent_query(query: str) -> str:
+    normalized_query = (query or "").strip()
+    if not normalized_query:
+        return normalized_query
+
+    structured_context = _build_structured_query_context(normalized_query)
+    if not structured_context:
+        return normalized_query
+
+    return f"{normalized_query}\n\n{structured_context}"
 
 
 def _estimate_normalized_monthly_income(premium_amount, dte):
@@ -6379,6 +6475,7 @@ def run_agent(
     normalized_query = (query or "").strip()
     if not normalized_query:
         raise ValueError("query is required")
+    prepared_query = _prepare_agent_query(normalized_query)
 
     if history is not None and not isinstance(history, list):
         raise ValueError("history must be a list")
@@ -6411,7 +6508,7 @@ def run_agent(
         )
         messages = [
             *conversation_history,
-            {"role": "user", "content": normalized_query},
+            {"role": "user", "content": prepared_query},
         ]
         client = Anthropic(
             api_key=api_key,
@@ -6429,7 +6526,7 @@ def run_agent(
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             *conversation_history,
-            {"role": "user", "content": normalized_query},
+            {"role": "user", "content": prepared_query},
         ]
         openai_client_kwargs = {
             "api_key": api_key,

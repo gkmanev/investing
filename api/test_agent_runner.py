@@ -3,12 +3,25 @@ from unittest.mock import MagicMock, patch
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 
-from api.agent_views import run_agent
+from api.agent_views import _extract_owned_positions_from_query, run_agent
 from api.models import AgentRun
 from api.tasks import run_agent_run
 
 
 class RunAgentTests(TestCase):
+    def test_extract_owned_positions_from_query_parses_cost_basis_and_shared_shares(self) -> None:
+        positions = _extract_owned_positions_from_query(
+            "I own B at 42$, PLTR at 70, 100 shares each"
+        )
+
+        self.assertEqual(
+            positions,
+            [
+                {"symbol": "B", "cost_basis": 42.0, "shares_owned": 100},
+                {"symbol": "PLTR", "cost_basis": 70.0, "shares_owned": 100},
+            ],
+        )
+
     @override_settings(
         AGENT_MODEL_PROVIDER="openai",
         AGENT_MODEL="gpt-4o-mini",
@@ -36,6 +49,38 @@ class RunAgentTests(TestCase):
         _, kwargs = mock_openai.call_args
         self.assertEqual(kwargs["timeout"], 45)
         self.assertEqual(kwargs["max_retries"], 1)
+
+    @override_settings(
+        AGENT_MODEL_PROVIDER="openai",
+        AGENT_MODEL="gpt-4o-mini",
+        OPENAI_API_KEY="test-openai-key",
+    )
+    @patch("api.agent_views.OpenAI")
+    def test_run_agent_appends_structured_holdings_context_to_user_message(
+        self,
+        mock_openai: MagicMock,
+    ) -> None:
+        message = MagicMock()
+        message.tool_calls = None
+        message.content = "Test answer"
+
+        response_payload = MagicMock()
+        response_payload.choices = [MagicMock(message=message)]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = response_payload
+        mock_openai.return_value = mock_client
+
+        query = "Build a monthly income plan. I own B at 42$, PLTR at 70, 100 shares each"
+        result = run_agent(query, [])
+
+        self.assertEqual(result["history"][-2]["content"], query)
+        call_messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
+        user_message = call_messages[-1]["content"]
+        self.assertIn("Structured holdings extracted from the user's message:", user_message)
+        self.assertIn("symbol=B; cost_basis=42.0; shares_owned=100", user_message)
+        self.assertIn("symbol=PLTR; cost_basis=70.0; shares_owned=100", user_message)
+        self.assertIn("current stock price must come from tool data", user_message)
 
     @override_settings(
         AGENT_MODEL_PROVIDER="gemini",
