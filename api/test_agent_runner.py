@@ -3,7 +3,11 @@ from unittest.mock import MagicMock, patch
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 
-from api.agent_views import _extract_owned_positions_from_query, run_agent
+from api.agent_views import (
+    _augment_tool_args_from_query,
+    _extract_owned_positions_from_query,
+    run_agent,
+)
 from api.models import AgentRun
 from api.tasks import run_agent_run
 
@@ -20,6 +24,33 @@ class RunAgentTests(TestCase):
                 {"symbol": "B", "cost_basis": 42.0, "shares_owned": 100},
                 {"symbol": "PLTR", "cost_basis": 70.0, "shares_owned": 100},
             ],
+        )
+
+    def test_augment_tool_args_from_query_applies_follow_up_max_price_filter(self) -> None:
+        augmented_args = _augment_tool_args_from_query(
+            "scan_put_opportunities",
+            {"limit": 10},
+            "Provide the companies below 150$",
+        )
+
+        self.assertEqual(
+            augmented_args,
+            {
+                "limit": 10,
+                "max_price": 150.0,
+            },
+        )
+
+    def test_augment_tool_args_from_query_leaves_other_tools_unchanged(self) -> None:
+        tool_args = {"limit": 10}
+
+        self.assertEqual(
+            _augment_tool_args_from_query(
+                "compare_put_candidates",
+                tool_args,
+                "Provide the companies below 150$",
+            ),
+            tool_args,
         )
 
     @override_settings(
@@ -81,6 +112,35 @@ class RunAgentTests(TestCase):
         self.assertIn("symbol=B; cost_basis=42.0; shares_owned=100", user_message)
         self.assertIn("symbol=PLTR; cost_basis=70.0; shares_owned=100", user_message)
         self.assertIn("current stock price must come from tool data", user_message)
+
+    @override_settings(
+        AGENT_MODEL_PROVIDER="openai",
+        AGENT_MODEL="gpt-4o-mini",
+        OPENAI_API_KEY="test-openai-key",
+    )
+    @patch("api.agent_views.OpenAI")
+    def test_run_agent_appends_structured_price_filter_context_to_user_message(
+        self,
+        mock_openai: MagicMock,
+    ) -> None:
+        message = MagicMock()
+        message.tool_calls = None
+        message.content = "Test answer"
+
+        response_payload = MagicMock()
+        response_payload.choices = [MagicMock(message=message)]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = response_payload
+        mock_openai.return_value = mock_client
+
+        run_agent("Provide the companies below 150$", [])
+
+        call_messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
+        user_message = call_messages[-1]["content"]
+        self.assertIn("Structured screener filters extracted from the user's message:", user_message)
+        self.assertIn("max_price=150.0", user_message)
+        self.assertIn("apply these underlying price filters as hard tool arguments", user_message)
 
     @override_settings(
         AGENT_MODEL_PROVIDER="gemini",
@@ -234,6 +294,51 @@ class RunAgentTests(TestCase):
         self.assertEqual(result["answer"], "Final answer")
         self.assertEqual(mock_client.chat.completions.create.call_count, 2)
         mock_handle_tool_call.assert_called_once_with("analyze_stock", {"symbol": "AAPL"})
+
+    @override_settings(
+        AGENT_MODEL_PROVIDER="openai",
+        AGENT_MODEL="gpt-4o-mini",
+        OPENAI_API_KEY="test-openai-key",
+    )
+    @patch("api.agent_views.handle_tool_call", return_value='{"ok": true}')
+    @patch("api.agent_views.OpenAI")
+    def test_run_agent_applies_follow_up_price_filter_to_scan_put_tool_calls(
+        self,
+        mock_openai: MagicMock,
+        mock_handle_tool_call: MagicMock,
+    ) -> None:
+        tool_call = MagicMock()
+        tool_call.id = "call_1"
+        tool_call.function.name = "scan_put_opportunities"
+        tool_call.function.arguments = '{"limit": 5}'
+
+        first_message = MagicMock()
+        first_message.tool_calls = [tool_call]
+        first_message.model_dump.return_value = {"role": "assistant", "content": None}
+
+        second_message = MagicMock()
+        second_message.tool_calls = None
+        second_message.content = "Filtered answer"
+
+        first_response = MagicMock()
+        first_response.choices = [MagicMock(message=first_message)]
+        second_response = MagicMock()
+        second_response.choices = [MagicMock(message=second_message)]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = [first_response, second_response]
+        mock_openai.return_value = mock_client
+
+        result = run_agent("Provide the companies below 150$", [])
+
+        self.assertEqual(result["answer"], "Filtered answer")
+        mock_handle_tool_call.assert_called_once_with(
+            "scan_put_opportunities",
+            {
+                "limit": 5,
+                "max_price": 150.0,
+            },
+        )
 
     @override_settings(
         AGENT_MODEL_PROVIDER="openai",

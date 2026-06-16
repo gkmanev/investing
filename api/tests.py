@@ -3449,6 +3449,65 @@ class PutWheelAgentViewTests(APITestCase):
         self.assertEqual(payload["opportunities"][0]["contracts_affordable"], 1)
         self.assertEqual(payload["filters_applied"]["effective_max_cash_required"], 10000)
 
+    def test_handle_scan_put_opportunities_respects_max_price(self) -> None:
+        expiration = date.today() + timedelta(days=28)
+        Symbol.objects.create(
+            ticker="UNDER",
+            price=Decimal("125.00"),
+            rsi=Decimal("49.00"),
+            score=88,
+            classification="High-quality compounder",
+            liquidity=Symbol.LIQUIDITY_GOOD,
+            technical_score=Symbol.TechnicalScore.BUY,
+            option_data={
+                "puts": [
+                    {
+                        "strike": 110,
+                        "expiration": expiration.isoformat(),
+                        "bid": 3.60,
+                        "ask": 4.00,
+                        "delta": -0.24,
+                        "iv": 34.00,
+                        "volume": 260,
+                        "open_interest": 1200,
+                    }
+                ]
+            },
+        )
+        Symbol.objects.create(
+            ticker="OVER",
+            price=Decimal("220.00"),
+            rsi=Decimal("45.00"),
+            score=96,
+            classification="High-quality compounder",
+            liquidity=Symbol.LIQUIDITY_GOOD,
+            technical_score=Symbol.TechnicalScore.STRONG_BUY,
+            option_data={
+                "puts": [
+                    {
+                        "strike": 200,
+                        "expiration": expiration.isoformat(),
+                        "bid": 7.00,
+                        "ask": 7.60,
+                        "delta": -0.24,
+                        "iv": 31.00,
+                        "volume": 340,
+                        "open_interest": 1800,
+                    }
+                ]
+            },
+        )
+
+        payload = json.loads(
+            agent_views._handle_scan_put_opportunities(
+                {"max_price": 150}
+            )
+        )
+
+        self.assertEqual(payload["results_returned"], 1)
+        self.assertEqual(payload["filters_applied"]["max_price"], 150.0)
+        self.assertEqual(payload["opportunities"][0]["ticker"], "UNDER")
+
     def test_handle_compare_covered_call_candidates_ranks_symbols_and_filters_errors(
         self,
     ) -> None:

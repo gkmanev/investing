@@ -29,6 +29,8 @@ You are a long-term equity analyst and options trading assistant.
 
 Always format your responses using Markdown. Use **bold** for emphasis, `## headers` to separate sections, bullet lists for flags/signals, and tables for ranked comparisons or multi-ticker data. Never return plain prose where a table or list would be clearer.
 
+For follow-up screener refinements, rerun the relevant tool with the updated hard filters. Do not manually restate, prune, or partially reuse a previously rendered table when the user adds a new constraint.
+
 If the user asks about long-term business quality, fundamentals, moat, financial health, balance sheet, margins, ROIC, FCF, or whether the company is good to own, call analyze_stock.
 
 The tool returns a structured report with:
@@ -178,6 +180,7 @@ Always cite the specific numbers returned by the tool:
 If the user asks for best ideas for PUTs, Wheels and CSP - Cash Secured Puts across the market, top candidates, screeners, scans, ranked opportunities, or generally asks which puts to suggest without naming a ticker, call scan_put_opportunities.
 - The tool scans all tracked symbols and returns the highest-scoring cash-secured put contracts ranked by opportunity score.
 - Optional filters: limit (number of results), min_roi (%), max_dte (days to expiration), min_price, max_price, max_delta, and `account_size` / `max_cash_required` for CSP affordability.
+- If the user asks for companies, stocks, or tickers below / under a dollar threshold, map that to `max_price` on the underlying stock price. If they ask for above / over a threshold, map that to `min_price`.
 
 When interpreting scan_put_opportunities results:
 - If the user provides a dollar budget for cash-secured puts, treat it as a hard affordability filter rather than a preference.
@@ -1071,27 +1074,102 @@ def _extract_owned_positions_from_query(query: str) -> list[dict[str, Any]]:
     return positions
 
 
+def _extract_underlying_price_filters_from_query(query: str) -> dict[str, float]:
+    if not query:
+        return {}
+
+    normalized_query = " ".join(str(query).split())
+    amount_pattern = r"\$?\s*(\d+(?:\.\d+)?)\s*(?:\$|dollars?)?"
+    scope_pattern = r"(?:stocks?|companies|tickers?|names|underlyings?)"
+
+    range_patterns = [
+        rf"\b{scope_pattern}\b(?:\s+\w+){{0,4}}\s+(?:priced\s+)?between\s*{amount_pattern}\s+and\s*{amount_pattern}\b",
+        rf"\b{scope_pattern}\b(?:\s+\w+){{0,4}}\s+(?:priced\s+)?from\s*{amount_pattern}\s+to\s*{amount_pattern}\b",
+        rf"\b(?:priced|trading)\s+between\s*{amount_pattern}\s+and\s*{amount_pattern}\b",
+        rf"\b(?:priced|trading)\s+from\s*{amount_pattern}\s+to\s*{amount_pattern}\b",
+    ]
+    for pattern in range_patterns:
+        match = re.search(pattern, normalized_query, re.IGNORECASE)
+        if not match:
+            continue
+        first_amount = _to_float(match.group(1))
+        second_amount = _to_float(match.group(2))
+        if first_amount is None or second_amount is None:
+            continue
+        min_price, max_price = sorted((first_amount, second_amount))
+        return {
+            "min_price": min_price,
+            "max_price": max_price,
+        }
+
+    max_patterns = [
+        rf"\b{scope_pattern}\b(?:\s+\w+){{0,4}}\s+(?:priced\s+)?(?:below|under|less than|up to|at most|no more than)\s*{amount_pattern}\b",
+        rf"\b(?:priced|trading)\s+(?:below|under|less than|up to|at most|no more than)\s*{amount_pattern}\b",
+        rf"^\s*(?:provide|show|list|find|screen|give me)?(?:\s+the)?(?:\s+{scope_pattern})?(?:\s+(?:that are|which are))?\s*(?:priced\s+)?(?:below|under|less than|up to|at most|no more than)\s*{amount_pattern}\s*$",
+    ]
+    for pattern in max_patterns:
+        match = re.search(pattern, normalized_query, re.IGNORECASE)
+        if not match:
+            continue
+        max_price = _to_float(match.group(1))
+        if max_price is not None:
+            return {"max_price": max_price}
+
+    min_patterns = [
+        rf"\b{scope_pattern}\b(?:\s+\w+){{0,4}}\s+(?:priced\s+)?(?:above|over|more than|greater than|at least|no less than)\s*{amount_pattern}\b",
+        rf"\b(?:priced|trading)\s+(?:above|over|more than|greater than|at least|no less than)\s*{amount_pattern}\b",
+        rf"^\s*(?:provide|show|list|find|screen|give me)?(?:\s+the)?(?:\s+{scope_pattern})?(?:\s+(?:that are|which are))?\s*(?:priced\s+)?(?:above|over|more than|greater than|at least|no less than)\s*{amount_pattern}\s*$",
+    ]
+    for pattern in min_patterns:
+        match = re.search(pattern, normalized_query, re.IGNORECASE)
+        if not match:
+            continue
+        min_price = _to_float(match.group(1))
+        if min_price is not None:
+            return {"min_price": min_price}
+
+    return {}
+
+
 def _build_structured_query_context(query: str) -> str:
     positions = _extract_owned_positions_from_query(query)
-    if not positions:
+    price_filters = _extract_underlying_price_filters_from_query(query)
+    if not positions and not price_filters:
         return ""
 
-    lines = [
-        "Structured holdings extracted from the user's message:",
-    ]
-    for index, position in enumerate(positions, start=1):
-        line = (
-            f"- position_{index}: symbol={position['symbol']}; "
-            f"cost_basis={position['cost_basis']}"
-        )
-        if position.get("shares_owned") is not None:
-            line += f"; shares_owned={position['shares_owned']}"
-        lines.append(line)
+    lines = []
+    if positions:
+        lines.append("Structured holdings extracted from the user's message:")
+        for index, position in enumerate(positions, start=1):
+            line = (
+                f"- position_{index}: symbol={position['symbol']}; "
+                f"cost_basis={position['cost_basis']}"
+            )
+            if position.get("shares_owned") is not None:
+                line += f"; shares_owned={position['shares_owned']}"
+            lines.append(line)
 
-    lines.append(
-        "Important: treat `cost_basis` / entry price as separate from `current_price`. "
-        "Any current stock price must come from tool data or stored market data, not from the entry price in the user's message."
-    )
+        lines.append(
+            "Important: treat `cost_basis` / entry price as separate from `current_price`. "
+            "Any current stock price must come from tool data or stored market data, not from the entry price in the user's message."
+        )
+
+    if price_filters:
+        if lines:
+            lines.append("")
+        lines.append("Structured screener filters extracted from the user's message:")
+        if price_filters.get("min_price") is not None:
+            lines.append(
+                f"- min_price={price_filters['min_price']} (underlying stock price floor)"
+            )
+        if price_filters.get("max_price") is not None:
+            lines.append(
+                f"- max_price={price_filters['max_price']} (underlying stock price cap)"
+            )
+        lines.append(
+            "Important: for market-wide stock or option scans, apply these underlying price filters as hard tool arguments."
+        )
+
     return "\n".join(lines)
 
 
@@ -6446,6 +6524,19 @@ def handle_tool_call(tool_name: str, tool_args: dict) -> str:
     return json.dumps({"error": f"Unknown tool: {tool_name}"})
 
 
+def _augment_tool_args_from_query(tool_name: str, tool_args: dict, user_query: str) -> dict:
+    if tool_name != "scan_put_opportunities":
+        return tool_args
+
+    price_filters = _extract_underlying_price_filters_from_query(user_query)
+    if not price_filters:
+        return tool_args
+
+    merged_args = dict(tool_args or {})
+    merged_args.update(price_filters)
+    return merged_args
+
+
 def _get_agent_provider() -> str:
     provider = str(getattr(settings, "AGENT_MODEL_PROVIDER", "anthropic")).strip().lower()
     if provider not in {"anthropic", "openai", "gemini"}:
@@ -6636,7 +6727,12 @@ def run_agent(
                     iteration,
                     tool_use.name,
                 )
-                result = handle_tool_call(tool_use.name, tool_use.input)
+                tool_input = _augment_tool_args_from_query(
+                    tool_use.name,
+                    tool_use.input,
+                    normalized_query,
+                )
+                result = handle_tool_call(tool_use.name, tool_input)
                 logger.info(
                     "Agent tool complete run_id=%s iteration=%s tool=%s duration=%.2fs",
                     agent_run_id,
@@ -6702,9 +6798,14 @@ def run_agent(
                     iteration,
                     tool_call.function.name,
                 )
-                result = handle_tool_call(
+                tool_args = _augment_tool_args_from_query(
                     tool_call.function.name,
                     json.loads(tool_call.function.arguments),
+                    normalized_query,
+                )
+                result = handle_tool_call(
+                    tool_call.function.name,
+                    tool_args,
                 )
                 logger.info(
                     "Agent tool complete run_id=%s iteration=%s tool=%s duration=%.2fs",
