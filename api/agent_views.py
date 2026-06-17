@@ -5,6 +5,7 @@ import re
 import time
 import urllib.request
 import urllib.error
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Dict, List
@@ -17,6 +18,8 @@ from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from api import agent_request as agent_request_runtime
+from api import agent_response as agent_response_runtime
 from api.helper import FinancialMetricsCalculator
 from api.models import AgentRun, Symbol
 
@@ -24,8 +27,49 @@ from api.models import AgentRun, Symbol
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class RequestContext:
+    raw_query: str
+    current_intent: str | None = None
+    active_intent: str | None = None
+    explicit_symbols: list[str] = field(default_factory=list)
+    positions: list[dict[str, Any]] = field(default_factory=list)
+    monthly_income_target: float | None = None
+    cash_budget: float | None = None
+    price_filters: dict[str, float] = field(default_factory=dict)
+    market_scan_requested: bool = False
+    comparison_requested: bool = False
+    max_dte: int | None = None
+    max_delta: float | None = None
+    min_roi: float | None = None
+    max_risk: float | None = None
+    directional_view: str | None = None
+    risk_profile: str | None = None
+    spread_type: str | None = None
+    source_user_messages: list[str] = field(default_factory=list)
+
+
+@dataclass
+class RouteDecision:
+    kind: str
+    tool_name: str | None = None
+    tool_args: dict[str, Any] = field(default_factory=dict)
+    clarification_message: str | None = None
+    reason: str | None = None
+
+
 SYSTEM_PROMPT = """
 You are a long-term equity analyst and options trading assistant.
+
+Ticker disambiguation — apply before every tool call:
+- The word "I" in natural language is always the first-person pronoun, never the ticker I (Intellicheck).
+  Phrases like "I have", "I want", "I own", "I need" mean the speaker is talking — not mentioning a stock.
+- Never create a `positions` entry whose symbol comes from a pronoun or filler word.
+  The following are common English words that are NOT ticker symbols in conversational context:
+  A, I, AM, AT, BE, BY, DO, GO, IN, IS, IT, ME, MY, NO, OF, ON, OR, SO, TO, UP, US, WE
+- When the user says "I have 500$ monthly income target" (or similar), call build_monthly_income_plan
+  with monthly_income_target=500. Do NOT add a position for "I".
+- If you are genuinely unsure whether a word is a ticker, ask the user to confirm before calling any tool.
 
 Always format your responses using Markdown. Use **bold** for emphasis, `## headers` to separate sections, bullet lists for flags/signals, and tables for ranked comparisons or multi-ticker data. Never return plain prose where a table or list would be clearer.
 
@@ -1071,6 +1115,33 @@ def _extract_owned_positions_from_query(query: str) -> list[dict[str, Any]]:
         positions.append(position)
         seen_symbols.add(symbol)
 
+    quantity_patterns = [
+        r"\b(?:own|owned|hold|holding|bought)\s+(\d+(?:\.\d+)?)\s+shares?\s+of\s+([A-Za-z][A-Za-z0-9.\-]{0,9})\b",
+        r"\b([A-Za-z][A-Za-z0-9.\-]{0,9})\b\s*(?:,|-)?\s*(\d+(?:\.\d+)?)\s+shares?\b",
+        r"\b(\d+(?:\.\d+)?)\s+shares?\s+of\s+([A-Za-z][A-Za-z0-9.\-]{0,9})\b",
+    ]
+    for pattern in quantity_patterns:
+        for match in re.finditer(pattern, query, re.IGNORECASE):
+            first = str(match.group(1) or "").strip()
+            second = str(match.group(2) or "").strip()
+            if re.fullmatch(r"\d+(?:\.\d+)?", first):
+                shares_owned = _to_int(first)
+                symbol = second.upper()
+            else:
+                symbol = first.upper()
+                shares_owned = _to_int(second)
+
+            if not symbol or shares_owned is None or symbol in seen_symbols:
+                continue
+            if _looks_like_common_word(symbol):
+                continue
+
+            positions.append({
+                "symbol": symbol,
+                "shares_owned": shares_owned,
+            })
+            seen_symbols.add(symbol)
+
     return positions
 
 
@@ -1249,6 +1320,617 @@ def _extract_monthly_income_target_from_query(query: str) -> float | None:
             return amount
 
     return None
+
+
+def _extract_cash_budget_from_query(query: str) -> float | None:
+    if not query:
+        return None
+
+    normalized_query = " ".join(str(query).split())
+    amount_pattern = r"\$?\s*(\d+(?:\.\d+)?)\s*(?:\$|dollars?)?"
+    budget_patterns = [
+        rf"\b(?:available cash|cash available|buying power|max cash required|cash budget|collateral budget)\b(?:\s+is|\s+of|\s+around|\s+about)?\s*{amount_pattern}\b",
+        rf"\b(?:allocate|use|deploy)\b\s*{amount_pattern}\s*\b(?:for|into)\b(?:\s+cash-secured puts?| options?)?",
+        rf"{amount_pattern}\s*\b(?:available cash|buying power|cash budget|collateral budget)\b",
+    ]
+
+    for pattern in budget_patterns:
+        match = re.search(pattern, normalized_query, re.IGNORECASE)
+        if not match:
+            continue
+        amount = _to_float(match.group(1))
+        if amount is not None and amount > 0:
+            return amount
+
+    return None
+
+
+def _extract_intent_from_query(query: str) -> str | None:
+    if not query:
+        return None
+
+    normalized_query = " ".join(str(query).split()).lower()
+
+    if re.search(
+        r"\b(monthly income plan|income plan|reliable income|consistent income|portfolio income|monthly income target)\b",
+        normalized_query,
+    ):
+        return "monthly_income_plan"
+
+    if re.search(
+        r"\b(cash[-\s]?secured puts?|csp\b|wheel strategy|wheel\b|sell(?:ing)? puts?|put ideas?|short puts?)\b",
+        normalized_query,
+    ):
+        return "put_options"
+
+    if re.search(
+        r"\b(covered calls?|sell(?:ing)? calls? against|call[-\s]?away|call income)\b",
+        normalized_query,
+    ):
+        return "covered_calls"
+
+    if re.search(
+        r"\b(credit spreads?|debit spreads?|vertical spreads?|bull put spreads?|bear call spreads?|bull call spreads?|bear put spreads?|iron condors?|iron butterflies?|defined[-\s]?risk)\b",
+        normalized_query,
+    ):
+        return "spreads"
+
+    return None
+
+
+def _query_requests_market_scan(query: str) -> bool:
+    if not query:
+        return False
+
+    normalized_query = " ".join(str(query).split()).lower()
+    return bool(
+        re.search(
+            r"\b(best|top|screen|scan|rank|ranking|ideas|opportunities|across the market|across all stocks|all tracked symbols)\b",
+            normalized_query,
+        )
+    )
+
+
+def _query_requests_comparison(query: str) -> bool:
+    if not query:
+        return False
+
+    normalized_query = " ".join(str(query).split()).lower()
+    return bool(
+        re.search(
+            r"\b(compare|comparison|better|best among|rank|ranking|which one|which is better|vs\.?|versus)\b",
+            normalized_query,
+        )
+    )
+
+
+def _extract_max_dte_from_query(query: str) -> int | None:
+    if not query:
+        return None
+
+    normalized_query = " ".join(str(query).split())
+    patterns = [
+        r"\bmax(?:imum)?\s+dte\b(?:\s+of|\s+is|\s+under|\s+below|\s+up to)?\s*(\d+)\b",
+        r"\b(?:under|below|up to|at most|no more than|max)\s*(\d+)\s*dte\b",
+        r"\b(?:under|below|up to|at most|no more than|max)\s*(\d+)\s*days?(?:\s+to\s+expiration)?\b",
+        r"\b(\d+)\s*dte\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, normalized_query, re.IGNORECASE)
+        if not match:
+            continue
+        value = _to_int(match.group(1))
+        if value is not None and value > 0:
+            return value
+    return None
+
+
+def _extract_max_delta_from_query(query: str) -> float | None:
+    if not query:
+        return None
+
+    normalized_query = " ".join(str(query).split())
+    patterns = [
+        r"\bmax(?:imum)?\s+delta\b(?:\s+of|\s+is|\s+under|\s+below|\s+up to)?\s*(-?\d+(?:\.\d+)?)\b",
+        r"\bdelta\b(?:\s+under|\s+below|\s+up to|\s+at most)?\s*(-?\d+(?:\.\d+)?)\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, normalized_query, re.IGNORECASE)
+        if not match:
+            continue
+        value = _to_float(match.group(1))
+        if value is None:
+            continue
+        if value > 1:
+            value = value / 100 if value <= 100 else value
+        value = abs(value)
+        if 0 < value <= 1:
+            return value
+    return None
+
+
+def _extract_min_roi_from_query(query: str) -> float | None:
+    if not query:
+        return None
+
+    normalized_query = " ".join(str(query).split())
+    patterns = [
+        r"\bmin(?:imum)?\s+(?:roi|yield|premium yield|return on investment)\b(?:\s+of|\s+is|\s+above|\s+over|\s+at least)?\s*(\d+(?:\.\d+)?)\s*%?",
+        r"\b(?:roi|yield|premium yield)\b(?:\s+above|\s+over|\s+at least)?\s*(\d+(?:\.\d+)?)\s*%?",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, normalized_query, re.IGNORECASE)
+        if not match:
+            continue
+        value = _to_float(match.group(1))
+        if value is not None and value > 0:
+            return value
+    return None
+
+
+def _extract_max_risk_from_query(query: str) -> float | None:
+    if not query:
+        return None
+
+    normalized_query = " ".join(str(query).split())
+    amount_pattern = r"\$?\s*(\d+(?:\.\d+)?)\s*(?:\$|dollars?)?"
+    patterns = [
+        rf"\bmax(?:imum)?\s+risk\b(?:\s+of|\s+is|\s+under|\s+below|\s+up to)?\s*{amount_pattern}\b",
+        rf"\b(?:risk|loss)\b(?:\s+under|\s+below|\s+up to|\s+at most|<)\s*{amount_pattern}\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, normalized_query, re.IGNORECASE)
+        if not match:
+            continue
+        value = _to_float(match.group(1))
+        if value is not None and value > 0:
+            return value
+    return None
+
+
+def _extract_directional_view_from_query(query: str) -> str | None:
+    if not query:
+        return None
+
+    normalized_query = " ".join(str(query).split()).lower()
+    if re.search(r"\b(neutral|sideways|range[-\s]?bound)\b", normalized_query):
+        return "neutral"
+    if re.search(r"\b(bearish|downside|bear call|bear put)\b", normalized_query):
+        return "bearish"
+    if re.search(r"\b(bullish|upside|bull put|bull call)\b", normalized_query):
+        return "bullish"
+    return None
+
+
+def _extract_risk_profile_from_query(query: str) -> str | None:
+    if not query:
+        return None
+
+    normalized_query = " ".join(str(query).split()).lower()
+    if re.search(r"\b(conservative|safer|low[-\s]?risk|high probability)\b", normalized_query):
+        return "conservative"
+    if re.search(r"\b(aggressive|higher risk|speculative)\b", normalized_query):
+        return "aggressive"
+    if re.search(r"\b(balanced|moderate)\b", normalized_query):
+        return "balanced"
+    return None
+
+
+def _extract_spread_type_from_query(query: str) -> str | None:
+    if not query:
+        return None
+
+    normalized_query = " ".join(str(query).split()).lower()
+    if "bull put" in normalized_query:
+        return "bull_put_credit_spread"
+    if "bear call" in normalized_query:
+        return "bear_call_credit_spread"
+    if "bull call" in normalized_query:
+        return "bull_call_debit_spread"
+    if "bear put" in normalized_query:
+        return "bear_put_debit_spread"
+    if "iron condor" in normalized_query:
+        return "iron_condor"
+    if "iron butterfly" in normalized_query:
+        return "iron_butterfly"
+    if "credit spread" in normalized_query or "defined-risk income" in normalized_query:
+        return "auto"
+    if "debit spread" in normalized_query:
+        return "auto"
+    return None
+
+
+def _merge_positions(
+    existing_positions: list[dict[str, Any]],
+    new_positions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged_by_symbol: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+
+    for position in [*(existing_positions or []), *(new_positions or [])]:
+        if not isinstance(position, dict):
+            continue
+        symbol = str(position.get("symbol") or "").strip().upper()
+        if not symbol or _looks_like_common_word(symbol):
+            continue
+        if symbol not in merged_by_symbol:
+            merged_by_symbol[symbol] = {"symbol": symbol}
+            order.append(symbol)
+        for key, value in position.items():
+            if key == "symbol":
+                continue
+            if value is not None:
+                merged_by_symbol[symbol][key] = value
+
+    return [merged_by_symbol[symbol] for symbol in order]
+
+
+def _extract_user_messages_from_history(
+    history: list[dict[str, Any]] | None,
+) -> list[str]:
+    if not history:
+        return []
+
+    messages = []
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        if item.get("role") != "user":
+            continue
+        content = item.get("content")
+        if isinstance(content, str) and content.strip():
+            messages.append(content.strip())
+    return messages
+
+
+def _build_request_context(
+    query: str,
+    history: list[dict[str, Any]] | None = None,
+) -> RequestContext:
+    user_messages = _extract_user_messages_from_history(history)
+    source_messages = [*user_messages, query]
+    current_intent = _extract_intent_from_query(query)
+    active_intent = current_intent
+    explicit_symbols: list[str] = []
+    positions: list[dict[str, Any]] = []
+    monthly_income_target = None
+    cash_budget = None
+    max_dte = None
+    max_delta = None
+    min_roi = None
+    max_risk = None
+    directional_view = None
+    risk_profile = None
+    spread_type = None
+
+    for message in source_messages:
+        message_intent = _extract_intent_from_query(message)
+        if message_intent:
+            active_intent = message_intent
+
+        message_symbols = _extract_explicit_symbols_from_query(message)
+        if message_symbols:
+            explicit_symbols = message_symbols
+
+        message_positions = _extract_owned_positions_from_query(message)
+        if message_positions:
+            positions = _merge_positions(positions, message_positions)
+
+        message_target = _extract_monthly_income_target_from_query(message)
+        if message_target is not None:
+            monthly_income_target = message_target
+
+        message_budget = _extract_cash_budget_from_query(message)
+        if message_budget is not None:
+            cash_budget = message_budget
+
+        message_max_dte = _extract_max_dte_from_query(message)
+        if message_max_dte is not None:
+            max_dte = message_max_dte
+
+        message_max_delta = _extract_max_delta_from_query(message)
+        if message_max_delta is not None:
+            max_delta = message_max_delta
+
+        message_min_roi = _extract_min_roi_from_query(message)
+        if message_min_roi is not None:
+            min_roi = message_min_roi
+
+        message_max_risk = _extract_max_risk_from_query(message)
+        if message_max_risk is not None:
+            max_risk = message_max_risk
+
+        message_directional_view = _extract_directional_view_from_query(message)
+        if message_directional_view is not None:
+            directional_view = message_directional_view
+
+        message_risk_profile = _extract_risk_profile_from_query(message)
+        if message_risk_profile is not None:
+            risk_profile = message_risk_profile
+
+        message_spread_type = _extract_spread_type_from_query(message)
+        if message_spread_type is not None:
+            spread_type = message_spread_type
+
+    return RequestContext(
+        raw_query=query,
+        current_intent=current_intent,
+        active_intent=active_intent,
+        explicit_symbols=explicit_symbols,
+        positions=positions,
+        monthly_income_target=monthly_income_target,
+        cash_budget=cash_budget,
+        price_filters=_extract_underlying_price_filters_from_query(query),
+        market_scan_requested=_query_requests_market_scan(query),
+        comparison_requested=_query_requests_comparison(query),
+        max_dte=max_dte,
+        max_delta=max_delta,
+        min_roi=min_roi,
+        max_risk=max_risk,
+        directional_view=directional_view,
+        risk_profile=risk_profile,
+        spread_type=spread_type,
+        source_user_messages=source_messages,
+    )
+
+
+def _has_usable_covered_call_position(positions: list[dict[str, Any]]) -> bool:
+    for position in positions or []:
+        shares_owned = _to_int(position.get("shares_owned"))
+        if shares_owned is not None and shares_owned >= 100:
+            return True
+    return False
+
+
+def _build_monthly_income_plan_clarification(context: RequestContext) -> str:
+    parts = ["Need one more input to build the monthly income plan."]
+    if context.monthly_income_target is not None:
+        target_display = (
+            int(context.monthly_income_target)
+            if float(context.monthly_income_target).is_integer()
+            else round(context.monthly_income_target, 2)
+        )
+        parts.append(f"I noted the monthly income target as `${target_display}`.")
+
+    if context.positions and not _has_usable_covered_call_position(context.positions):
+        parts.append(
+            "Provide share counts for your owned positions, with at least 100 shares per ticker for covered calls, or provide the cash you want to allocate to cash-secured puts."
+        )
+    else:
+        parts.append(
+            "Provide either your owned positions with ticker and share count, or the amount of available cash / buying power you want to allocate to cash-secured puts."
+        )
+
+    return " ".join(parts)
+
+
+def _build_put_clarification(context: RequestContext) -> str:
+    if context.market_scan_requested or context.price_filters:
+        return (
+            "Need one more detail to run the put scan cleanly. "
+            "Specify whether you want the best cash-secured puts across the market, or name one or more tickers to evaluate directly."
+        )
+
+    return (
+        "Need a ticker or a clear market-wide scan request before evaluating put opportunities. "
+        "You can name one ticker, provide several tickers to compare, or ask for the best puts across the market."
+    )
+
+
+def _build_covered_call_clarification(context: RequestContext) -> str:
+    if context.positions and not _has_usable_covered_call_position(context.positions):
+        return (
+            "Need share counts before evaluating covered calls. "
+            "Provide a ticker with at least 100 shares owned, or ask for a market-wide covered call scan instead."
+        )
+
+    return (
+        "Need a ticker, owned position, or a clear market-wide scan request before evaluating covered calls. "
+        "You can name one ticker, provide several tickers to compare, share your owned positions with share counts, or ask for the best covered calls across the market."
+    )
+
+
+def _build_spread_clarification(context: RequestContext) -> str:
+    return (
+        "Need a ticker or a clear market-wide scan request before evaluating spread opportunities. "
+        "You can name one ticker, provide several tickers to compare, or ask for the best spreads across the market."
+    )
+
+
+def _route_request(context: RequestContext) -> RouteDecision:
+    if context.active_intent == "monthly_income_plan":
+        has_usable_positions = _has_usable_covered_call_position(context.positions)
+        if not has_usable_positions and context.cash_budget is None:
+            return RouteDecision(
+                kind="clarification",
+                clarification_message=_build_monthly_income_plan_clarification(context),
+                reason="monthly_income_plan_missing_positions_or_cash",
+            )
+
+        tool_args: dict[str, Any] = {}
+        if context.monthly_income_target is not None:
+            tool_args["monthly_income_target"] = context.monthly_income_target
+        if context.positions:
+            tool_args["positions"] = context.positions
+        if context.cash_budget is not None:
+            tool_args["account_size"] = context.cash_budget
+            tool_args["max_cash_required"] = context.cash_budget
+        return RouteDecision(
+            kind="tool",
+            tool_name="build_monthly_income_plan",
+            tool_args=tool_args,
+            reason="deterministic_monthly_income_plan",
+        )
+
+    if context.active_intent == "put_options":
+        tool_args: dict[str, Any] = {}
+        if context.cash_budget is not None:
+            tool_args["account_size"] = context.cash_budget
+            tool_args["max_cash_required"] = context.cash_budget
+
+        if len(context.explicit_symbols) == 1:
+            tool_args["symbol"] = context.explicit_symbols[0]
+            return RouteDecision(
+                kind="tool",
+                tool_name="get_put_wheel_opportunity",
+                tool_args=tool_args,
+                reason="deterministic_single_put_symbol",
+            )
+
+        if len(context.explicit_symbols) > 1:
+            tool_args["symbols"] = context.explicit_symbols
+            return RouteDecision(
+                kind="tool",
+                tool_name="compare_put_candidates",
+                tool_args=tool_args,
+                reason="deterministic_multi_put_compare",
+            )
+
+        if context.market_scan_requested or context.price_filters or context.cash_budget is not None:
+            tool_args.update(context.price_filters)
+            return RouteDecision(
+                kind="tool",
+                tool_name="scan_put_opportunities",
+                tool_args=tool_args,
+                reason="deterministic_put_scan",
+            )
+
+        return RouteDecision(
+            kind="clarification",
+            clarification_message=_build_put_clarification(context),
+            reason="put_request_missing_symbol_or_scan_scope",
+        )
+
+    if context.active_intent == "covered_calls":
+        route_symbols = context.explicit_symbols or [
+            str(position.get("symbol") or "").strip().upper()
+            for position in context.positions
+            if str(position.get("symbol") or "").strip()
+        ]
+        route_symbols = [
+            symbol for symbol in route_symbols if symbol and not _looks_like_common_word(symbol)
+        ]
+
+        if len(route_symbols) > 1 or (
+            context.comparison_requested and len(route_symbols) >= 1
+        ):
+            tool_args: dict[str, Any] = {"symbols": route_symbols}
+            if context.max_delta is not None:
+                tool_args["max_delta"] = context.max_delta
+            if context.min_roi is not None:
+                tool_args["min_roi"] = context.min_roi
+            return RouteDecision(
+                kind="tool",
+                tool_name="compare_covered_call_candidates",
+                tool_args=tool_args,
+                reason="deterministic_covered_call_compare",
+            )
+
+        if len(route_symbols) == 1:
+            symbol = route_symbols[0]
+            matching_position = next(
+                (
+                    position
+                    for position in context.positions
+                    if str(position.get("symbol") or "").strip().upper() == symbol
+                ),
+                None,
+            )
+            tool_args = {"symbol": symbol}
+            if matching_position is not None:
+                if _to_int(matching_position.get("shares_owned")) is not None:
+                    tool_args["shares_owned"] = _to_int(matching_position.get("shares_owned"))
+                if _to_float(matching_position.get("cost_basis")) is not None:
+                    tool_args["cost_basis"] = _to_float(matching_position.get("cost_basis"))
+                if _to_float(matching_position.get("assigned_price")) is not None:
+                    tool_args["assigned_price"] = _to_float(matching_position.get("assigned_price"))
+                if _to_float(matching_position.get("premium_received_from_put")) is not None:
+                    tool_args["premium_received_from_put"] = _to_float(
+                        matching_position.get("premium_received_from_put")
+                    )
+            if context.max_dte is not None:
+                tool_args["max_dte"] = context.max_dte
+            if context.min_roi is not None:
+                tool_args["min_roi"] = context.min_roi
+            return RouteDecision(
+                kind="tool",
+                tool_name="get_covered_call_opportunity",
+                tool_args=tool_args,
+                reason="deterministic_single_covered_call",
+            )
+
+        if context.market_scan_requested:
+            tool_args = {}
+            if context.max_dte is not None:
+                tool_args["max_dte"] = context.max_dte
+            if context.max_delta is not None:
+                tool_args["max_delta"] = context.max_delta
+            if context.min_roi is not None:
+                tool_args["min_roi"] = context.min_roi
+            return RouteDecision(
+                kind="tool",
+                tool_name="scan_covered_call_opportunities",
+                tool_args=tool_args,
+                reason="deterministic_covered_call_scan",
+            )
+
+        return RouteDecision(
+            kind="clarification",
+            clarification_message=_build_covered_call_clarification(context),
+            reason="covered_call_missing_symbol_position_or_scan_scope",
+        )
+
+    if context.active_intent == "spreads":
+        spread_tool_args: dict[str, Any] = {}
+        if context.spread_type is not None:
+            spread_tool_args["spread_type"] = context.spread_type
+        if context.directional_view is not None:
+            spread_tool_args["directional_view"] = context.directional_view
+        if context.risk_profile is not None:
+            spread_tool_args["risk_profile"] = context.risk_profile
+        if context.max_dte is not None:
+            spread_tool_args["max_dte"] = context.max_dte
+        if context.max_risk is not None:
+            spread_tool_args["max_risk"] = context.max_risk
+
+        if len(context.explicit_symbols) > 1:
+            spread_tool_args["symbols"] = context.explicit_symbols
+            return RouteDecision(
+                kind="tool",
+                tool_name="compare_spread_candidates",
+                tool_args=spread_tool_args,
+                reason="deterministic_spread_compare",
+            )
+
+        if len(context.explicit_symbols) == 1:
+            spread_tool_args["symbol"] = context.explicit_symbols[0]
+            tool_name = (
+                "compare_spread_candidates"
+                if context.comparison_requested
+                else "get_spread_opportunity"
+            )
+            return RouteDecision(
+                kind="tool",
+                tool_name=tool_name,
+                tool_args=spread_tool_args,
+                reason="deterministic_single_spread",
+            )
+
+        if context.market_scan_requested:
+            return RouteDecision(
+                kind="tool",
+                tool_name="scan_spread_opportunities",
+                tool_args=spread_tool_args,
+                reason="deterministic_spread_scan",
+            )
+
+        return RouteDecision(
+            kind="clarification",
+            clarification_message=_build_spread_clarification(context),
+            reason="spread_missing_symbol_or_scan_scope",
+        )
+
+    return RouteDecision(kind="llm", reason="fallback_to_general_agent")
 
 
 def _build_structured_query_context(query: str) -> str:
@@ -5912,6 +6594,16 @@ def _handle_build_monthly_income_plan(args: dict) -> str:
                 "error": "Position is missing symbol.",
             })
             continue
+        if _looks_like_common_word(symbol):
+            skipped_positions.append({
+                "position_index": index,
+                "symbol": symbol,
+                "error": (
+                    f"'{symbol}' is a common English word, not a ticker symbol. "
+                    "Please provide the actual stock ticker."
+                ),
+            })
+            continue
         if shares_owned is None:
             skipped_positions.append({
                 "position_index": index,
@@ -6101,7 +6793,13 @@ def _handle_build_monthly_income_plan(args: dict) -> str:
     else:
         return json.dumps(
             {
-                "error": "No valid monthly income plan candidates found.",
+                "error": (
+                    "No valid monthly income plan candidates found. "
+                    "To build a plan the user must provide: "
+                    "(a) owned positions with at least 100 shares each (for covered calls), and/or "
+                    "(b) available cash or buying power (for cash-secured puts). "
+                    "Ask the user for these details before retrying."
+                ),
                 "skipped_positions": skipped_positions,
                 "filters_applied": {
                     "monthly_income_target": monthly_income_target,
@@ -6614,7 +7312,9 @@ def _handle_compare_covered_call_candidates(args: dict) -> str:
 
 def handle_tool_call(tool_name: str, tool_args: dict) -> str:
     if tool_name == "analyze_stock":
-        symbol = tool_args["symbol"]
+        symbol = str(tool_args.get("symbol") or "").strip().upper()
+        if not symbol:
+            return json.dumps({"error": "Missing required symbol"})
         try:
             raw_data = FMPClient().fetch_financial_data(symbol)
             calculator = FinancialMetricsCalculator(raw_data)
@@ -6639,8 +7339,11 @@ def handle_tool_call(tool_name: str, tool_args: dict) -> str:
             return json.dumps({"error": str(e), "symbol": symbol})
 
     if tool_name == "get_put_wheel_opportunity":
+        symbol = str(tool_args.get("symbol") or "").strip().upper()
+        if not symbol:
+            return json.dumps({"error": "Missing required symbol"})
         return _handle_put_wheel_opportunity(
-            tool_args["symbol"],
+            symbol,
             account_size=_to_float(tool_args.get("account_size")),
             max_cash_required=_to_float(tool_args.get("max_cash_required")),
         )
@@ -6675,12 +7378,34 @@ def handle_tool_call(tool_name: str, tool_args: dict) -> str:
     return json.dumps({"error": f"Unknown tool: {tool_name}"})
 
 
+_COMMON_WORD_TICKERS = frozenset({
+    "A", "I", "AM", "AT", "BE", "BY", "DO", "GO",
+    "IN", "IS", "IT", "ME", "MY", "NO", "OF", "ON",
+    "OR", "SO", "TO", "UP", "US", "WE",
+})
+
+
+def _looks_like_common_word(symbol: str) -> bool:
+    return bool(symbol) and symbol.upper() in _COMMON_WORD_TICKERS
+
+
 def _normalize_tool_call_from_query(
     tool_name: str,
     tool_args: dict,
     user_query: str,
 ) -> tuple[str, dict]:
     normalized_args = dict(tool_args or {})
+    # Drop pronoun/common-word symbols the LLM may have hallucinated from prose
+    if normalized_args.get("symbol") and _looks_like_common_word(str(normalized_args["symbol"])):
+        normalized_args.pop("symbol", None)
+    if isinstance(normalized_args.get("symbols"), list):
+        sanitized_symbols = []
+        for value in normalized_args.get("symbols") or []:
+            symbol = str(value or "").strip().upper()
+            if not symbol or _looks_like_common_word(symbol) or symbol in sanitized_symbols:
+                continue
+            sanitized_symbols.append(symbol)
+        normalized_args["symbols"] = sanitized_symbols
     explicit_symbols = _extract_explicit_symbols_from_query(user_query)
     if not explicit_symbols:
         return tool_name, normalized_args
@@ -6704,20 +7429,234 @@ def _normalize_tool_call_from_query(
 
 
 def _augment_tool_args_from_query(tool_name: str, tool_args: dict, user_query: str) -> dict:
-    price_filters = _extract_underlying_price_filters_from_query(user_query)
-    merged_args = dict(tool_args or {})
-    if tool_name == "scan_put_opportunities" and price_filters:
-        merged_args.update(price_filters)
+    return agent_request_runtime.augment_tool_args_from_query(
+        tool_name,
+        tool_args,
+        user_query,
+    )
 
-    if tool_name == "build_monthly_income_plan":
-        monthly_income_target = _extract_monthly_income_target_from_query(user_query)
-        if (
-            monthly_income_target is not None
-            and merged_args.get("monthly_income_target") is None
-        ):
-            merged_args["monthly_income_target"] = monthly_income_target
 
-    return merged_args
+def _build_prefetched_tool_messages(
+    *,
+    provider: str,
+    system_prompt: str,
+    conversation_history: list[dict[str, Any]],
+    prepared_query: str,
+    tool_name: str,
+    tool_args: dict[str, Any],
+    tool_result: str,
+) -> list[dict[str, Any]]:
+    tool_call_id = "prefetched_tool_call_1"
+
+    if provider == "anthropic":
+        return [
+            *conversation_history,
+            {"role": "user", "content": prepared_query},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": tool_call_id,
+                        "name": tool_name,
+                        "input": tool_args,
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tool_call_id,
+                        "content": tool_result,
+                    }
+                ],
+            },
+        ]
+
+    return [
+        {"role": "system", "content": system_prompt},
+        *conversation_history,
+        {"role": "user", "content": prepared_query},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": tool_call_id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "arguments": json.dumps(tool_args),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "content": tool_result,
+        },
+    ]
+
+
+def _repair_answer_without_tools(
+    *,
+    provider: str,
+    client: Any,
+    model_name: str,
+    system_prompt: str,
+    messages: list[dict[str, Any]],
+    invalid_answer: str,
+    repair_prompt: str,
+    anthropic_max_tokens: int | None = None,
+) -> str | None:
+    if provider == "anthropic":
+        repair_messages = [
+            *messages,
+            {"role": "assistant", "content": invalid_answer},
+            {"role": "user", "content": repair_prompt},
+        ]
+        response = client.messages.create(
+            model=model_name,
+            system=system_prompt,
+            messages=repair_messages,
+            max_tokens=anthropic_max_tokens or 4096,
+        )
+        repaired_blocks = [
+            block.text for block in response.content if getattr(block, "type", None) == "text"
+        ]
+        repaired_answer = "\n".join(block for block in repaired_blocks if block).strip()
+        return repaired_answer or None
+
+    repair_messages = [
+        *messages,
+        {"role": "assistant", "content": invalid_answer},
+        {"role": "user", "content": repair_prompt},
+    ]
+    response = client.chat.completions.create(
+        model=model_name,
+        messages=repair_messages,
+    )
+    repaired_message = response.choices[0].message
+    return (repaired_message.content or "").strip() or None
+
+
+def _validate_and_repair_answer(
+    *,
+    provider: str,
+    client: Any,
+    model_name: str,
+    system_prompt: str,
+    messages: list[dict[str, Any]],
+    answer: str,
+    request_context: agent_request_runtime.RequestContext,
+    route_decision: agent_request_runtime.RouteDecision,
+    agent_run_id: int | None = None,
+    anthropic_max_tokens: int | None = None,
+) -> str:
+    tool_name = route_decision.tool_name if route_decision.kind == "tool" else None
+    tool_result = None
+    if route_decision.kind == "tool":
+        for message in reversed(messages):
+            if provider == "anthropic":
+                if message.get("role") == "user" and isinstance(message.get("content"), list):
+                    content = message["content"]
+                    if content and isinstance(content[0], dict) and content[0].get("type") == "tool_result":
+                        tool_result = content[0].get("content")
+                        break
+            else:
+                if message.get("role") == "tool":
+                    tool_result = message.get("content")
+                    break
+
+    validation = agent_response_runtime.validate_answer(
+        answer=answer,
+        context=request_context,
+        tool_name=tool_name,
+        tool_result=tool_result,
+    )
+    if validation.is_valid:
+        return answer
+
+    logger.warning(
+        "Answer validation failed run_id=%s provider=%s model=%s intent=%s tool=%s reasons=%s required_symbols=%s allowed_symbols=%s detected_symbols=%s",
+        agent_run_id,
+        provider,
+        model_name,
+        request_context.active_intent,
+        tool_name,
+        validation.reasons,
+        sorted(validation.required_symbols),
+        sorted(validation.allowed_symbols),
+        sorted(validation.detected_symbols),
+    )
+
+    repair_prompt = agent_response_runtime.build_answer_repair_prompt(
+        validation=validation,
+        context=request_context,
+    )
+    repaired_answer = _repair_answer_without_tools(
+        provider=provider,
+        client=client,
+        model_name=model_name,
+        system_prompt=system_prompt,
+        messages=messages,
+        invalid_answer=answer,
+        repair_prompt=repair_prompt,
+        anthropic_max_tokens=anthropic_max_tokens,
+    )
+    if repaired_answer:
+        repaired_validation = agent_response_runtime.validate_answer(
+            answer=repaired_answer,
+            context=request_context,
+            tool_name=tool_name,
+            tool_result=tool_result,
+        )
+        if repaired_validation.is_valid:
+            logger.warning(
+                "Answer repaired successfully run_id=%s provider=%s model=%s intent=%s tool=%s",
+                agent_run_id,
+                provider,
+                model_name,
+                request_context.active_intent,
+                tool_name,
+            )
+            return repaired_answer
+        logger.warning(
+            "Repair answer failed validation run_id=%s provider=%s model=%s intent=%s tool=%s reasons=%s detected_symbols=%s",
+            agent_run_id,
+            provider,
+            model_name,
+            request_context.active_intent,
+            tool_name,
+            repaired_validation.reasons,
+            sorted(repaired_validation.detected_symbols),
+        )
+    else:
+        logger.warning(
+            "Answer repair returned empty content run_id=%s provider=%s model=%s intent=%s tool=%s",
+            agent_run_id,
+            provider,
+            model_name,
+            request_context.active_intent,
+            tool_name,
+        )
+
+    fallback_answer = agent_response_runtime.build_answer_validation_fallback(
+        validation=validation,
+        context=request_context,
+    )
+    logger.warning(
+        "Returning answer validation fallback run_id=%s provider=%s model=%s intent=%s tool=%s",
+        agent_run_id,
+        provider,
+        model_name,
+        request_context.active_intent,
+        tool_name,
+    )
+    return fallback_answer
 
 
 def _get_agent_provider() -> str:
@@ -6749,12 +7688,43 @@ def run_agent(
     normalized_query = (query or "").strip()
     if not normalized_query:
         raise ValueError("query is required")
-    prepared_query = _prepare_agent_query(normalized_query)
 
     if history is not None and not isinstance(history, list):
         raise ValueError("history must be a list")
 
     conversation_history = history or []
+    request_context = agent_request_runtime.build_request_context(
+        normalized_query,
+        conversation_history,
+    )
+    route_decision = agent_request_runtime.route_request(request_context)
+    prepared_query = _prepare_agent_query(normalized_query)
+
+    logger.info(
+        "Request context parsed run_id=%s current_intent=%s active_intent=%s symbols=%s ambiguous_symbols=%s positions=%s monthly_target=%s cash_budget=%s route=%s reason=%s",
+        agent_run_id,
+        request_context.current_intent,
+        request_context.active_intent,
+        request_context.explicit_symbols,
+        request_context.ambiguous_symbols,
+        len(request_context.positions),
+        request_context.monthly_income_target,
+        request_context.cash_budget,
+        route_decision.kind,
+        route_decision.reason,
+    )
+
+    if route_decision.kind == "clarification":
+        answer = route_decision.clarification_message or "Need one more detail before proceeding."
+        return {
+            "answer": answer,
+            "history": [
+                *conversation_history,
+                {"role": "user", "content": normalized_query},
+                {"role": "assistant", "content": answer},
+            ],
+        }
+
     provider = _get_agent_provider()
     model_name = _get_agent_model(provider)
     max_iterations = max(1, int(getattr(settings, "AGENT_MAX_ITERATIONS", 10)))
@@ -6780,10 +7750,6 @@ def run_agent(
         anthropic_max_tokens = max(
             1, int(getattr(settings, "AGENT_ANTHROPIC_MAX_TOKENS", 4096))
         )
-        messages = [
-            *conversation_history,
-            {"role": "user", "content": prepared_query},
-        ]
         client = Anthropic(
             api_key=api_key,
             timeout=llm_timeout_seconds,
@@ -6797,11 +7763,6 @@ def run_agent(
             raise RuntimeError(
                 f"{api_key_setting_name} is not set. Configure it for the service running agent jobs."
             )
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            *conversation_history,
-            {"role": "user", "content": prepared_query},
-        ]
         openai_client_kwargs = {
             "api_key": api_key,
             "timeout": llm_timeout_seconds,
@@ -6816,6 +7777,37 @@ def run_agent(
         client = OpenAI(
             **openai_client_kwargs,
         )
+
+    if route_decision.kind == "tool":
+        routed_tool_args = _augment_tool_args_from_query(
+            route_decision.tool_name or "",
+            route_decision.tool_args,
+            normalized_query,
+        )
+        routed_tool_result = handle_tool_call(
+            route_decision.tool_name or "",
+            routed_tool_args,
+        )
+        messages = _build_prefetched_tool_messages(
+            provider=provider,
+            system_prompt=SYSTEM_PROMPT,
+            conversation_history=conversation_history,
+            prepared_query=prepared_query,
+            tool_name=route_decision.tool_name or "",
+            tool_args=routed_tool_args,
+            tool_result=routed_tool_result,
+        )
+    elif provider == "anthropic":
+        messages = [
+            *conversation_history,
+            {"role": "user", "content": prepared_query},
+        ]
+    else:
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            *conversation_history,
+            {"role": "user", "content": prepared_query},
+        ]
 
     started_at = time.monotonic()
 
@@ -6832,6 +7824,7 @@ def run_agent(
     )
 
     # Agentic loop keeps running until the model stops calling tools.
+    disable_tools_for_first_completion = route_decision.kind == "tool"
     for iteration in range(1, max_iterations + 1):
         elapsed_before_request = time.monotonic() - started_at
         if elapsed_before_request >= overall_timeout_seconds:
@@ -6845,15 +7838,18 @@ def run_agent(
             iteration,
             elapsed_before_request,
         )
+        use_tools_this_iteration = not disable_tools_for_first_completion or iteration > 1
         if provider == "anthropic":
-            response = client.messages.create(
-                model=model_name,
-                system=SYSTEM_PROMPT,
-                messages=messages,
-                tools=ANTHROPIC_TOOLS,
-                tool_choice={"type": "auto"},
-                max_tokens=anthropic_max_tokens,
-            )
+            anthropic_request_kwargs = {
+                "model": model_name,
+                "system": SYSTEM_PROMPT,
+                "messages": messages,
+                "max_tokens": anthropic_max_tokens,
+            }
+            if use_tools_this_iteration:
+                anthropic_request_kwargs["tools"] = ANTHROPIC_TOOLS
+                anthropic_request_kwargs["tool_choice"] = {"type": "auto"}
+            response = client.messages.create(**anthropic_request_kwargs)
 
             tool_uses = [
                 block for block in response.content if getattr(block, "type", None) == "tool_use"
@@ -6872,6 +7868,18 @@ def run_agent(
 
             if not tool_uses:
                 answer = "\n".join(block for block in text_blocks if block).strip()
+                answer = _validate_and_repair_answer(
+                    provider=provider,
+                    client=client,
+                    model_name=model_name,
+                    system_prompt=SYSTEM_PROMPT,
+                    messages=messages,
+                    answer=answer,
+                    request_context=request_context,
+                    route_decision=route_decision,
+                    agent_run_id=agent_run_id,
+                    anthropic_max_tokens=anthropic_max_tokens,
+                )
                 logger.info(
                     "Agent run completed run_id=%s iterations=%s total_elapsed=%.2fs",
                     agent_run_id,
@@ -6943,12 +7951,14 @@ def run_agent(
 
             messages.append({"role": "user", "content": tool_results})
         else:
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=messages,
-                tools=TOOLS,
-                tool_choice="auto",
-            )
+            completion_kwargs = {
+                "model": model_name,
+                "messages": messages,
+            }
+            if use_tools_this_iteration:
+                completion_kwargs["tools"] = TOOLS
+                completion_kwargs["tool_choice"] = "auto"
+            response = client.chat.completions.create(**completion_kwargs)
 
             message = response.choices[0].message
             tool_calls = message.tool_calls or []
@@ -6962,6 +7972,18 @@ def run_agent(
             )
 
             if not tool_calls:
+                answer = _validate_and_repair_answer(
+                    provider=provider,
+                    client=client,
+                    model_name=model_name,
+                    system_prompt=SYSTEM_PROMPT,
+                    messages=messages,
+                    answer=message.content or "",
+                    request_context=request_context,
+                    route_decision=route_decision,
+                    agent_run_id=agent_run_id,
+                    anthropic_max_tokens=None,
+                )
                 logger.info(
                     "Agent run completed run_id=%s iterations=%s total_elapsed=%.2fs",
                     agent_run_id,
@@ -6969,11 +7991,11 @@ def run_agent(
                     time.monotonic() - started_at,
                 )
                 return {
-                    "answer": message.content,
+                    "answer": answer,
                     "history": [
                         *conversation_history,
                         {"role": "user", "content": normalized_query},
-                        {"role": "assistant", "content": message.content},
+                        {"role": "assistant", "content": answer},
                     ],
                 }
 

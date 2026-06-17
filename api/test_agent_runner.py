@@ -8,11 +8,16 @@ from api.agent_views import (
     _extract_owned_positions_from_query,
     run_agent,
 )
-from api.models import AgentRun
+from api.models import AgentRun, Symbol
 from api.tasks import run_agent_run
 
 
 class RunAgentTests(TestCase):
+    @classmethod
+    def setUpTestData(cls) -> None:
+        for ticker in ["TSLA", "AMD", "AAPL"]:
+            Symbol.objects.create(ticker=ticker)
+
     def test_extract_owned_positions_from_query_parses_cost_basis_and_shared_shares(self) -> None:
         positions = _extract_owned_positions_from_query(
             "I own B at 42$, PLTR at 70, 100 shares each"
@@ -58,28 +63,94 @@ class RunAgentTests(TestCase):
         AGENT_MODEL="gpt-4o-mini",
         OPENAI_API_KEY="test-openai-key",
     )
+    @patch("api.agent_views.handle_tool_call", return_value='{"symbol":"TSLA","summary":{"rating":"Good"}}')
     @patch("api.agent_views.OpenAI")
-    def test_run_agent_returns_answer_and_history(self, mock_openai: MagicMock) -> None:
+    def test_run_agent_repairs_invalid_answer_with_requested_symbol(
+        self,
+        mock_openai: MagicMock,
+        mock_handle_tool_call: MagicMock,
+    ) -> None:
         message = MagicMock()
         message.tool_calls = None
-        message.content = "Test answer"
+        message.content = "AMD looks like the best put idea."
 
-        response_payload = MagicMock()
-        response_payload.choices = [MagicMock(message=message)]
+        repaired_message = MagicMock()
+        repaired_message.tool_calls = None
+        repaired_message.content = "TSLA looks like the best put idea from the validated tool result."
+
+        first_response_payload = MagicMock()
+        first_response_payload.choices = [MagicMock(message=message)]
+        second_response_payload = MagicMock()
+        second_response_payload.choices = [MagicMock(message=repaired_message)]
 
         mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = response_payload
+        mock_client.chat.completions.create.side_effect = [
+            first_response_payload,
+            second_response_payload,
+        ]
         mock_openai.return_value = mock_client
 
-        result = run_agent("Hello", [{"role": "assistant", "content": "Earlier"}])
+        with self.assertLogs("api.agent_views", level="WARNING") as captured_logs:
+            result = run_agent("Show me put ideas for TSLA", [{"role": "assistant", "content": "Earlier"}])
 
-        self.assertEqual(result["answer"], "Test answer")
-        self.assertEqual(result["history"][-1]["content"], "Test answer")
-        self.assertEqual(result["history"][-2]["content"], "Hello")
-        mock_client.chat.completions.create.assert_called_once()
+        self.assertIn("TSLA", result["answer"])
+        self.assertNotIn("AMD looks like the best put idea.", result["answer"])
+        self.assertEqual(result["history"][-2]["content"], "Show me put ideas for TSLA")
+        self.assertEqual(mock_client.chat.completions.create.call_count, 2)
+        mock_handle_tool_call.assert_called_once()
         _, kwargs = mock_openai.call_args
         self.assertEqual(kwargs["timeout"], 45)
         self.assertEqual(kwargs["max_retries"], 1)
+        self.assertIn("Answer validation failed", "\n".join(captured_logs.output))
+        self.assertIn("Answer repaired successfully", "\n".join(captured_logs.output))
+
+    @override_settings(
+        AGENT_MODEL_PROVIDER="openai",
+        AGENT_MODEL="gpt-4o-mini",
+        OPENAI_API_KEY="test-openai-key",
+    )
+    @patch("api.agent_views.handle_tool_call", return_value='{"symbol":"TSLA","summary":{"rating":"Good"}}')
+    @patch("api.agent_views.OpenAI")
+    def test_run_agent_returns_validation_fallback_when_repair_stays_invalid(
+        self,
+        mock_openai: MagicMock,
+        mock_handle_tool_call: MagicMock,
+    ) -> None:
+        message = MagicMock()
+        message.tool_calls = None
+        message.content = "AMD looks like the best put idea."
+
+        repaired_message = MagicMock()
+        repaired_message.tool_calls = None
+        repaired_message.content = "AAPL looks like the best put idea."
+
+        first_response_payload = MagicMock()
+        first_response_payload.choices = [MagicMock(message=message)]
+        second_response_payload = MagicMock()
+        second_response_payload.choices = [MagicMock(message=repaired_message)]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = [
+            first_response_payload,
+            second_response_payload,
+        ]
+        mock_openai.return_value = mock_client
+
+        with self.assertLogs("api.agent_views", level="WARNING") as captured_logs:
+            result = run_agent("Show me put ideas for TSLA", [])
+
+        self.assertIn("couldn't validate the drafted answer reliably for TSLA", result["answer"])
+        self.assertEqual(mock_client.chat.completions.create.call_count, 2)
+        mock_handle_tool_call.assert_called_once()
+        self.assertIn("Repair answer failed validation", "\n".join(captured_logs.output))
+        self.assertIn("Returning answer validation fallback", "\n".join(captured_logs.output))
+
+    def test_run_agent_clarifies_ambiguous_common_word_put_ticker(self) -> None:
+        result = run_agent("Show me put ideas for I", [])
+
+        self.assertIn("ambiguous ticker text: I", result["answer"])
+        self.assertEqual(result["history"][-2]["content"], "Show me put ideas for I")
+        self.assertEqual(result["history"][-1]["content"], result["answer"])
 
     @override_settings(
         AGENT_MODEL_PROVIDER="openai",
@@ -107,11 +178,13 @@ class RunAgentTests(TestCase):
 
         self.assertEqual(result["history"][-2]["content"], query)
         call_messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
-        user_message = call_messages[-1]["content"]
-        self.assertIn("Structured holdings extracted from the user's message:", user_message)
-        self.assertIn("symbol=B; cost_basis=42.0; shares_owned=100", user_message)
-        self.assertIn("symbol=PLTR; cost_basis=70.0; shares_owned=100", user_message)
-        self.assertIn("current stock price must come from tool data", user_message)
+        self.assertEqual(call_messages[-1]["role"], "tool")
+        self.assertIn("No valid monthly income plan candidates found", call_messages[-1]["content"])
+        self.assertEqual(call_messages[-2]["role"], "assistant")
+        self.assertEqual(
+            call_messages[-2]["tool_calls"][0]["function"]["name"],
+            "build_monthly_income_plan",
+        )
 
     @override_settings(
         AGENT_MODEL_PROVIDER="openai",
