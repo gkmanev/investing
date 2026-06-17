@@ -1156,15 +1156,20 @@ def _extract_explicit_symbols_from_query(query: str) -> list[str]:
         "EXPIRATION",
         "FOR",
         "GIVE",
+        "HAVE",
+        "I",
         "IDEA",
         "IDEAS",
         "INCOME",
         "IV",
         "LIST",
         "ME",
+        "MONTHLY",
+        "MY",
         "OF",
         "ON",
         "OR",
+        "PLAN",
         "PUT",
         "PUTS",
         "ROI",
@@ -1173,6 +1178,8 @@ def _extract_explicit_symbols_from_query(query: str) -> list[str]:
         "SHOW",
         "STRIKE",
         "THE",
+        "TARGET",
+        "TO",
         "WHEEL",
         "WITH",
     }
@@ -1190,7 +1197,11 @@ def _extract_explicit_symbols_from_query(query: str) -> list[str]:
             continue
         seen_candidates.add(upper_token)
         ordered_candidates.append(upper_token)
-        if raw_token == upper_token and re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", raw_token):
+        if (
+            len(raw_token) >= 2
+            and raw_token == upper_token
+            and re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", raw_token)
+        ):
             uppercase_fallback_candidates.add(upper_token)
 
     if not ordered_candidates:
@@ -1216,11 +1227,41 @@ def _extract_explicit_symbols_from_query(query: str) -> list[str]:
     ]
 
 
+def _extract_monthly_income_target_from_query(query: str) -> float | None:
+    if not query:
+        return None
+
+    normalized_query = " ".join(str(query).split())
+    amount_pattern = r"\$?\s*(\d+(?:\.\d+)?)\s*(?:\$|dollars?)?"
+    target_patterns = [
+        rf"\bmonthly income target\b(?:\s+is|\s+of)?\s*{amount_pattern}\b",
+        rf"{amount_pattern}\s+\bmonthly income target\b",
+        rf"\btarget\b(?:\s+is|\s+of)?\s*{amount_pattern}\s*(?:per month|monthly)?\b",
+        rf"{amount_pattern}\s*(?:per month|monthly)\b",
+    ]
+
+    for pattern in target_patterns:
+        match = re.search(pattern, normalized_query, re.IGNORECASE)
+        if not match:
+            continue
+        amount = _to_float(match.group(1))
+        if amount is not None and amount > 0:
+            return amount
+
+    return None
+
+
 def _build_structured_query_context(query: str) -> str:
     positions = _extract_owned_positions_from_query(query)
     price_filters = _extract_underlying_price_filters_from_query(query)
     explicit_symbols = _extract_explicit_symbols_from_query(query)
-    if not positions and not price_filters and not explicit_symbols:
+    monthly_income_target = _extract_monthly_income_target_from_query(query)
+    if (
+        not positions
+        and not price_filters
+        and not explicit_symbols
+        and monthly_income_target is None
+    ):
         return ""
 
     lines = []
@@ -1269,6 +1310,15 @@ def _build_structured_query_context(query: str) -> str:
             )
         lines.append(
             "Important: for market-wide stock or option scans, apply these underlying price filters as hard tool arguments."
+        )
+
+    if monthly_income_target is not None:
+        if lines:
+            lines.append("")
+        lines.append("Structured monthly income target extracted from the user's message:")
+        lines.append(f"- monthly_income_target={monthly_income_target}")
+        lines.append(
+            "Important: when building an income plan, pass this as a hard tool argument."
         )
 
     return "\n".join(lines)
@@ -6654,15 +6704,19 @@ def _normalize_tool_call_from_query(
 
 
 def _augment_tool_args_from_query(tool_name: str, tool_args: dict, user_query: str) -> dict:
-    if tool_name != "scan_put_opportunities":
-        return tool_args
-
     price_filters = _extract_underlying_price_filters_from_query(user_query)
-    if not price_filters:
-        return tool_args
-
     merged_args = dict(tool_args or {})
-    merged_args.update(price_filters)
+    if tool_name == "scan_put_opportunities" and price_filters:
+        merged_args.update(price_filters)
+
+    if tool_name == "build_monthly_income_plan":
+        monthly_income_target = _extract_monthly_income_target_from_query(user_query)
+        if (
+            monthly_income_target is not None
+            and merged_args.get("monthly_income_target") is None
+        ):
+            merged_args["monthly_income_target"] = monthly_income_target
+
     return merged_args
 
 
