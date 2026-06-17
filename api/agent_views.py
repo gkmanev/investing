@@ -1131,14 +1131,115 @@ def _extract_underlying_price_filters_from_query(query: str) -> dict[str, float]
     return {}
 
 
+def _extract_explicit_symbols_from_query(query: str) -> list[str]:
+    if not query:
+        return []
+
+    candidate_matches = list(
+        re.finditer(r"\b([A-Za-z][A-Za-z0-9.\-]{0,9})\b", query)
+    )
+    if not candidate_matches:
+        return []
+
+    ignored_tokens = {
+        "A",
+        "AN",
+        "AND",
+        "AT",
+        "BEST",
+        "BUY",
+        "CALL",
+        "CALLS",
+        "CSP",
+        "DO",
+        "DTE",
+        "EXPIRATION",
+        "FOR",
+        "GIVE",
+        "IDEA",
+        "IDEAS",
+        "INCOME",
+        "IV",
+        "LIST",
+        "ME",
+        "OF",
+        "ON",
+        "OR",
+        "PUT",
+        "PUTS",
+        "ROI",
+        "SCREEN",
+        "SELL",
+        "SHOW",
+        "STRIKE",
+        "THE",
+        "WHEEL",
+        "WITH",
+    }
+
+    ordered_candidates = []
+    seen_candidates = set()
+    uppercase_fallback_candidates = set()
+
+    for match in candidate_matches:
+        raw_token = str(match.group(1) or "").strip()
+        upper_token = raw_token.upper()
+        if not upper_token or upper_token in ignored_tokens:
+            continue
+        if upper_token in seen_candidates:
+            continue
+        seen_candidates.add(upper_token)
+        ordered_candidates.append(upper_token)
+        if raw_token == upper_token and re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", raw_token):
+            uppercase_fallback_candidates.add(upper_token)
+
+    if not ordered_candidates:
+        return []
+
+    try:
+        matched_symbols = {
+            str(symbol).upper()
+            for symbol in Symbol.objects.filter(
+                ticker__in=ordered_candidates
+            ).values_list("ticker", flat=True)
+        }
+    except Exception:
+        matched_symbols = set()
+
+    if matched_symbols:
+        return [symbol for symbol in ordered_candidates if symbol in matched_symbols]
+
+    return [
+        symbol
+        for symbol in ordered_candidates
+        if symbol in uppercase_fallback_candidates
+    ]
+
+
 def _build_structured_query_context(query: str) -> str:
     positions = _extract_owned_positions_from_query(query)
     price_filters = _extract_underlying_price_filters_from_query(query)
-    if not positions and not price_filters:
+    explicit_symbols = _extract_explicit_symbols_from_query(query)
+    if not positions and not price_filters and not explicit_symbols:
         return ""
 
     lines = []
+    if explicit_symbols:
+        lines.append("Structured ticker intent extracted from the user's message:")
+        if len(explicit_symbols) == 1:
+            lines.append(f"- explicit_symbol={explicit_symbols[0]}")
+            lines.append(
+                "Important: the user named exactly one ticker. Use a single-ticker tool, not a market-wide scan."
+            )
+        else:
+            lines.append(f"- explicit_symbols={explicit_symbols}")
+            lines.append(
+                "Important: the user named a specific ticker list. Use a comparison tool, not a market-wide scan."
+            )
+
     if positions:
+        if lines:
+            lines.append("")
         lines.append("Structured holdings extracted from the user's message:")
         for index, position in enumerate(positions, start=1):
             line = (
@@ -6524,6 +6625,34 @@ def handle_tool_call(tool_name: str, tool_args: dict) -> str:
     return json.dumps({"error": f"Unknown tool: {tool_name}"})
 
 
+def _normalize_tool_call_from_query(
+    tool_name: str,
+    tool_args: dict,
+    user_query: str,
+) -> tuple[str, dict]:
+    normalized_args = dict(tool_args or {})
+    explicit_symbols = _extract_explicit_symbols_from_query(user_query)
+    if not explicit_symbols:
+        return tool_name, normalized_args
+
+    put_tool_names = {
+        "get_put_wheel_opportunity",
+        "scan_put_opportunities",
+        "compare_put_candidates",
+    }
+    if tool_name not in put_tool_names:
+        return tool_name, normalized_args
+
+    if len(explicit_symbols) == 1:
+        normalized_args.pop("symbols", None)
+        normalized_args["symbol"] = explicit_symbols[0]
+        return "get_put_wheel_opportunity", normalized_args
+
+    normalized_args.pop("symbol", None)
+    normalized_args["symbols"] = explicit_symbols
+    return "compare_put_candidates", normalized_args
+
+
 def _augment_tool_args_from_query(tool_name: str, tool_args: dict, user_query: str) -> dict:
     if tool_name != "scan_put_opportunities":
         return tool_args
@@ -6727,17 +6856,23 @@ def run_agent(
                     iteration,
                     tool_use.name,
                 )
-                tool_input = _augment_tool_args_from_query(
+                resolved_tool_name, resolved_tool_args = _normalize_tool_call_from_query(
                     tool_use.name,
                     tool_use.input,
                     normalized_query,
                 )
-                result = handle_tool_call(tool_use.name, tool_input)
+                tool_input = _augment_tool_args_from_query(
+                    resolved_tool_name,
+                    resolved_tool_args,
+                    normalized_query,
+                )
+                result = handle_tool_call(resolved_tool_name, tool_input)
                 logger.info(
-                    "Agent tool complete run_id=%s iteration=%s tool=%s duration=%.2fs",
+                    "Agent tool complete run_id=%s iteration=%s tool=%s resolved_tool=%s duration=%.2fs",
                     agent_run_id,
                     iteration,
                     tool_use.name,
+                    resolved_tool_name,
                     time.monotonic() - tool_started_at,
                 )
                 tool_results.append({
@@ -6798,20 +6933,26 @@ def run_agent(
                     iteration,
                     tool_call.function.name,
                 )
-                tool_args = _augment_tool_args_from_query(
+                resolved_tool_name, resolved_tool_args = _normalize_tool_call_from_query(
                     tool_call.function.name,
                     json.loads(tool_call.function.arguments),
                     normalized_query,
                 )
+                tool_args = _augment_tool_args_from_query(
+                    resolved_tool_name,
+                    resolved_tool_args,
+                    normalized_query,
+                )
                 result = handle_tool_call(
-                    tool_call.function.name,
+                    resolved_tool_name,
                     tool_args,
                 )
                 logger.info(
-                    "Agent tool complete run_id=%s iteration=%s tool=%s duration=%.2fs",
+                    "Agent tool complete run_id=%s iteration=%s tool=%s resolved_tool=%s duration=%.2fs",
                     agent_run_id,
                     iteration,
                     tool_call.function.name,
+                    resolved_tool_name,
                     time.monotonic() - tool_started_at,
                 )
                 messages.append({
