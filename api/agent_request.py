@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from api.models import Symbol
@@ -27,6 +27,9 @@ class RequestContext:
     directional_view: str | None = None
     risk_profile: str | None = None
     spread_type: str | None = None
+    explanation_requested: bool = False
+    actionable_analysis_requested: bool = False
+    semantic_parse_used: bool = False
     source_user_messages: list[str] = field(default_factory=list)
 
 
@@ -88,6 +91,47 @@ def to_int(value: Any) -> int | None:
         return int(float(value))
     except Exception:
         return None
+
+
+def parse_scaled_number(number_text: Any, suffix_text: Any = None) -> float | None:
+    value = to_float(number_text)
+    if value is None:
+        return None
+
+    suffix = str(suffix_text or "").strip().lower()
+    if suffix == "k":
+        return value * 1_000
+    if suffix == "m":
+        return value * 1_000_000
+    return value
+
+
+def extract_numeric_value(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    match = re.search(r"(-?\d+(?:\.\d+)?)\s*([kKmM])?", text)
+    if not match:
+        return None
+    return parse_scaled_number(match.group(1), match.group(2))
+
+
+def normalize_delta_value(value: Any) -> float | None:
+    numeric = extract_numeric_value(value)
+    if numeric is None:
+        return None
+    if numeric > 1:
+        numeric = numeric / 100 if numeric <= 100 else numeric
+    numeric = abs(numeric)
+    if 0 < numeric <= 1:
+        return numeric
+    return None
 
 
 def resolve_cash_secured_budget(*values: float | None) -> float | None:
@@ -226,6 +270,18 @@ def query_requests_actionable_analysis(query: str) -> bool:
     return bool(
         re.search(
             r"\b(show|give|find|list|screen|scan|rank|best|top|ideas|opportunities|suggest|recommend|build|create|evaluate|analyze|compare|which|look for)\b",
+            normalized_query,
+        )
+    )
+
+
+def query_mentions_options_domain(query: str) -> bool:
+    if not query:
+        return False
+    normalized_query = " ".join(str(query).split()).lower()
+    return bool(
+        re.search(
+            r"\b(option|options|income|premium|cash|buying power|cash-secured|covered call|covered calls|put|puts|call|calls|wheel|spread|spreads|collateral|assignment)\b",
             normalized_query,
         )
     )
@@ -422,18 +478,18 @@ def extract_monthly_income_target_from_query(query: str) -> float | None:
     if not query:
         return None
     normalized_query = " ".join(str(query).split())
-    amount_pattern = r"\$?\s*(\d+(?:\.\d+)?)\s*(?:\$|dollars?)?"
+    amount_pattern = r"(\$?\s*\d+(?:\.\d+)?\s*[kKmM]?\s*(?:\$|dollars?)?)"
     patterns = [
-        rf"\bmonthly income target\b(?:\s+is|\s+of)?\s*{amount_pattern}\b",
+        rf"\bmonthly income target\b(?:\s+is|\s+of)?\s*{amount_pattern}",
         rf"{amount_pattern}\s+\bmonthly income target\b",
-        rf"\btarget\b(?:\s+is|\s+of)?\s*{amount_pattern}\s*(?:per month|monthly)?\b",
+        rf"\btarget\b(?:\s+is|\s+of)?\s*{amount_pattern}\s*(?:per month|monthly)?",
         rf"{amount_pattern}\s*(?:per month|monthly)\b",
     ]
     for pattern in patterns:
         match = re.search(pattern, normalized_query, re.IGNORECASE)
         if not match:
             continue
-        amount = to_float(match.group(1))
+        amount = extract_numeric_value(match.group(1))
         if amount is not None and amount > 0:
             return amount
     return None
@@ -443,17 +499,19 @@ def extract_cash_budget_from_query(query: str) -> float | None:
     if not query:
         return None
     normalized_query = " ".join(str(query).split())
-    amount_pattern = r"\$?\s*(\d+(?:\.\d+)?)\s*(?:\$|dollars?)?"
+    amount_pattern = r"(\$?\s*\d+(?:\.\d+)?\s*[kKmM]?\s*(?:\$|dollars?)?)"
     patterns = [
-        rf"\b(?:available cash|cash available|buying power|max cash required|cash budget|collateral budget)\b(?:\s+is|\s+of|\s+around|\s+about)?\s*{amount_pattern}\b",
+        rf"\b(?:available cash|cash available|buying power|max cash required|cash budget|collateral budget)\b(?:\s+is|\s+of|\s+around|\s+about)?\s*{amount_pattern}",
         rf"\b(?:allocate|use|deploy)\b\s*{amount_pattern}\s*\b(?:for|into)\b(?:\s+cash-secured puts?| options?)?",
         rf"{amount_pattern}\s*\b(?:available cash|buying power|cash budget|collateral budget)\b",
+        rf"\b(?:have|got)\b\s*{amount_pattern}\s*(?:in\s+)?\b(?:cash|buying power)\b",
+        rf"\b(?:cash|buying power)\b(?:\s+of|\s+is|\s+around|\s+about)?\s*{amount_pattern}",
     ]
     for pattern in patterns:
         match = re.search(pattern, normalized_query, re.IGNORECASE)
         if not match:
             continue
-        amount = to_float(match.group(1))
+        amount = extract_numeric_value(match.group(1))
         if amount is not None and amount > 0:
             return amount
     return None
@@ -681,6 +739,8 @@ def build_request_context(
         directional_view=directional_view,
         risk_profile=risk_profile,
         spread_type=spread_type,
+        explanation_requested=query_requests_explanation(query),
+        actionable_analysis_requested=query_requests_actionable_analysis(query),
         source_user_messages=source_messages,
     )
 
@@ -956,6 +1016,163 @@ def apply_tool_defaults(
     return merged_args, defaults_applied
 
 
+def should_use_llm_request_parser(context: RequestContext) -> bool:
+    if context.ambiguous_symbols:
+        return False
+
+    if context.current_intent is None and query_mentions_options_domain(context.raw_query):
+        return True
+
+    if context.current_intent is None and context.active_intent is None:
+        return False
+
+    if context.current_intent != context.active_intent:
+        return True
+
+    if context.active_intent == "monthly_income_plan":
+        return not context.positions and context.cash_budget is None
+
+    if context.active_intent == "put_options":
+        return (
+            not context.explicit_symbols
+            and not context.market_scan_requested
+            and not context.price_filters
+            and context.cash_budget is None
+        )
+
+    if context.active_intent == "covered_calls":
+        return (
+            not context.explicit_symbols
+            and not context.positions
+            and not context.market_scan_requested
+        )
+
+    if context.active_intent == "spreads":
+        return (
+            not context.explicit_symbols
+            and not context.market_scan_requested
+            and context.spread_type is None
+            and context.directional_view is None
+        )
+
+    return False
+
+
+def _normalize_semantic_intent(value: Any) -> str | None:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"monthly_income_plan", "put_options", "covered_calls", "spreads"}:
+        return normalized
+    return None
+
+
+def _normalize_semantic_symbols(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        return []
+
+    normalized_symbols: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        symbol = str(value or "").strip().upper()
+        if not symbol or not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", symbol):
+            continue
+        if symbol in seen:
+            continue
+        normalized_symbols.append(symbol)
+        seen.add(symbol)
+    return normalized_symbols
+
+
+def _normalize_semantic_positions(values: Any) -> list[dict[str, Any]]:
+    if not isinstance(values, list):
+        return []
+
+    positions: list[dict[str, Any]] = []
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        symbol = str(value.get("symbol") or "").strip().upper()
+        if not symbol or not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", symbol):
+            continue
+        if looks_like_common_word(symbol):
+            continue
+
+        position: dict[str, Any] = {"symbol": symbol}
+        shares_owned = to_int(extract_numeric_value(value.get("shares_owned")))
+        if shares_owned is not None and shares_owned > 0:
+            position["shares_owned"] = shares_owned
+        cost_basis = extract_numeric_value(value.get("cost_basis"))
+        if cost_basis is not None and cost_basis > 0:
+            position["cost_basis"] = cost_basis
+        positions.append(position)
+    return positions
+
+
+def merge_request_context_with_semantic_parse(
+    base_context: RequestContext,
+    parsed_payload: dict[str, Any] | None,
+) -> RequestContext:
+    if not isinstance(parsed_payload, dict):
+        return base_context
+
+    parsed_intent = _normalize_semantic_intent(parsed_payload.get("intent"))
+    parsed_symbols = _normalize_semantic_symbols(parsed_payload.get("explicit_symbols"))
+    parsed_positions = _normalize_semantic_positions(parsed_payload.get("positions"))
+    parsed_monthly_income_target = extract_numeric_value(parsed_payload.get("monthly_income_target"))
+    parsed_cash_budget = extract_numeric_value(parsed_payload.get("cash_budget"))
+    parsed_max_dte = to_int(extract_numeric_value(parsed_payload.get("max_dte")))
+    parsed_max_delta = normalize_delta_value(parsed_payload.get("max_delta"))
+    parsed_min_roi = extract_numeric_value(parsed_payload.get("min_roi"))
+    parsed_max_risk = extract_numeric_value(parsed_payload.get("max_risk"))
+
+    parsed_directional_view = str(parsed_payload.get("directional_view") or "").strip().lower()
+    if parsed_directional_view not in {"bullish", "bearish", "neutral", "auto"}:
+        parsed_directional_view = ""
+
+    parsed_risk_profile = str(parsed_payload.get("risk_profile") or "").strip().lower()
+    if parsed_risk_profile not in {"conservative", "balanced", "aggressive"}:
+        parsed_risk_profile = ""
+
+    parsed_spread_type = str(parsed_payload.get("spread_type") or "").strip().lower()
+    if parsed_spread_type not in {
+        "",
+        "auto",
+        "bull_put_credit_spread",
+        "bear_call_credit_spread",
+        "bull_call_debit_spread",
+        "bear_put_debit_spread",
+        "iron_condor",
+        "iron_butterfly",
+    }:
+        parsed_spread_type = ""
+
+    explanation_requested = bool(parsed_payload.get("explanation_requested"))
+    actionable_analysis_requested = bool(parsed_payload.get("actionable_analysis_requested"))
+    market_scan_requested = bool(parsed_payload.get("market_scan_requested"))
+    comparison_requested = bool(parsed_payload.get("comparison_requested"))
+
+    return replace(
+        base_context,
+        current_intent=base_context.current_intent or parsed_intent,
+        active_intent=parsed_intent or base_context.active_intent,
+        explicit_symbols=base_context.explicit_symbols or parsed_symbols,
+        positions=merge_positions(base_context.positions, parsed_positions),
+        monthly_income_target=base_context.monthly_income_target if base_context.monthly_income_target is not None else parsed_monthly_income_target,
+        cash_budget=base_context.cash_budget if base_context.cash_budget is not None else parsed_cash_budget,
+        market_scan_requested=base_context.market_scan_requested or market_scan_requested,
+        comparison_requested=base_context.comparison_requested or comparison_requested,
+        max_dte=base_context.max_dte if base_context.max_dte is not None else parsed_max_dte,
+        max_delta=base_context.max_delta if base_context.max_delta is not None else parsed_max_delta,
+        min_roi=base_context.min_roi if base_context.min_roi is not None else parsed_min_roi,
+        max_risk=base_context.max_risk if base_context.max_risk is not None else parsed_max_risk,
+        directional_view=base_context.directional_view or (parsed_directional_view or None),
+        risk_profile=base_context.risk_profile or (parsed_risk_profile or None),
+        spread_type=base_context.spread_type or (parsed_spread_type or None),
+        explanation_requested=base_context.explanation_requested or explanation_requested,
+        actionable_analysis_requested=base_context.actionable_analysis_requested or actionable_analysis_requested,
+        semantic_parse_used=True,
+    )
+
+
 def decide_action(context: RequestContext) -> RouteDecision:
     clarification = build_clarification_if_needed(context)
     if clarification is not None:
@@ -983,11 +1200,11 @@ def decide_action(context: RequestContext) -> RouteDecision:
         if len(context.explicit_symbols) > 1:
             tool_args["symbols"] = context.explicit_symbols
             return RouteDecision("tool", "compare_put_candidates", tool_args, reason="policy_multi_put_compare")
-        if context.market_scan_requested or context.price_filters or context.cash_budget is not None or query_requests_actionable_analysis(context.raw_query):
+        if context.market_scan_requested or context.price_filters or context.cash_budget is not None or context.actionable_analysis_requested:
             tool_args.update(context.price_filters)
             tool_args, defaults_applied = apply_tool_defaults("scan_put_opportunities", tool_args, context)
             return RouteDecision("tool", "scan_put_opportunities", tool_args, reason="policy_put_scan", defaults_applied=defaults_applied)
-        if query_requests_explanation(context.raw_query):
+        if context.explanation_requested:
             return RouteDecision("llm", reason="policy_put_explanation")
         return RouteDecision("llm", reason="policy_put_fallback")
 
@@ -1024,7 +1241,7 @@ def decide_action(context: RequestContext) -> RouteDecision:
                 tool_args["min_roi"] = context.min_roi
             return RouteDecision("tool", "get_covered_call_opportunity", tool_args, reason="policy_single_covered_call")
 
-        if context.market_scan_requested or query_requests_actionable_analysis(context.raw_query):
+        if context.market_scan_requested or context.actionable_analysis_requested:
             tool_args = {}
             if context.max_dte is not None:
                 tool_args["max_dte"] = context.max_dte
@@ -1035,7 +1252,7 @@ def decide_action(context: RequestContext) -> RouteDecision:
             tool_args, defaults_applied = apply_tool_defaults("scan_covered_call_opportunities", tool_args, context)
             return RouteDecision("tool", "scan_covered_call_opportunities", tool_args, reason="policy_covered_call_scan", defaults_applied=defaults_applied)
 
-        if query_requests_explanation(context.raw_query):
+        if context.explanation_requested:
             return RouteDecision("llm", reason="policy_covered_call_explanation")
         return RouteDecision("llm", reason="policy_covered_call_fallback")
 
@@ -1061,10 +1278,10 @@ def decide_action(context: RequestContext) -> RouteDecision:
             tool_name = "compare_spread_candidates" if context.comparison_requested else "get_spread_opportunity"
             tool_args, defaults_applied = apply_tool_defaults(tool_name, tool_args, context)
             return RouteDecision("tool", tool_name, tool_args, reason="policy_single_spread", defaults_applied=defaults_applied)
-        if context.market_scan_requested or query_requests_actionable_analysis(context.raw_query):
+        if context.market_scan_requested or context.actionable_analysis_requested:
             tool_args, defaults_applied = apply_tool_defaults("scan_spread_opportunities", tool_args, context)
             return RouteDecision("tool", "scan_spread_opportunities", tool_args, reason="policy_spread_scan", defaults_applied=defaults_applied)
-        if query_requests_explanation(context.raw_query):
+        if context.explanation_requested:
             return RouteDecision("llm", reason="policy_spread_explanation")
         return RouteDecision("llm", reason="policy_spread_fallback")
 

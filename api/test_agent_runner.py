@@ -156,6 +156,57 @@ class RunAgentTests(TestCase):
         AGENT_MODEL_PROVIDER="openai",
         AGENT_MODEL="gpt-4o-mini",
         OPENAI_API_KEY="test-openai-key",
+        AGENT_ENABLE_LLM_REQUEST_PARSER=True,
+    )
+    @patch("api.agent_views.handle_tool_call", return_value='{"estimated_monthly_income": 420}')
+    @patch("api.agent_views.OpenAI")
+    def test_run_agent_uses_llm_request_parser_for_non_regex_monthly_income_query(
+        self,
+        mock_openai: MagicMock,
+        mock_handle_tool_call: MagicMock,
+    ) -> None:
+        parser_message = MagicMock()
+        parser_message.content = (
+            '{"intent":"monthly_income_plan","cash_budget":10000,'
+            '"actionable_analysis_requested":true,"explanation_requested":false,'
+            '"market_scan_requested":false,"comparison_requested":false,'
+            '"explicit_symbols":[],"positions":[],"monthly_income_target":null,'
+            '"max_dte":null,"max_delta":null,"min_roi":null,"max_risk":null,'
+            '"directional_view":null,"risk_profile":null,"spread_type":null}'
+        )
+
+        final_message = MagicMock()
+        final_message.tool_calls = None
+        final_message.content = "Here is a monthly income plan built from a $10,000 cash allocation."
+
+        parser_response_payload = MagicMock()
+        parser_response_payload.choices = [MagicMock(message=parser_message)]
+        final_response_payload = MagicMock()
+        final_response_payload.choices = [MagicMock(message=final_message)]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = [
+            parser_response_payload,
+            final_response_payload,
+        ]
+        mock_openai.return_value = mock_client
+
+        result = run_agent(
+            "Help me generate option income every month. I can deploy ten grand in cash.",
+            [],
+        )
+
+        self.assertIn("$10,000", result["answer"])
+        self.assertEqual(mock_client.chat.completions.create.call_count, 2)
+        mock_handle_tool_call.assert_called_once_with(
+            "build_monthly_income_plan",
+            {"account_size": 10000.0, "max_cash_required": 10000.0},
+        )
+
+    @override_settings(
+        AGENT_MODEL_PROVIDER="openai",
+        AGENT_MODEL="gpt-4o-mini",
+        OPENAI_API_KEY="test-openai-key",
     )
     @patch("api.agent_views.OpenAI")
     def test_run_agent_appends_structured_holdings_context_to_user_message(

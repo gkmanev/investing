@@ -46,6 +46,21 @@ class AgentRequestTests(TestCase):
         self.assertEqual(decision.tool_args["account_size"], 10000.0)
         self.assertEqual(decision.tool_args["max_cash_required"], 10000.0)
 
+    def test_route_request_builds_monthly_plan_when_follow_up_provides_cash_in_k_format(self) -> None:
+        context = agent_request.build_request_context(
+            "I have 10K$ in cash",
+            history=[{"role": "user", "content": "Build a monthly income plan"}],
+        )
+
+        decision = agent_request.route_request(context)
+
+        self.assertEqual(context.active_intent, "monthly_income_plan")
+        self.assertEqual(context.cash_budget, 10000.0)
+        self.assertEqual(decision.kind, "tool")
+        self.assertEqual(decision.tool_name, "build_monthly_income_plan")
+        self.assertEqual(decision.tool_args["account_size"], 10000.0)
+        self.assertEqual(decision.tool_args["max_cash_required"], 10000.0)
+
     def test_build_request_context_extracts_ambiguous_common_word_symbol(self) -> None:
         context = agent_request.build_request_context("Show me put ideas for I")
 
@@ -146,3 +161,6 @@ class AgentRequestTests(TestCase):
         self.assertEqual(augmented["directional_view"], "auto")
         self.assertEqual(augmented["risk_profile"], "balanced")
         self.assertEqual(augmented["max_dte"], 45)
+
+    def test_extract_cash_budget_from_query_parses_k_suffix_and_cash_phrase(self) -> None:
+        self.assertEqual(agent_request.extract_cash_budget_from_query("I have 10K$ in cash"), 10000.0)

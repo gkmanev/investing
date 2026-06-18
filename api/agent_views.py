@@ -7659,6 +7659,95 @@ def _validate_and_repair_answer(
     return fallback_answer
 
 
+def _extract_json_object(text: str) -> dict[str, Any] | None:
+    if not text:
+        return None
+
+    candidate = text.strip()
+    fenced_match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", candidate, re.DOTALL)
+    if fenced_match:
+        candidate = fenced_match.group(1).strip()
+    elif "{" in candidate and "}" in candidate:
+        candidate = candidate[candidate.find("{"):candidate.rfind("}") + 1]
+
+    try:
+        payload = json.loads(candidate)
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _build_request_parser_prompt(
+    query: str,
+    history: list[dict[str, Any]] | None,
+) -> str:
+    prior_user_messages = agent_request_runtime.extract_user_messages_from_history(history)
+    recent_user_messages = prior_user_messages[-4:]
+    history_text = "\n".join(f"- {message}" for message in recent_user_messages) or "- none"
+
+    return (
+        "Parse the investing/options request into a JSON object only. "
+        "Do not include markdown, comments, or code fences. "
+        "Use this schema exactly: "
+        "{"
+        '"intent": "monthly_income_plan|put_options|covered_calls|spreads|null", '
+        '"explicit_symbols": ["..."], '
+        '"positions": [{"symbol": "...", "shares_owned": 100, "cost_basis": 42.5}], '
+        '"monthly_income_target": number|null, '
+        '"cash_budget": number|null, '
+        '"market_scan_requested": boolean, '
+        '"comparison_requested": boolean, '
+        '"max_dte": integer|null, '
+        '"max_delta": number|null, '
+        '"min_roi": number|null, '
+        '"max_risk": number|null, '
+        '"directional_view": "bullish|bearish|neutral|auto|null", '
+        '"risk_profile": "conservative|balanced|aggressive|null", '
+        '"spread_type": "auto|bull_put_credit_spread|bear_call_credit_spread|bull_call_debit_spread|bear_put_debit_spread|iron_condor|iron_butterfly|null", '
+        '"explanation_requested": boolean, '
+        '"actionable_analysis_requested": boolean'
+        "}. "
+        "Interpret natural language amounts like '10k', 'ten grand', or '$2.5k' as normalized numbers when possible. "
+        "If the user is providing a follow-up detail to a prior investing workflow, infer the same intent when reasonable. "
+        f"Recent user messages:\n{history_text}\n"
+        f"Current user message:\n- {query}"
+    )
+
+
+def _parse_request_with_llm(
+    *,
+    provider: str,
+    client: Any,
+    model_name: str,
+    query: str,
+    history: list[dict[str, Any]] | None,
+    anthropic_max_tokens: int | None = None,
+) -> dict[str, Any] | None:
+    parser_prompt = _build_request_parser_prompt(query, history)
+
+    if provider == "anthropic":
+        response = client.messages.create(
+            model=model_name,
+            system="Return JSON only.",
+            messages=[{"role": "user", "content": parser_prompt}],
+            max_tokens=anthropic_max_tokens or 1024,
+        )
+        response_text = "\n".join(
+            block.text for block in response.content if getattr(block, "type", None) == "text"
+        )
+        return _extract_json_object(response_text)
+
+    response = client.chat.completions.create(
+        model=model_name,
+        messages=[
+            {"role": "system", "content": "Return JSON only."},
+            {"role": "user", "content": parser_prompt},
+        ],
+    )
+    message = response.choices[0].message
+    return _extract_json_object(message.content or "")
+
+
 def _get_agent_provider() -> str:
     provider = str(getattr(settings, "AGENT_MODEL_PROVIDER", "anthropic")).strip().lower()
     if provider not in {"anthropic", "openai", "gemini"}:
@@ -7679,6 +7768,54 @@ def _get_agent_model(provider: str) -> str:
     return "gpt-4o-mini"
 
 
+def _create_model_client(
+    provider: str,
+    *,
+    llm_timeout_seconds: int,
+    openai_max_retries: int,
+) -> tuple[Any, int | None]:
+    if provider == "anthropic":
+        api_key = getattr(settings, "ANTHROPIC_API_KEY", None) or os.environ.get(
+            "ANTHROPIC_API_KEY"
+        )
+        if not api_key:
+            raise RuntimeError(
+                "ANTHROPIC_API_KEY is not set. Configure it for the service running agent jobs."
+            )
+        anthropic_max_tokens = max(
+            1, int(getattr(settings, "AGENT_ANTHROPIC_MAX_TOKENS", 4096))
+        )
+        client = Anthropic(
+            api_key=api_key,
+            timeout=llm_timeout_seconds,
+        )
+        return client, anthropic_max_tokens
+
+    api_key_setting_name = "GEMINI_API_KEY" if provider == "gemini" else "OPENAI_API_KEY"
+    api_key = getattr(settings, api_key_setting_name, None) or os.environ.get(
+        api_key_setting_name
+    )
+    if not api_key:
+        raise RuntimeError(
+            f"{api_key_setting_name} is not set. Configure it for the service running agent jobs."
+        )
+    openai_client_kwargs = {
+        "api_key": api_key,
+        "timeout": llm_timeout_seconds,
+        "max_retries": openai_max_retries,
+    }
+    if provider == "gemini":
+        openai_client_kwargs["base_url"] = getattr(
+            settings,
+            "GEMINI_OPENAI_BASE_URL",
+            "https://generativelanguage.googleapis.com/v1beta/openai/",
+        )
+    client = OpenAI(
+        **openai_client_kwargs,
+    )
+    return client, None
+
+
 def run_agent(
     query: str,
     history: list[dict[str, Any]] | None = None,
@@ -7697,11 +7834,58 @@ def run_agent(
         normalized_query,
         conversation_history,
     )
+    provider = _get_agent_provider()
+    model_name = _get_agent_model(provider)
+    max_iterations = max(1, int(getattr(settings, "AGENT_MAX_ITERATIONS", 10)))
+    llm_timeout_seconds = max(
+        1, int(getattr(settings, "AGENT_OPENAI_TIMEOUT_SECONDS", 45))
+    )
+    overall_timeout_seconds = max(
+        llm_timeout_seconds,
+        int(getattr(settings, "AGENT_OVERALL_TIMEOUT_SECONDS", 90)),
+    )
+    openai_max_retries = max(
+        0, int(getattr(settings, "AGENT_OPENAI_MAX_RETRIES", 1))
+    )
+    enable_llm_request_parser = bool(
+        getattr(settings, "AGENT_ENABLE_LLM_REQUEST_PARSER", True)
+    )
+    client = None
+    anthropic_max_tokens = None
+
+    if enable_llm_request_parser and agent_request_runtime.should_use_llm_request_parser(request_context):
+        try:
+            client, anthropic_max_tokens = _create_model_client(
+                provider,
+                llm_timeout_seconds=llm_timeout_seconds,
+                openai_max_retries=openai_max_retries,
+            )
+            semantic_payload = _parse_request_with_llm(
+                provider=provider,
+                client=client,
+                model_name=model_name,
+                query=normalized_query,
+                history=conversation_history,
+                anthropic_max_tokens=anthropic_max_tokens,
+            )
+            request_context = agent_request_runtime.merge_request_context_with_semantic_parse(
+                request_context,
+                semantic_payload,
+            )
+        except Exception as exc:
+            logger.warning(
+                "LLM request parser failed run_id=%s provider=%s model=%s error=%s",
+                agent_run_id,
+                provider,
+                model_name,
+                exc,
+            )
+
     route_decision = agent_request_runtime.decide_action(request_context)
     prepared_query = _prepare_agent_query(normalized_query)
 
     logger.info(
-        "Request context parsed run_id=%s current_intent=%s active_intent=%s symbols=%s ambiguous_symbols=%s positions=%s monthly_target=%s cash_budget=%s route=%s reason=%s defaults=%s",
+        "Request context parsed run_id=%s current_intent=%s active_intent=%s symbols=%s ambiguous_symbols=%s positions=%s monthly_target=%s cash_budget=%s semantic_parse_used=%s route=%s reason=%s defaults=%s",
         agent_run_id,
         request_context.current_intent,
         request_context.active_intent,
@@ -7710,6 +7894,7 @@ def run_agent(
         len(request_context.positions),
         request_context.monthly_income_target,
         request_context.cash_budget,
+        request_context.semantic_parse_used,
         route_decision.kind,
         route_decision.reason,
         route_decision.defaults_applied,
@@ -7726,57 +7911,11 @@ def run_agent(
             ],
         }
 
-    provider = _get_agent_provider()
-    model_name = _get_agent_model(provider)
-    max_iterations = max(1, int(getattr(settings, "AGENT_MAX_ITERATIONS", 10)))
-    llm_timeout_seconds = max(
-        1, int(getattr(settings, "AGENT_OPENAI_TIMEOUT_SECONDS", 45))
-    )
-    overall_timeout_seconds = max(
-        llm_timeout_seconds,
-        int(getattr(settings, "AGENT_OVERALL_TIMEOUT_SECONDS", 90)),
-    )
-    openai_max_retries = max(
-        0, int(getattr(settings, "AGENT_OPENAI_MAX_RETRIES", 1))
-    )
-
-    if provider == "anthropic":
-        api_key = getattr(settings, "ANTHROPIC_API_KEY", None) or os.environ.get(
-            "ANTHROPIC_API_KEY"
-        )
-        if not api_key:
-            raise RuntimeError(
-                "ANTHROPIC_API_KEY is not set. Configure it for the service running agent jobs."
-            )
-        anthropic_max_tokens = max(
-            1, int(getattr(settings, "AGENT_ANTHROPIC_MAX_TOKENS", 4096))
-        )
-        client = Anthropic(
-            api_key=api_key,
-            timeout=llm_timeout_seconds,
-        )
-    else:
-        api_key_setting_name = "GEMINI_API_KEY" if provider == "gemini" else "OPENAI_API_KEY"
-        api_key = getattr(settings, api_key_setting_name, None) or os.environ.get(
-            api_key_setting_name
-        )
-        if not api_key:
-            raise RuntimeError(
-                f"{api_key_setting_name} is not set. Configure it for the service running agent jobs."
-            )
-        openai_client_kwargs = {
-            "api_key": api_key,
-            "timeout": llm_timeout_seconds,
-            "max_retries": openai_max_retries,
-        }
-        if provider == "gemini":
-            openai_client_kwargs["base_url"] = getattr(
-                settings,
-                "GEMINI_OPENAI_BASE_URL",
-                "https://generativelanguage.googleapis.com/v1beta/openai/",
-            )
-        client = OpenAI(
-            **openai_client_kwargs,
+    if client is None:
+        client, anthropic_max_tokens = _create_model_client(
+            provider,
+            llm_timeout_seconds=llm_timeout_seconds,
+            openai_max_retries=openai_max_retries,
         )
 
     if route_decision.kind == "tool":
