@@ -37,6 +37,7 @@ class RouteDecision:
     tool_args: dict[str, Any] = field(default_factory=dict)
     clarification_message: str | None = None
     reason: str | None = None
+    defaults_applied: list[str] = field(default_factory=list)
 
 
 COMMON_WORD_TICKERS = frozenset(
@@ -127,7 +128,7 @@ def extract_intent_from_query(query: str) -> str | None:
         return "monthly_income_plan"
 
     if re.search(
-        r"\b(cash[-\s]?secured puts?|csp\b|wheel strategy|wheel\b|sell(?:ing)? puts?|put ideas?|short puts?)\b",
+        r"\b(cash[-\s]?secured puts?|csp\b|wheel strategy|wheel\b|sell(?:ing)? puts?|put ideas?|put opportunities?|short puts?|puts?)\b",
         normalized_query,
     ):
         return "put_options"
@@ -139,7 +140,7 @@ def extract_intent_from_query(query: str) -> str | None:
         return "covered_calls"
 
     if re.search(
-        r"\b(credit spreads?|debit spreads?|vertical spreads?|bull put spreads?|bear call spreads?|bull call spreads?|bear put spreads?|iron condors?|iron butterflies?|defined[-\s]?risk)\b",
+        r"\b(credit spreads?|debit spreads?|vertical spreads?|bull put spreads?|bear call spreads?|bull call spreads?|bear put spreads?|iron condors?|iron butterflies?|spread ideas?|spread setups?|spread trades?|defined[-\s]?risk)\b",
         normalized_query,
     ):
         return "spreads"
@@ -201,6 +202,30 @@ def query_requests_comparison(query: str) -> bool:
     return bool(
         re.search(
             r"\b(compare|comparison|better|best among|rank|ranking|which one|which is better|vs\.?|versus)\b",
+            normalized_query,
+        )
+    )
+
+
+def query_requests_explanation(query: str) -> bool:
+    if not query:
+        return False
+    normalized_query = " ".join(str(query).split()).lower()
+    return bool(
+        re.search(
+            r"\b(what is|what are|how do|how does|how to|explain|when should|why|difference between|pros and cons|tax|taxes|risk|risks)\b",
+            normalized_query,
+        )
+    )
+
+
+def query_requests_actionable_analysis(query: str) -> bool:
+    if not query:
+        return False
+    normalized_query = " ".join(str(query).split()).lower()
+    return bool(
+        re.search(
+            r"\b(show|give|find|list|screen|scan|rank|best|top|ideas|opportunities|suggest|recommend|build|create|evaluate|analyze|compare|which|look for)\b",
             normalized_query,
         )
     )
@@ -847,8 +872,219 @@ def route_request(context: RequestContext) -> RouteDecision:
     return RouteDecision("llm", reason="fallback_to_general_agent")
 
 
+def build_clarification_if_needed(context: RequestContext) -> RouteDecision | None:
+    if context.ambiguous_symbols and context.active_intent in {
+        "put_options",
+        "covered_calls",
+        "spreads",
+    }:
+        return RouteDecision(
+            "clarification",
+            clarification_message=build_ambiguous_symbol_clarification(context),
+            reason="ambiguous_common_word_symbol_requires_confirmation",
+        )
+
+    if context.active_intent == "monthly_income_plan":
+        if not has_usable_covered_call_position(context.positions) and context.cash_budget is None:
+            return RouteDecision(
+                kind="clarification",
+                clarification_message=build_monthly_income_plan_clarification(context),
+                reason="monthly_income_plan_missing_positions_or_cash",
+            )
+    return None
+
+
+def _build_covered_call_route_symbols(context: RequestContext) -> list[str]:
+    route_symbols = context.explicit_symbols or [
+        str(position.get("symbol") or "").strip().upper()
+        for position in context.positions
+        if str(position.get("symbol") or "").strip()
+    ]
+    return [symbol for symbol in route_symbols if symbol and not looks_like_common_word(symbol)]
+
+
+def _is_credit_or_auto_spread(spread_type: str | None) -> bool:
+    return spread_type in {
+        None,
+        "",
+        "auto",
+        "bull_put_credit_spread",
+        "bear_call_credit_spread",
+        "iron_condor",
+        "iron_butterfly",
+    }
+
+
+def apply_tool_defaults(
+    tool_name: str,
+    tool_args: dict[str, Any],
+    context: RequestContext,
+) -> tuple[dict[str, Any], list[str]]:
+    merged_args = dict(tool_args or {})
+    defaults_applied: list[str] = []
+
+    if tool_name in {
+        "get_spread_opportunity",
+        "scan_spread_opportunities",
+        "compare_spread_candidates",
+    }:
+        if merged_args.get("spread_type") is None:
+            merged_args["spread_type"] = "auto"
+            defaults_applied.append("spread_type=auto")
+        if merged_args.get("directional_view") is None:
+            merged_args["directional_view"] = "auto"
+            defaults_applied.append("directional_view=auto")
+        if merged_args.get("risk_profile") is None:
+            merged_args["risk_profile"] = "balanced"
+            defaults_applied.append("risk_profile=balanced")
+        if merged_args.get("max_dte") is None:
+            default_max_dte = 45 if _is_credit_or_auto_spread(merged_args.get("spread_type")) else 60
+            merged_args["max_dte"] = default_max_dte
+            defaults_applied.append(f"max_dte={default_max_dte}")
+
+    if tool_name == "scan_put_opportunities" and not (
+        context.market_scan_requested or context.price_filters or context.cash_budget is not None
+    ):
+        defaults_applied.append("scope=market_scan")
+
+    if tool_name == "scan_covered_call_opportunities" and not context.market_scan_requested:
+        defaults_applied.append("scope=market_scan")
+
+    if tool_name == "scan_spread_opportunities" and not context.market_scan_requested:
+        defaults_applied.append("scope=market_scan")
+
+    return merged_args, defaults_applied
+
+
+def decide_action(context: RequestContext) -> RouteDecision:
+    clarification = build_clarification_if_needed(context)
+    if clarification is not None:
+        return clarification
+
+    if context.active_intent == "monthly_income_plan":
+        tool_args: dict[str, Any] = {}
+        if context.monthly_income_target is not None:
+            tool_args["monthly_income_target"] = context.monthly_income_target
+        if context.positions:
+            tool_args["positions"] = context.positions
+        if context.cash_budget is not None:
+            tool_args["account_size"] = context.cash_budget
+            tool_args["max_cash_required"] = context.cash_budget
+        return RouteDecision("tool", "build_monthly_income_plan", tool_args, reason="policy_monthly_income_plan")
+
+    if context.active_intent == "put_options":
+        tool_args: dict[str, Any] = {}
+        if context.cash_budget is not None:
+            tool_args["account_size"] = context.cash_budget
+            tool_args["max_cash_required"] = context.cash_budget
+        if len(context.explicit_symbols) == 1:
+            tool_args["symbol"] = context.explicit_symbols[0]
+            return RouteDecision("tool", "get_put_wheel_opportunity", tool_args, reason="policy_single_put_symbol")
+        if len(context.explicit_symbols) > 1:
+            tool_args["symbols"] = context.explicit_symbols
+            return RouteDecision("tool", "compare_put_candidates", tool_args, reason="policy_multi_put_compare")
+        if context.market_scan_requested or context.price_filters or context.cash_budget is not None or query_requests_actionable_analysis(context.raw_query):
+            tool_args.update(context.price_filters)
+            tool_args, defaults_applied = apply_tool_defaults("scan_put_opportunities", tool_args, context)
+            return RouteDecision("tool", "scan_put_opportunities", tool_args, reason="policy_put_scan", defaults_applied=defaults_applied)
+        if query_requests_explanation(context.raw_query):
+            return RouteDecision("llm", reason="policy_put_explanation")
+        return RouteDecision("llm", reason="policy_put_fallback")
+
+    if context.active_intent == "covered_calls":
+        route_symbols = _build_covered_call_route_symbols(context)
+
+        if len(route_symbols) > 1 or (context.comparison_requested and len(route_symbols) >= 1):
+            tool_args: dict[str, Any] = {"symbols": route_symbols}
+            if context.max_delta is not None:
+                tool_args["max_delta"] = context.max_delta
+            if context.min_roi is not None:
+                tool_args["min_roi"] = context.min_roi
+            return RouteDecision("tool", "compare_covered_call_candidates", tool_args, reason="policy_covered_call_compare")
+
+        if len(route_symbols) == 1:
+            symbol = route_symbols[0]
+            matching_position = next(
+                (
+                    position
+                    for position in context.positions
+                    if str(position.get("symbol") or "").strip().upper() == symbol
+                ),
+                None,
+            )
+            tool_args = {"symbol": symbol}
+            if matching_position is not None:
+                if to_int(matching_position.get("shares_owned")) is not None:
+                    tool_args["shares_owned"] = to_int(matching_position.get("shares_owned"))
+                if to_float(matching_position.get("cost_basis")) is not None:
+                    tool_args["cost_basis"] = to_float(matching_position.get("cost_basis"))
+            if context.max_dte is not None:
+                tool_args["max_dte"] = context.max_dte
+            if context.min_roi is not None:
+                tool_args["min_roi"] = context.min_roi
+            return RouteDecision("tool", "get_covered_call_opportunity", tool_args, reason="policy_single_covered_call")
+
+        if context.market_scan_requested or query_requests_actionable_analysis(context.raw_query):
+            tool_args = {}
+            if context.max_dte is not None:
+                tool_args["max_dte"] = context.max_dte
+            if context.max_delta is not None:
+                tool_args["max_delta"] = context.max_delta
+            if context.min_roi is not None:
+                tool_args["min_roi"] = context.min_roi
+            tool_args, defaults_applied = apply_tool_defaults("scan_covered_call_opportunities", tool_args, context)
+            return RouteDecision("tool", "scan_covered_call_opportunities", tool_args, reason="policy_covered_call_scan", defaults_applied=defaults_applied)
+
+        if query_requests_explanation(context.raw_query):
+            return RouteDecision("llm", reason="policy_covered_call_explanation")
+        return RouteDecision("llm", reason="policy_covered_call_fallback")
+
+    if context.active_intent == "spreads":
+        tool_args: dict[str, Any] = {}
+        if context.spread_type is not None:
+            tool_args["spread_type"] = context.spread_type
+        if context.directional_view is not None:
+            tool_args["directional_view"] = context.directional_view
+        if context.risk_profile is not None:
+            tool_args["risk_profile"] = context.risk_profile
+        if context.max_dte is not None:
+            tool_args["max_dte"] = context.max_dte
+        if context.max_risk is not None:
+            tool_args["max_risk"] = context.max_risk
+
+        if len(context.explicit_symbols) > 1:
+            tool_args["symbols"] = context.explicit_symbols
+            tool_args, defaults_applied = apply_tool_defaults("compare_spread_candidates", tool_args, context)
+            return RouteDecision("tool", "compare_spread_candidates", tool_args, reason="policy_spread_compare", defaults_applied=defaults_applied)
+        if len(context.explicit_symbols) == 1:
+            tool_args["symbol"] = context.explicit_symbols[0]
+            tool_name = "compare_spread_candidates" if context.comparison_requested else "get_spread_opportunity"
+            tool_args, defaults_applied = apply_tool_defaults(tool_name, tool_args, context)
+            return RouteDecision("tool", tool_name, tool_args, reason="policy_single_spread", defaults_applied=defaults_applied)
+        if context.market_scan_requested or query_requests_actionable_analysis(context.raw_query):
+            tool_args, defaults_applied = apply_tool_defaults("scan_spread_opportunities", tool_args, context)
+            return RouteDecision("tool", "scan_spread_opportunities", tool_args, reason="policy_spread_scan", defaults_applied=defaults_applied)
+        if query_requests_explanation(context.raw_query):
+            return RouteDecision("llm", reason="policy_spread_explanation")
+        return RouteDecision("llm", reason="policy_spread_fallback")
+
+    return RouteDecision("llm", reason="fallback_to_general_agent")
+
+
+def parse_request(
+    query: str,
+    history: list[dict[str, Any]] | None = None,
+) -> RequestContext:
+    return build_request_context(query, history)
+
+
+def route_request(context: RequestContext) -> RouteDecision:
+    return decide_action(context)
+
+
 def augment_tool_args_from_query(tool_name: str, tool_args: dict, user_query: str) -> dict:
     merged_args = dict(tool_args or {})
+    request_context = build_request_context(user_query)
     price_filters = extract_underlying_price_filters_from_query(user_query)
     cash_budget = extract_cash_budget_from_query(user_query)
     max_dte = extract_max_dte_from_query(user_query)
@@ -911,4 +1147,5 @@ def augment_tool_args_from_query(tool_name: str, tool_args: dict, user_query: st
         if max_risk is not None:
             merged_args.setdefault("max_risk", max_risk)
 
+    merged_args, _ = apply_tool_defaults(tool_name, merged_args, request_context)
     return merged_args

@@ -7693,15 +7693,15 @@ def run_agent(
         raise ValueError("history must be a list")
 
     conversation_history = history or []
-    request_context = agent_request_runtime.build_request_context(
+    request_context = agent_request_runtime.parse_request(
         normalized_query,
         conversation_history,
     )
-    route_decision = agent_request_runtime.route_request(request_context)
+    route_decision = agent_request_runtime.decide_action(request_context)
     prepared_query = _prepare_agent_query(normalized_query)
 
     logger.info(
-        "Request context parsed run_id=%s current_intent=%s active_intent=%s symbols=%s ambiguous_symbols=%s positions=%s monthly_target=%s cash_budget=%s route=%s reason=%s",
+        "Request context parsed run_id=%s current_intent=%s active_intent=%s symbols=%s ambiguous_symbols=%s positions=%s monthly_target=%s cash_budget=%s route=%s reason=%s defaults=%s",
         agent_run_id,
         request_context.current_intent,
         request_context.active_intent,
@@ -7712,6 +7712,7 @@ def run_agent(
         request_context.cash_budget,
         route_decision.kind,
         route_decision.reason,
+        route_decision.defaults_applied,
     )
 
     if route_decision.kind == "clarification":

@@ -64,6 +64,15 @@ class AgentRequestTests(TestCase):
         )
         self.assertIn("ambiguous ticker text: I", decision.clarification_message)
 
+    def test_route_request_defaults_generic_put_request_to_market_scan(self) -> None:
+        context = agent_request.build_request_context("Show me puts")
+
+        decision = agent_request.route_request(context)
+
+        self.assertEqual(decision.kind, "tool")
+        self.assertEqual(decision.tool_name, "scan_put_opportunities")
+        self.assertIn("scope=market_scan", decision.defaults_applied)
+
     def test_route_request_compares_covered_calls_for_multiple_symbols(self) -> None:
         context = agent_request.build_request_context(
             "Compare covered calls for AAPL and MSFT with max delta 0.25 and min ROI 2",
@@ -88,8 +97,31 @@ class AgentRequestTests(TestCase):
         self.assertEqual(decision.tool_name, "scan_spread_opportunities")
         self.assertEqual(decision.tool_args["directional_view"], "bullish")
         self.assertEqual(decision.tool_args["spread_type"], "auto")
+        self.assertEqual(decision.tool_args["risk_profile"], "balanced")
         self.assertEqual(decision.tool_args["max_risk"], 500.0)
         self.assertEqual(decision.tool_args["max_dte"], 30)
+        self.assertIn("risk_profile=balanced", decision.defaults_applied)
+
+    def test_route_request_defaults_single_spread_request_without_extra_inputs(self) -> None:
+        context = agent_request.build_request_context("Need a spread idea for NVDA")
+
+        decision = agent_request.route_request(context)
+
+        self.assertEqual(decision.kind, "tool")
+        self.assertEqual(decision.tool_name, "get_spread_opportunity")
+        self.assertEqual(decision.tool_args["symbol"], "NVDA")
+        self.assertEqual(decision.tool_args["spread_type"], "auto")
+        self.assertEqual(decision.tool_args["directional_view"], "auto")
+        self.assertEqual(decision.tool_args["risk_profile"], "balanced")
+        self.assertEqual(decision.tool_args["max_dte"], 45)
+
+    def test_route_request_sends_educational_covered_call_query_to_llm(self) -> None:
+        context = agent_request.build_request_context("How do covered calls work?")
+
+        decision = agent_request.route_request(context)
+
+        self.assertEqual(decision.kind, "llm")
+        self.assertEqual(decision.reason, "policy_covered_call_explanation")
 
     def test_augment_tool_args_from_query_applies_spread_filters(self) -> None:
         augmented = agent_request.augment_tool_args_from_query(
@@ -102,3 +134,15 @@ class AgentRequestTests(TestCase):
         self.assertEqual(augmented["directional_view"], "bearish")
         self.assertEqual(augmented["max_risk"], 250.0)
         self.assertEqual(augmented["max_dte"], 21)
+
+    def test_augment_tool_args_from_query_applies_spread_defaults(self) -> None:
+        augmented = agent_request.augment_tool_args_from_query(
+            "get_spread_opportunity",
+            {"symbol": "NVDA"},
+            "Need a spread idea for NVDA",
+        )
+
+        self.assertEqual(augmented["spread_type"], "auto")
+        self.assertEqual(augmented["directional_view"], "auto")
+        self.assertEqual(augmented["risk_profile"], "balanced")
+        self.assertEqual(augmented["max_dte"], 45)
