@@ -41,6 +41,36 @@ class RunAgentTests(TestCase):
             },
         )
 
+    def test_augment_tool_args_from_query_applies_oversold_rsi_filter(self) -> None:
+        augmented_args = _augment_tool_args_from_query(
+            "scan_put_opportunities",
+            {"limit": 10},
+            "Provide put candidates on oversold companies",
+        )
+
+        self.assertEqual(
+            augmented_args,
+            {
+                "limit": 10,
+                "max_rsi": 30.0,
+            },
+        )
+
+    def test_augment_tool_args_from_query_applies_overbought_rsi_filter(self) -> None:
+        augmented_args = _augment_tool_args_from_query(
+            "scan_put_opportunities",
+            {"limit": 10},
+            "Provide put candidates on overbough companies",
+        )
+
+        self.assertEqual(
+            augmented_args,
+            {
+                "limit": 10,
+                "min_rsi": 75.0,
+            },
+        )
+
     def test_augment_tool_args_from_query_leaves_other_tools_unchanged(self) -> None:
         tool_args = {"limit": 10}
 
@@ -337,6 +367,51 @@ class RunAgentTests(TestCase):
             {
                 "limit": 5,
                 "max_price": 150.0,
+            },
+        )
+
+    @override_settings(
+        AGENT_MODEL_PROVIDER="openai",
+        AGENT_MODEL="gpt-4o-mini",
+        OPENAI_API_KEY="test-openai-key",
+    )
+    @patch("api.agent_views.handle_tool_call", return_value='{"ok": true}')
+    @patch("api.agent_views.OpenAI")
+    def test_run_agent_applies_oversold_rsi_filter_to_scan_put_tool_calls(
+        self,
+        mock_openai: MagicMock,
+        mock_handle_tool_call: MagicMock,
+    ) -> None:
+        tool_call = MagicMock()
+        tool_call.id = "call_1"
+        tool_call.function.name = "scan_put_opportunities"
+        tool_call.function.arguments = '{"limit": 5}'
+
+        first_message = MagicMock()
+        first_message.tool_calls = [tool_call]
+        first_message.model_dump.return_value = {"role": "assistant", "content": None}
+
+        second_message = MagicMock()
+        second_message.tool_calls = None
+        second_message.content = "Filtered answer"
+
+        first_response = MagicMock()
+        first_response.choices = [MagicMock(message=first_message)]
+        second_response = MagicMock()
+        second_response.choices = [MagicMock(message=second_message)]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = [first_response, second_response]
+        mock_openai.return_value = mock_client
+
+        result = run_agent("Provide put candidates on oversold companies", [])
+
+        self.assertEqual(result["answer"], "Filtered answer")
+        mock_handle_tool_call.assert_called_once_with(
+            "scan_put_opportunities",
+            {
+                "limit": 5,
+                "max_rsi": 30.0,
             },
         )
 

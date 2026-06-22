@@ -179,8 +179,9 @@ Always cite the specific numbers returned by the tool:
 
 If the user asks for best ideas for PUTs, Wheels and CSP - Cash Secured Puts across the market, top candidates, screeners, scans, ranked opportunities, or generally asks which puts to suggest without naming a ticker, call scan_put_opportunities.
 - The tool scans all tracked symbols and returns the highest-scoring cash-secured put contracts ranked by opportunity score.
-- Optional filters: limit (number of results), min_roi (%), max_dte (days to expiration), min_price, max_price, max_delta, and `account_size` / `max_cash_required` for CSP affordability.
-- If the user asks for companies, stocks, or tickers below / under a dollar threshold, map that to `max_price` on the underlying stock price. If they ask for above / over a threshold, map that to `min_price`.
+ - Optional filters: limit (number of results), min_roi (%), max_dte (days to expiration), min_price, max_price, min_rsi, max_rsi, max_delta, and `account_size` / `max_cash_required` for CSP affordability.
+ - If the user asks for companies, stocks, or tickers below / under a dollar threshold, map that to `max_price` on the underlying stock price. If they ask for above / over a threshold, map that to `min_price`.
+ - If the user asks for oversold companies, map that to `max_rsi=30`. If the user asks for overbought companies, map that to `min_rsi=75`.
 
 When interpreting scan_put_opportunities results:
 - If the user provides a dollar budget for cash-secured puts, treat it as a hard affordability filter rather than a preference.
@@ -614,6 +615,14 @@ TOOLS = [
                     "max_price": {
                         "type": "number",
                         "description": "Maximum underlying stock price to include. Optional.",
+                    },
+                    "min_rsi": {
+                        "type": "number",
+                        "description": "Minimum RSI to include on the underlying stock. Optional.",
+                    },
+                    "max_rsi": {
+                        "type": "number",
+                        "description": "Maximum RSI to include on the underlying stock. Optional.",
                     },
                     "max_delta": {
                         "type": "number",
@@ -1144,10 +1153,26 @@ def _extract_underlying_price_filters_from_query(query: str) -> dict[str, float]
     return {}
 
 
+def _extract_rsi_filters_from_query(query: str) -> dict[str, float]:
+    if not query:
+        return {}
+
+    normalized_query = " ".join(str(query).split()).lower()
+    has_oversold = bool(re.search(r"\boversold\b", normalized_query))
+    has_overbought = bool(re.search(r"\boverbought?\b", normalized_query))
+
+    if has_oversold and not has_overbought:
+        return {"max_rsi": 30.0}
+    if has_overbought and not has_oversold:
+        return {"min_rsi": 75.0}
+    return {}
+
+
 def _build_structured_query_context(query: str) -> str:
     positions = _extract_owned_positions_from_query(query)
     price_filters = _extract_underlying_price_filters_from_query(query)
-    if not positions and not price_filters:
+    rsi_filters = _extract_rsi_filters_from_query(query)
+    if not positions and not price_filters and not rsi_filters:
         return ""
 
     lines = []
@@ -1181,6 +1206,23 @@ def _build_structured_query_context(query: str) -> str:
             )
         lines.append(
             "Important: for market-wide stock or option scans, apply these underlying price filters as hard tool arguments."
+        )
+
+    if rsi_filters:
+        if lines:
+            lines.append("")
+        if not price_filters:
+            lines.append("Structured screener filters extracted from the user's message:")
+        if rsi_filters.get("min_rsi") is not None:
+            lines.append(
+                f"- min_rsi={rsi_filters['min_rsi']} (underlying stock RSI floor)"
+            )
+        if rsi_filters.get("max_rsi") is not None:
+            lines.append(
+                f"- max_rsi={rsi_filters['max_rsi']} (underlying stock RSI cap)"
+            )
+        lines.append(
+            "Important: for market-wide stock or option scans, apply these RSI filters as hard tool arguments."
         )
 
     return "\n".join(lines)
@@ -5380,6 +5422,8 @@ def _handle_scan_put_opportunities(args: dict) -> str:
     max_dte = _to_int(args.get("max_dte"))
     min_price = _to_float(args.get("min_price"))
     max_price = _to_float(args.get("max_price"))
+    min_rsi = _to_float(args.get("min_rsi"))
+    max_rsi = _to_float(args.get("max_rsi"))
     max_delta = _to_float(args.get("max_delta"))
     account_size = _to_float(args.get("account_size"))
     max_cash_required = _to_float(args.get("max_cash_required"))
@@ -5406,6 +5450,13 @@ def _handle_scan_put_opportunities(args: dict) -> str:
         quality_score = _to_float(sym.score)
         technical_score = sym.technical_score
         next_earnings_date = _parse_date(sym.next_earnings_date)
+
+        if min_rsi is not None:
+            if rsi is None or rsi < min_rsi:
+                continue
+        if max_rsi is not None:
+            if rsi is None or rsi > max_rsi:
+                continue
 
         put_contracts = _extract_put_contracts(sym.option_data or {})
         if not put_contracts:
@@ -5492,6 +5543,8 @@ def _handle_scan_put_opportunities(args: dict) -> str:
             "max_dte": max_dte,
             "min_price": min_price,
             "max_price": max_price,
+            "min_rsi": min_rsi,
+            "max_rsi": max_rsi,
             "max_delta": max_delta,
             "account_size": account_size,
             "max_cash_required": max_cash_required,
@@ -6547,12 +6600,14 @@ def _augment_tool_args_from_query(tool_name: str, tool_args: dict, user_query: s
     if tool_name != "scan_put_opportunities":
         return tool_args
 
-    price_filters = _extract_underlying_price_filters_from_query(user_query)
-    if not price_filters:
+    extracted_filters = {}
+    extracted_filters.update(_extract_underlying_price_filters_from_query(user_query))
+    extracted_filters.update(_extract_rsi_filters_from_query(user_query))
+    if not extracted_filters:
         return tool_args
 
     merged_args = dict(tool_args or {})
-    merged_args.update(price_filters)
+    merged_args.update(extracted_filters)
     return merged_args
 
 
