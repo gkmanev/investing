@@ -223,25 +223,31 @@ class RefreshView(APIView):
         if not refresh_token:
             raise serializers.ValidationError({"detail": "Refresh token cookie is missing."})
 
+        premium = None
+        serialized_user = None
+        try:
+            token = RefreshToken(refresh_token)
+            user_id = token.payload.get("user_id")
+            if user_id:
+                user = User.objects.filter(pk=user_id).first()
+                if user is not None:
+                    premium = _premium_data(user)
+                    serialized_user = UserSerializer(user).data
+        except Exception:
+            pass
+
         serializer = TokenRefreshSerializer(data={"refresh": refresh_token})
         try:
             serializer.is_valid(raise_exception=True)
         except TokenError as exc:
             raise InvalidToken(str(exc)) from exc
 
-        # Resolve user to attach current premium_subscription state
-        premium = None
-        try:
-            token = RefreshToken(refresh_token)
-            user_id = token.payload.get("user_id")
-            if user_id:
-                user = User.objects.select_related("premium_subscription").get(pk=user_id)
-                premium = _premium_data(user)
-        except Exception:
-            pass
-
         response = Response(
-            {"access": serializer.validated_data["access"], "premium_subscription": premium},
+            {
+                "access": serializer.validated_data["access"],
+                "user": serialized_user,
+                "premium_subscription": premium,
+            },
             status=status.HTTP_200_OK,
         )
 
@@ -272,4 +278,10 @@ class MeView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        return Response(UserSerializer(request.user).data, status=status.HTTP_200_OK)
+        return Response(
+            {
+                **UserSerializer(request.user).data,
+                "premium_subscription": _premium_data(request.user),
+            },
+            status=status.HTTP_200_OK,
+        )

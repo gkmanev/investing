@@ -155,6 +155,26 @@ class AuthAPITestCase(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["email"], user.email)
+        self.assertFalse(response.data["has_full_access"])
+        self.assertIn("premium_subscription", response.data)
+        self.assertIsNone(response.data["premium_subscription"])
+
+    def test_me_returns_full_access_for_staff_user(self) -> None:
+        user, password = self.create_user(is_staff=True, is_superuser=True)
+        login_response = self.client.post(
+            self.login_url,
+            {"identifier": user.username, "password": password},
+            format="json",
+        )
+        access_token = login_response.data["access"]
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {access_token}")
+
+        response = self.client.get(self.me_url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["is_staff"])
+        self.assertTrue(response.data["is_superuser"])
+        self.assertTrue(response.data["has_full_access"])
 
     def test_refresh_uses_cookie_and_rotates_refresh_token(self) -> None:
         user, password = self.create_user()
@@ -169,6 +189,10 @@ class AuthAPITestCase(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn("access", response.data)
+        self.assertIn("user", response.data)
+        self.assertEqual(response.data["user"]["username"], user.username)
+        self.assertFalse(response.data["user"]["has_full_access"])
+        self.assertIn("premium_subscription", response.data)
         self.assertIn(settings.AUTH_REFRESH_COOKIE_NAME, response.cookies)
         self.assertNotEqual(
             response.cookies[settings.AUTH_REFRESH_COOKIE_NAME].value,

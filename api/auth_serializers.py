@@ -1,5 +1,6 @@
 from django.contrib.auth import authenticate, get_user_model
 from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ObjectDoesNotExist
 from django.db.models import Q
 from rest_framework import serializers
 
@@ -10,10 +11,29 @@ User = get_user_model()
 
 
 class UserSerializer(serializers.ModelSerializer):
+    has_full_access = serializers.SerializerMethodField()
+
     class Meta:
         model = User
-        fields = ["id", "username", "email", "first_name", "last_name", "is_staff"]
+        fields = [
+            "id",
+            "username",
+            "email",
+            "first_name",
+            "last_name",
+            "is_staff",
+            "is_superuser",
+            "has_full_access",
+        ]
         read_only_fields = fields
+
+    def get_has_full_access(self, obj) -> bool:
+        if getattr(obj, "is_staff", False):
+            return True
+        try:
+            return bool(obj.premium_subscription.is_active)
+        except ObjectDoesNotExist:
+            return False
 
 
 class RegisterSerializer(serializers.ModelSerializer):
