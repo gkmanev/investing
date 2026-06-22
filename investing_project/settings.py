@@ -46,7 +46,7 @@ AGENT_MODEL = os.getenv(
         if AGENT_MODEL_PROVIDER == "anthropic"
         else "gemini-2.5-flash"
         if AGENT_MODEL_PROVIDER == "gemini"
-        else "gpt-4o-mini"
+        else "gpt-4.1-mini"
     ),
 )
 AGENT_ANTHROPIC_MAX_TOKENS = int(os.getenv("AGENT_ANTHROPIC_MAX_TOKENS", "4096"))

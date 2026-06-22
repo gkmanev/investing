@@ -7,6 +7,7 @@ from django.db.models import Q, Value
 from django.db.models.functions import Replace
 from rest_framework import viewsets
 from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 
 from .models import (
@@ -117,6 +118,7 @@ class FilterMixin:
             return queryset
         return queryset.filter(**{field_name: value})
 
+
     def _apply_integer_range_filter(
         self,
         queryset,
@@ -186,6 +188,25 @@ class FilterMixin:
             return False
 
         raise ValidationError({field: "Enter a valid boolean."})
+
+
+class SymbolPagination(PageNumberPagination):
+    page_size = 25
+    page_size_query_param = "page_size"
+    max_page_size = 100
+
+    def get_paginated_response(self, data):
+        return Response(
+            {
+                "count": self.page.paginator.count,
+                "next": self.get_next_link(),
+                "previous": self.get_previous_link(),
+                "has_more": self.page.has_next(),
+                "page": self.page.number,
+                "page_size": self.get_page_size(self.request),
+                "results": data,
+            }
+        )
 
 
 class InvestmentViewSet(FilterMixin, viewsets.ModelViewSet):
@@ -268,14 +289,28 @@ class SymbolViewSet(FilterMixin, viewsets.ModelViewSet):
     queryset = Symbol.objects.all()
     serializer_class = SymbolSerializer
     permission_classes = [IsStaffOrReadOnly]
+    pagination_class = SymbolPagination
 
     def list(self, request, *args, **kwargs):  # type: ignore[override]
         if set(request.query_params) & SYMBOL_FILTER_PARAMS and not _user_is_premium(request.user):
             raise PermissionDenied("Filters are available for premium subscribers only.")
         queryset = self.filter_queryset(self.get_queryset())
-        total = queryset.count()
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
         serializer = self.get_serializer(queryset, many=True)
-        return Response({"count": total, "results": serializer.data, "has_more": False})
+        return Response(
+            {
+                "count": len(serializer.data),
+                "next": None,
+                "previous": None,
+                "has_more": False,
+                "page": 1,
+                "page_size": len(serializer.data),
+                "results": serializer.data,
+            }
+        )
 
     def get_queryset(self):  # type: ignore[override]
         queryset = super().get_queryset()

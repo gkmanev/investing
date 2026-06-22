@@ -1884,7 +1884,9 @@ class SymbolAPITestCase(APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual([item["ticker"] for item in response.data], ["STRONG"])
+        self.assertEqual([item["ticker"] for item in response.data["results"]], ["STRONG"])
+        self.assertEqual(response.data["count"], 1)
+        self.assertFalse(response.data["has_more"])
 
     def test_list_can_filter_by_multiple_technical_scores(self) -> None:
         Symbol.objects.create(
@@ -1911,9 +1913,11 @@ class SymbolAPITestCase(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(
-            [item["ticker"] for item in response.data],
+            [item["ticker"] for item in response.data["results"]],
             ["BUY", "NEUTRAL", "STRONG"],
         )
+        self.assertEqual(response.data["count"], 3)
+        self.assertFalse(response.data["has_more"])
 
     def test_list_can_filter_by_option_volume_and_iv(self) -> None:
         Symbol.objects.create(
@@ -1943,7 +1947,26 @@ class SymbolAPITestCase(APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual([item["ticker"] for item in response.data], ["MATCH"])
+        self.assertEqual([item["ticker"] for item in response.data["results"]], ["MATCH"])
+        self.assertEqual(response.data["count"], 1)
+        self.assertFalse(response.data["has_more"])
+
+    def test_list_is_paginated(self) -> None:
+        for index in range(30):
+            Symbol.objects.create(ticker=f"TICK{index:02d}")
+
+        response = self.client.get(self.list_url, {"page": 2, "page_size": 10})
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 30)
+        self.assertEqual(response.data["page"], 2)
+        self.assertEqual(response.data["page_size"], 10)
+        self.assertTrue(response.data["has_more"])
+        self.assertIsNotNone(response.data["next"])
+        self.assertIsNotNone(response.data["previous"])
+        self.assertEqual(len(response.data["results"]), 10)
+        self.assertEqual(response.data["results"][0]["ticker"], "TICK10")
+        self.assertEqual(response.data["results"][-1]["ticker"], "TICK19")
 
 
 @override_settings(FINANCIAL_MODELING_API_KEY="test-fmp-key")
@@ -5222,6 +5245,64 @@ class PutWheelAgentViewTests(APITestCase):
         self.assertEqual(aggressive_payload["risk_profile_used"], "aggressive")
         self.assertEqual(aggressive_payload["results_returned"], 1)
         self.assertEqual(aggressive_payload["opportunities"][0]["ticker"], "MSFG")
+
+    def test_handle_scan_spread_opportunities_normalizes_fractional_iv(self) -> None:
+        expiration = date.today() + timedelta(days=30)
+        Symbol.objects.create(
+            ticker="ARM",
+            price=Decimal("200.00"),
+            score=86,
+            classification="High-quality compounder",
+            technical_score=Symbol.TechnicalScore.STRONG_BUY,
+            next_earnings_date=date.today() + timedelta(days=90),
+            option_iv=Decimal("1.0500"),
+            option_data={
+                "puts": [
+                    {
+                        "strike": 180,
+                        "expiration": expiration.isoformat(),
+                        "bid": 0.95,
+                        "ask": 1.05,
+                        "mid": 1.00,
+                        "delta": -0.14,
+                        "iv": 1.05,
+                        "volume": 420,
+                        "open_interest": 1900,
+                    },
+                    {
+                        "strike": 185,
+                        "expiration": expiration.isoformat(),
+                        "bid": 2.00,
+                        "ask": 2.10,
+                        "mid": 2.05,
+                        "delta": -0.24,
+                        "iv": 1.05,
+                        "volume": 560,
+                        "open_interest": 2400,
+                    },
+                ]
+            },
+        )
+
+        payload = json.loads(
+            agent_views._handle_scan_spread_opportunities(
+                {
+                    "spread_type": "bull_put_credit_spread",
+                    "directional_view": "bullish",
+                    "risk_profile": "conservative",
+                    "limit": 5,
+                }
+            )
+        )
+
+        self.assertEqual(payload["results_returned"], 1)
+        self.assertEqual(payload["opportunities"][0]["ticker"], "ARM")
+        self.assertEqual(payload["opportunities"][0]["avg_iv"], 105.0)
+        self.assertEqual(payload["opportunities"][0]["legs"][0]["iv"], 105.0)
+        self.assertNotIn(
+            "IV is low for a premium-selling spread.",
+            payload["opportunities"][0]["warnings"],
+        )
 
     def test_handle_compare_spread_candidates_ranks_symbols(self) -> None:
         expiration = date.today() + timedelta(days=35)

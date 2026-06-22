@@ -980,6 +980,19 @@ def _to_float(value):
         return None
 
 
+def _normalize_iv_percent(value):
+    iv = _to_float(value)
+    if iv is None:
+        return None
+
+    # TradingView snapshots may store IV as a fraction (for example 1.05 = 105%),
+    # while the rest of the app expects percentage points.
+    if 0 < abs(iv) < 10:
+        return round(iv * 100, 4)
+
+    return round(iv, 4)
+
+
 def _to_int(value):
     try:
         if value is None or value == "":
@@ -1320,7 +1333,7 @@ def _extract_put_contracts(option_data):
             mid = round((bid + ask) / 2, 4)
 
         delta = _to_float(c.get("delta"))
-        iv = _to_float(c.get("iv") or c.get("implied_volatility"))
+        iv = _normalize_iv_percent(c.get("iv") or c.get("implied_volatility"))
         volume = _to_int(c.get("volume"))
         open_interest = _to_int(c.get("open_interest") or c.get("oi"))
 
@@ -1442,7 +1455,7 @@ def _extract_call_contracts(option_data):
             mid = round((bid + ask) / 2, 4)
 
         delta = _to_float(c.get("delta"))
-        iv = _to_float(c.get("iv") or c.get("implied_volatility"))
+        iv = _normalize_iv_percent(c.get("iv") or c.get("implied_volatility"))
         volume = _to_int(c.get("volume"))
         open_interest = _to_int(c.get("open_interest") or c.get("oi"))
 
@@ -1657,7 +1670,7 @@ def _spread_leg_payload(contract, *, action, option_type):
         "ask": _to_float(contract.get("ask")),
         "mid": _contract_mid(contract),
         "delta": _to_float(contract.get("delta")),
-        "iv": _to_float(contract.get("iv")),
+        "iv": _normalize_iv_percent(contract.get("iv")),
         "volume": _to_int(contract.get("volume")),
         "open_interest": _to_int(contract.get("open_interest")),
     }
@@ -1940,9 +1953,15 @@ def _spread_rating(score):
 
 
 def _average_iv_from_legs(legs, symbol_iv=None):
-    ivs = [leg.get("iv") for leg in legs if leg.get("iv") is not None]
+    ivs = []
+    for leg in legs:
+        normalized_leg_iv = _normalize_iv_percent(leg.get("iv"))
+        if normalized_leg_iv is not None:
+            ivs.append(normalized_leg_iv)
     if symbol_iv is not None:
-        ivs.append(symbol_iv)
+        normalized_symbol_iv = _normalize_iv_percent(symbol_iv)
+        if normalized_symbol_iv is not None:
+            ivs.append(normalized_symbol_iv)
     if not ivs:
         return None
     return round(sum(ivs) / len(ivs), 2)
@@ -3564,7 +3583,7 @@ def _evaluate_spread_candidates(
     quality_score = _to_float(sym.score)
     technical_score = sym.technical_score
     next_earnings_date = _parse_date(sym.next_earnings_date)
-    symbol_iv = _to_float(sym.option_iv)
+    symbol_iv = _normalize_iv_percent(sym.option_iv)
     put_contracts = _extract_put_contracts(sym.option_data or {})
     call_contracts = _extract_call_contracts(sym.call_data or sym.option_data or {})
     profile = _spread_profile(risk_profile, overrides=profile_overrides)
@@ -4047,7 +4066,7 @@ def _score_covered_call_contract(
     delta = contract["delta"]
     volume = contract["volume"]
     open_interest = contract["open_interest"]
-    iv = contract["iv"]
+    iv = _normalize_iv_percent(contract["iv"])
 
     if not stock_price or not strike or not expiration_date or mid is None:
         return None
@@ -4740,7 +4759,7 @@ def _score_put_contract(
     delta = contract["delta"]
     volume = contract["volume"]
     open_interest = contract["open_interest"]
-    iv = contract["iv"]
+    iv = _normalize_iv_percent(contract["iv"])
 
     if not stock_price or not strike or not expiration_date or not mid:
         return None
@@ -6554,7 +6573,7 @@ def _get_agent_model(provider: str) -> str:
         return "claude-sonnet-4-5"
     if provider == "gemini":
         return "gemini-2.5-flash"
-    return "gpt-4o-mini"
+    return "gpt-4.1-mini"
 
 
 def run_agent(
