@@ -71,6 +71,43 @@ class RunAgentTests(TestCase):
             },
         )
 
+    def test_augment_tool_args_from_query_reuses_previous_scan_pagination_for_show_more(self) -> None:
+        augmented_args = _augment_tool_args_from_query(
+            "scan_put_opportunities",
+            {"limit": 10},
+            "show more",
+            history=[
+                {
+                    "role": "meta",
+                    "content": {
+                        "type": "tool_state",
+                        "tools": {
+                            "scan_put_opportunities": {
+                                "base_arguments": {
+                                    "limit": 10,
+                                    "max_price": 200.0,
+                                },
+                                "limit": 10,
+                                "offset": 0,
+                                "next_offset": 10,
+                                "total_results_available": 26,
+                                "shown_tickers": ["ON", "FUTU"],
+                            }
+                        },
+                    },
+                }
+            ],
+        )
+
+        self.assertEqual(
+            augmented_args,
+            {
+                "limit": 10,
+                "max_price": 200.0,
+                "offset": 10,
+            },
+        )
+
     def test_augment_tool_args_from_query_leaves_other_tools_unchanged(self) -> None:
         tool_args = {"limit": 10}
 
@@ -422,6 +459,76 @@ class RunAgentTests(TestCase):
             {
                 "limit": 5,
                 "max_rsi": 30.0,
+            },
+        )
+
+    @override_settings(
+        AGENT_MODEL_PROVIDER="openai",
+        AGENT_MODEL="gpt-4o-mini",
+        OPENAI_API_KEY="test-openai-key",
+    )
+    @patch("api.agent_views.handle_tool_call", return_value='{"ok": true}')
+    @patch("api.agent_views.OpenAI")
+    def test_run_agent_reuses_previous_scan_offset_for_show_more(
+        self,
+        mock_openai: MagicMock,
+        mock_handle_tool_call: MagicMock,
+    ) -> None:
+        tool_call = MagicMock()
+        tool_call.id = "call_1"
+        tool_call.function.name = "scan_put_opportunities"
+        tool_call.function.arguments = '{"limit": 10}'
+
+        first_message = MagicMock()
+        first_message.tool_calls = [tool_call]
+        first_message.model_dump.return_value = {"role": "assistant", "content": None}
+
+        second_message = MagicMock()
+        second_message.tool_calls = None
+        second_message.content = "More results"
+
+        first_response = MagicMock()
+        first_response.choices = [MagicMock(message=first_message)]
+        second_response = MagicMock()
+        second_response.choices = [MagicMock(message=second_message)]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = [first_response, second_response]
+        mock_openai.return_value = mock_client
+
+        result = run_agent(
+            "show more",
+            [
+                {
+                    "role": "meta",
+                    "content": {
+                        "type": "tool_state",
+                        "tools": {
+                            "scan_put_opportunities": {
+                                "base_arguments": {
+                                    "limit": 10,
+                                    "max_price": 200.0,
+                                },
+                                "limit": 10,
+                                "offset": 0,
+                                "next_offset": 10,
+                                "total_results_available": 26,
+                                "shown_tickers": ["ON", "FUTU"],
+                            }
+                        },
+                    },
+                },
+                {"role": "assistant", "content": "Previous answer"},
+            ],
+        )
+
+        self.assertEqual(result["answer"], "More results")
+        mock_handle_tool_call.assert_called_once_with(
+            "scan_put_opportunities",
+            {
+                "limit": 10,
+                "max_price": 200.0,
+                "offset": 10,
             },
         )
 

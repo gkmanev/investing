@@ -1244,16 +1244,188 @@ def _build_structured_query_context(query: str) -> str:
     return "\n".join(lines)
 
 
-def _prepare_agent_query(query: str) -> str:
+def _history_without_meta(history: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    visible_history = []
+    for item in history or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("role") == "meta":
+            continue
+        visible_history.append(item)
+    return visible_history
+
+
+def _extract_history_tool_state(history: list[dict[str, Any]] | None) -> dict[str, Any]:
+    for item in history or []:
+        if not isinstance(item, dict) or item.get("role") != "meta":
+            continue
+        content = item.get("content")
+        if not isinstance(content, dict):
+            continue
+        if content.get("type") != "tool_state":
+            continue
+        tools = content.get("tools")
+        if isinstance(tools, dict):
+            return json.loads(json.dumps(tools, default=_json_default))
+    return {}
+
+
+def _build_history_meta_entry(tool_state: dict[str, Any]) -> dict[str, Any] | None:
+    if not tool_state:
+        return None
+    return {
+        "role": "meta",
+        "content": {
+            "type": "tool_state",
+            "tools": json.loads(json.dumps(tool_state, default=_json_default)),
+        },
+    }
+
+
+def _is_show_more_follow_up(query: str) -> bool:
+    normalized = " ".join(str(query or "").strip().lower().split())
+    if not normalized:
+        return False
+    return bool(
+        re.fullmatch(
+            r"(show\s+)?(me\s+)?(more|more\s+results|additional|next|next\s+page|continue|show\s+next|show\s+more)",
+            normalized,
+        )
+    )
+
+
+def _build_pagination_follow_up_context(
+    query: str,
+    history: list[dict[str, Any]] | None = None,
+) -> str:
+    if not _is_show_more_follow_up(query):
+        return ""
+
+    tool_state = _extract_history_tool_state(history)
+    scan_state = tool_state.get("scan_put_opportunities")
+    if not isinstance(scan_state, dict):
+        return ""
+
+    base_arguments = scan_state.get("base_arguments") or {}
+    limit = scan_state.get("limit")
+    next_offset = scan_state.get("next_offset")
+    total_results_available = scan_state.get("total_results_available")
+
+    lines = [
+        "Structured pagination context from the previous scan:",
+        "- previous_tool=scan_put_opportunities",
+    ]
+    if base_arguments:
+        lines.append(
+            f"- previous_filters={json.dumps(base_arguments, default=_json_default, sort_keys=True)}"
+        )
+    if limit is not None:
+        lines.append(f"- previous_limit={limit}")
+    lines.append(f"- next_offset={next_offset}")
+    if total_results_available is not None:
+        lines.append(f"- total_results_available={total_results_available}")
+    lines.append(
+        "Important: for this follow-up, continue the previous put scan using the saved next_offset instead of restarting from offset 0."
+    )
+    if next_offset is None:
+        lines.append(
+            "Important: next_offset is null, so there are no more scan results to show."
+        )
+    return "\n".join(lines)
+
+
+def _prepare_agent_query(
+    query: str,
+    history: list[dict[str, Any]] | None = None,
+) -> str:
     normalized_query = (query or "").strip()
     if not normalized_query:
         return normalized_query
 
+    context_blocks = []
+
     structured_context = _build_structured_query_context(normalized_query)
-    if not structured_context:
+    if structured_context:
+        context_blocks.append(structured_context)
+
+    pagination_context = _build_pagination_follow_up_context(
+        normalized_query,
+        history=history,
+    )
+    if pagination_context:
+        context_blocks.append(pagination_context)
+
+    if not context_blocks:
         return normalized_query
 
-    return f"{normalized_query}\n\n{structured_context}"
+    return f"{normalized_query}\n\n" + "\n\n".join(context_blocks)
+
+
+def _base_scan_put_arguments(tool_args: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in (tool_args or {}).items()
+        if key != "offset"
+    }
+
+
+def _update_history_tool_state(
+    tool_state: dict[str, Any],
+    *,
+    tool_name: str,
+    tool_args: dict[str, Any],
+    tool_result: str,
+) -> dict[str, Any]:
+    if tool_name != "scan_put_opportunities":
+        return tool_state
+
+    try:
+        payload = json.loads(tool_result)
+    except Exception:
+        return tool_state
+
+    if not isinstance(payload, dict):
+        return tool_state
+
+    opportunities = payload.get("opportunities")
+    if not isinstance(opportunities, list):
+        return tool_state
+
+    returned_tickers = []
+    for item in opportunities:
+        if not isinstance(item, dict):
+            continue
+        ticker = str(item.get("ticker") or "").strip().upper()
+        if ticker:
+            returned_tickers.append(ticker)
+
+    previous_scan_state = tool_state.get("scan_put_opportunities")
+    current_base_arguments = _base_scan_put_arguments(tool_args)
+    current_offset = _to_int(payload.get("offset")) or 0
+
+    shown_tickers = returned_tickers
+    if (
+        isinstance(previous_scan_state, dict)
+        and previous_scan_state.get("base_arguments") == current_base_arguments
+        and current_offset > 0
+    ):
+        shown_tickers = _dedupe_preserve_order(
+            [
+                *previous_scan_state.get("shown_tickers", []),
+                *returned_tickers,
+            ]
+        )
+
+    updated_state = dict(tool_state or {})
+    updated_state["scan_put_opportunities"] = {
+        "base_arguments": current_base_arguments,
+        "limit": payload.get("limit"),
+        "offset": payload.get("offset"),
+        "next_offset": payload.get("next_offset"),
+        "total_results_available": payload.get("total_results_available"),
+        "shown_tickers": shown_tickers,
+    }
+    return updated_state
 
 
 def _estimate_normalized_monthly_income(premium_amount, dte):
@@ -5565,7 +5737,7 @@ def _handle_scan_put_opportunities(args: dict) -> str:
         account_size,
         max_cash_required,
     )
-    
+
     today = date.today()
 
     try:
@@ -5665,16 +5837,14 @@ def _handle_scan_put_opportunities(args: dict) -> str:
         })
 
     results.sort(key=lambda x: x["score"], reverse=True)
-    page = results[offset : offset + limit]  # slice instead of just [:limit]
-    #top = results[:limit]
+    page = results[offset : offset + limit]
 
     return json.dumps({
         "scan_date": today.isoformat(),
-        #"total_symbols_scanned": symbols.count(),
-        "total_results_available": len(results),  # agent knows more exist
+        "total_results_available": len(results),
         "offset": offset,
         "limit": limit,
-        "next_offset": offset + len(page) if (offset + len(page)) < len(results) else None,  # None signals no more pages
+        "next_offset": offset + len(page) if (offset + len(page)) < len(results) else None,
         "results_returned": len(page),
         "filters_applied": {
             "min_score": min_score,
@@ -6764,17 +6934,33 @@ def handle_tool_call(tool_name: str, tool_args: dict) -> str:
     return json.dumps({"error": f"Unknown tool: {tool_name}"})
 
 
-def _augment_tool_args_from_query(tool_name: str, tool_args: dict, user_query: str) -> dict:
+def _augment_tool_args_from_query(
+    tool_name: str,
+    tool_args: dict,
+    user_query: str,
+    history: list[dict[str, Any]] | None = None,
+) -> dict:
     if tool_name != "scan_put_opportunities":
         return tool_args
+
+    merged_args = dict(tool_args or {})
+    if _is_show_more_follow_up(user_query):
+        scan_state = _extract_history_tool_state(history).get("scan_put_opportunities")
+        if isinstance(scan_state, dict):
+            previous_base_arguments = scan_state.get("base_arguments") or {}
+            for key, value in previous_base_arguments.items():
+                merged_args.setdefault(key, value)
+            if scan_state.get("limit") is not None:
+                merged_args.setdefault("limit", scan_state.get("limit"))
+            if "offset" not in merged_args:
+                if scan_state.get("next_offset") is not None:
+                    merged_args["offset"] = scan_state.get("next_offset")
+                elif scan_state.get("total_results_available") is not None:
+                    merged_args["offset"] = scan_state.get("total_results_available")
 
     extracted_filters = {}
     extracted_filters.update(_extract_underlying_price_filters_from_query(user_query))
     extracted_filters.update(_extract_rsi_filters_from_query(user_query))
-    if not extracted_filters:
-        return tool_args
-
-    merged_args = dict(tool_args or {})
     merged_args.update(extracted_filters)
     return merged_args
 
@@ -6807,6 +6993,25 @@ def _serialize_tool_trace_entry(tool_name: str, tool_args: dict[str, Any], itera
     }
 
 
+def _build_agent_history(
+    conversation_history: list[dict[str, Any]],
+    *,
+    user_query: str,
+    answer: str,
+    tool_state: dict[str, Any],
+) -> list[dict[str, Any]]:
+    meta_entry = _build_history_meta_entry(tool_state)
+    history_items = []
+    if meta_entry is not None:
+        history_items.append(meta_entry)
+    history_items.extend(conversation_history)
+    history_items.extend([
+        {"role": "user", "content": user_query},
+        {"role": "assistant", "content": answer},
+    ])
+    return history_items
+
+
 def run_agent(
     query: str,
     history: list[dict[str, Any]] | None = None,
@@ -6816,12 +7021,14 @@ def run_agent(
     normalized_query = (query or "").strip()
     if not normalized_query:
         raise ValueError("query is required")
-    prepared_query = _prepare_agent_query(normalized_query)
 
     if history is not None and not isinstance(history, list):
         raise ValueError("history must be a list")
 
-    conversation_history = history or []
+    raw_history = history or []
+    conversation_history = _history_without_meta(raw_history)
+    history_tool_state = _extract_history_tool_state(raw_history)
+    prepared_query = _prepare_agent_query(normalized_query, history=raw_history)
     provider = _get_agent_provider()
     model_name = _get_agent_model(provider)
     max_iterations = max(1, int(getattr(settings, "AGENT_MAX_ITERATIONS", 10)))
@@ -6886,6 +7093,7 @@ def run_agent(
 
     started_at = time.monotonic()
     used_tools: list[dict[str, Any]] = []
+    tool_state = history_tool_state
 
     logger.info(
         "Agent run started run_id=%s provider=%s model=%s query_length=%s history_items=%s max_iterations=%s llm_timeout=%ss overall_timeout=%ss",
@@ -6948,11 +7156,12 @@ def run_agent(
                 )
                 return {
                     "answer": answer,
-                    "history": [
-                        *conversation_history,
-                        {"role": "user", "content": normalized_query},
-                        {"role": "assistant", "content": answer},
-                    ],
+                    "history": _build_agent_history(
+                        conversation_history,
+                        user_query=normalized_query,
+                        answer=answer,
+                        tool_state=tool_state,
+                    ),
                     "used_tools": used_tools,
                 }
 
@@ -6983,11 +7192,18 @@ def run_agent(
                     tool_use.name,
                     tool_use.input,
                     normalized_query,
+                    history=raw_history,
                 )
                 used_tools.append(
                     _serialize_tool_trace_entry(tool_use.name, tool_input, iteration)
                 )
                 result = handle_tool_call(tool_use.name, tool_input)
+                tool_state = _update_history_tool_state(
+                    tool_state,
+                    tool_name=tool_use.name,
+                    tool_args=tool_input,
+                    tool_result=result,
+                )
                 logger.info(
                     "Agent tool complete run_id=%s iteration=%s tool=%s duration=%.2fs",
                     agent_run_id,
@@ -7036,11 +7252,12 @@ def run_agent(
                 )
                 return {
                     "answer": message.content,
-                    "history": [
-                        *conversation_history,
-                        {"role": "user", "content": normalized_query},
-                        {"role": "assistant", "content": message.content},
-                    ],
+                    "history": _build_agent_history(
+                        conversation_history,
+                        user_query=normalized_query,
+                        answer=message.content,
+                        tool_state=tool_state,
+                    ),
                     "used_tools": used_tools,
                 }
 
@@ -7058,6 +7275,7 @@ def run_agent(
                     tool_call.function.name,
                     json.loads(tool_call.function.arguments),
                     normalized_query,
+                    history=raw_history,
                 )
                 used_tools.append(
                     _serialize_tool_trace_entry(
@@ -7069,6 +7287,12 @@ def run_agent(
                 result = handle_tool_call(
                     tool_call.function.name,
                     tool_args,
+                )
+                tool_state = _update_history_tool_state(
+                    tool_state,
+                    tool_name=tool_call.function.name,
+                    tool_args=tool_args,
+                    tool_result=result,
                 )
                 logger.info(
                     "Agent tool complete run_id=%s iteration=%s tool=%s duration=%.2fs",
