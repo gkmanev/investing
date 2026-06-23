@@ -106,6 +106,7 @@ class RunAgentTests(TestCase):
         self.assertEqual(result["answer"], "Test answer")
         self.assertEqual(result["history"][-1]["content"], "Test answer")
         self.assertEqual(result["history"][-2]["content"], "Hello")
+        self.assertEqual(result["used_tools"], [])
         mock_client.chat.completions.create.assert_called_once()
         _, kwargs = mock_openai.call_args
         self.assertEqual(kwargs["timeout"], 45)
@@ -235,6 +236,7 @@ class RunAgentTests(TestCase):
         self.assertEqual(result["answer"], "Anthropic answer")
         self.assertEqual(result["history"][-1]["content"], "Anthropic answer")
         self.assertEqual(result["history"][-2]["content"], "Hello")
+        self.assertEqual(result["used_tools"], [])
         mock_client.messages.create.assert_called_once()
         _, kwargs = mock_anthropic.call_args
         self.assertEqual(kwargs["timeout"], 45)
@@ -275,6 +277,10 @@ class RunAgentTests(TestCase):
         result = run_agent("Analyze AAPL", [])
 
         self.assertEqual(result["answer"], "Final answer")
+        self.assertEqual(
+            result["used_tools"],
+            [{"name": "analyze_stock", "arguments": {"symbol": "AAPL"}, "iteration": 1}],
+        )
         self.assertEqual(mock_client.messages.create.call_count, 2)
         mock_handle_tool_call.assert_called_once_with("analyze_stock", {"symbol": "AAPL"})
 
@@ -322,6 +328,10 @@ class RunAgentTests(TestCase):
         result = run_agent("Analyze AAPL", [])
 
         self.assertEqual(result["answer"], "Final answer")
+        self.assertEqual(
+            result["used_tools"],
+            [{"name": "analyze_stock", "arguments": {"symbol": "AAPL"}, "iteration": 1}],
+        )
         self.assertEqual(mock_client.chat.completions.create.call_count, 2)
         mock_handle_tool_call.assert_called_once_with("analyze_stock", {"symbol": "AAPL"})
 
@@ -484,6 +494,7 @@ class AgentRunTaskTests(TestCase):
         mock_run_agent.return_value = {
             "answer": "Stored answer",
             "history": [{"role": "assistant", "content": "Stored answer"}],
+            "used_tools": [{"name": "analyze_stock", "arguments": {"symbol": "AAPL"}, "iteration": 1}],
         }
         agent_run = AgentRun.objects.create(
             user=self.user,
@@ -497,6 +508,10 @@ class AgentRunTaskTests(TestCase):
         self.assertEqual(agent_run.status, AgentRun.Status.COMPLETED)
         self.assertEqual(agent_run.result_text, "Stored answer")
         self.assertEqual(agent_run.error_text, "")
+        self.assertEqual(
+            agent_run.used_tools_json,
+            [{"name": "analyze_stock", "arguments": {"symbol": "AAPL"}, "iteration": 1}],
+        )
         self.assertIsNotNone(agent_run.started_at)
         self.assertIsNotNone(agent_run.finished_at)
 
@@ -518,5 +533,6 @@ class AgentRunTaskTests(TestCase):
         self.assertEqual(agent_run.status, AgentRun.Status.FAILED)
         self.assertEqual(agent_run.error_text, "boom")
         self.assertEqual(agent_run.result_text, "")
+        self.assertEqual(agent_run.used_tools_json, [])
         self.assertIsNotNone(agent_run.started_at)
         self.assertIsNotNone(agent_run.finished_at)

@@ -6778,6 +6778,14 @@ def _get_agent_model(provider: str) -> str:
     return "gpt-4.1-mini"
 
 
+def _serialize_tool_trace_entry(tool_name: str, tool_args: dict[str, Any], iteration: int) -> dict[str, Any]:
+    return {
+        "name": tool_name,
+        "arguments": json.loads(json.dumps(tool_args or {}, default=_json_default)),
+        "iteration": iteration,
+    }
+
+
 def run_agent(
     query: str,
     history: list[dict[str, Any]] | None = None,
@@ -6856,6 +6864,7 @@ def run_agent(
         )
 
     started_at = time.monotonic()
+    used_tools: list[dict[str, Any]] = []
 
     logger.info(
         "Agent run started run_id=%s provider=%s model=%s query_length=%s history_items=%s max_iterations=%s llm_timeout=%ss overall_timeout=%ss",
@@ -6923,6 +6932,7 @@ def run_agent(
                         {"role": "user", "content": normalized_query},
                         {"role": "assistant", "content": answer},
                     ],
+                    "used_tools": used_tools,
                 }
 
             assistant_content = []
@@ -6952,6 +6962,9 @@ def run_agent(
                     tool_use.name,
                     tool_use.input,
                     normalized_query,
+                )
+                used_tools.append(
+                    _serialize_tool_trace_entry(tool_use.name, tool_input, iteration)
                 )
                 result = handle_tool_call(tool_use.name, tool_input)
                 logger.info(
@@ -7007,6 +7020,7 @@ def run_agent(
                         {"role": "user", "content": normalized_query},
                         {"role": "assistant", "content": message.content},
                     ],
+                    "used_tools": used_tools,
                 }
 
             messages.append(message.model_dump(exclude_none=True))
@@ -7023,6 +7037,13 @@ def run_agent(
                     tool_call.function.name,
                     json.loads(tool_call.function.arguments),
                     normalized_query,
+                )
+                used_tools.append(
+                    _serialize_tool_trace_entry(
+                        tool_call.function.name,
+                        tool_args,
+                        iteration,
+                    )
                 )
                 result = handle_tool_call(
                     tool_call.function.name,
@@ -7051,11 +7072,14 @@ def run_agent(
 
 
 def serialize_agent_run(agent_run: AgentRun) -> dict[str, Any]:
+    used_tools = agent_run.used_tools_json or []
     return {
         "job_id": agent_run.id,
         "status": agent_run.status,
         "answer": agent_run.result_text,
         "error": agent_run.error_text,
+        "used_tools": used_tools,
+        "used_tool": used_tools[-1] if used_tools else None,
         "created_at": agent_run.created_at.isoformat() if agent_run.created_at else None,
         "started_at": agent_run.started_at.isoformat() if agent_run.started_at else None,
         "finished_at": agent_run.finished_at.isoformat() if agent_run.finished_at else None,

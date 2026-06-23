@@ -271,6 +271,7 @@ class AgentRun(models.Model):
     )
     result_text = models.TextField(blank=True, default="")
     error_text = models.TextField(blank=True, default="")
+    used_tools_json = models.JSONField(default=list, blank=True)
     started_at = models.DateTimeField(null=True, blank=True, db_index=True)
     finished_at = models.DateTimeField(null=True, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)

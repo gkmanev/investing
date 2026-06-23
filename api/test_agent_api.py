@@ -40,6 +40,8 @@ class AgentApiTests(APITestCase):
             [{"role": "assistant", "content": "Earlier"}],
         )
         self.assertEqual(agent_run.status, AgentRun.Status.PENDING)
+        self.assertEqual(response.data["used_tools"], [])
+        self.assertIsNone(response.data["used_tool"])
         mock_delay.assert_called_once_with(agent_run.id)
 
     def test_post_agent_rejects_non_list_history(self) -> None:
@@ -59,6 +61,9 @@ class AgentApiTests(APITestCase):
             history_json=[],
             status=AgentRun.Status.COMPLETED,
             result_text="Finished answer",
+            used_tools_json=[
+                {"name": "analyze_stock", "arguments": {"symbol": "AAPL"}, "iteration": 1},
+            ],
         )
 
         response = self.client.get(reverse("agent-detail", args=[agent_run.id]))
@@ -68,6 +73,14 @@ class AgentApiTests(APITestCase):
         self.assertEqual(response.data["status"], AgentRun.Status.COMPLETED)
         self.assertEqual(response.data["answer"], "Finished answer")
         self.assertEqual(response.data["error"], "")
+        self.assertEqual(
+            response.data["used_tools"],
+            [{"name": "analyze_stock", "arguments": {"symbol": "AAPL"}, "iteration": 1}],
+        )
+        self.assertEqual(
+            response.data["used_tool"],
+            {"name": "analyze_stock", "arguments": {"symbol": "AAPL"}, "iteration": 1},
+        )
 
     def test_get_agent_detail_hides_other_users_runs(self) -> None:
         agent_run = AgentRun.objects.create(
