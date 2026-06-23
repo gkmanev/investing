@@ -595,7 +595,7 @@ TOOLS = [
                 "properties": {
                     "limit": {
                         "type": "integer",
-                        "description": "Number of top results to return. Default 10.",
+                        "description": "Number of top results to return. Default 15.",
                     },
                     "min_score": {
                         "type": "number",
@@ -5534,7 +5534,7 @@ def _handle_spread_opportunity(args: dict) -> str:
 
 
 def _handle_scan_put_opportunities(args: dict) -> str:
-    limit = int(args.get("limit") or 10)
+    limit = int(args.get("limit") or 15)
     min_score = float(args.get("min_score") or 50)
     min_roi = _to_float(args.get("min_roi"))
     max_dte = _to_int(args.get("max_dte"))
