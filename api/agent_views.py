@@ -180,6 +180,10 @@ Always cite the specific numbers returned by the tool:
 
 If the user asks for best ideas for PUTs, Wheels and CSP - Cash Secured Puts across the market, top candidates, screeners, scans, ranked opportunities, or generally asks which puts to suggest without naming a ticker, call scan_put_opportunities.
 - The tool scans all tracked symbols and returns the highest-scoring cash-secured put contracts ranked by opportunity score.
+- Call scan_put_opportunities again using the `next_offset` value from the previous response
+- Do NOT call it with a higher limit
+- If `next_offset` is null, tell the user there are no more results
+- Never show results that were already shown in this conversation
  - Optional filters: limit (number of results), min_roi (%), max_dte (days to expiration), min_price, max_price, min_rsi, max_rsi, max_delta, and `account_size` / `max_cash_required` for CSP affordability.
  - If the user asks for companies, stocks, or tickers below / under a dollar threshold, map that to `max_price` on the underlying stock price. If they ask for above / over a threshold, map that to `min_price`.
  - If the user asks for oversold companies, map that to `max_rsi=30`. If the user asks for overbought companies, map that to `min_rsi=75`.
@@ -588,18 +592,25 @@ TOOLS = [
             "description": (
                 "Scan all tracked symbols in the database and return the best cash-secured put (CSP) "
                 "opportunities ranked by composite score. Use this when the user asks for today's best puts, "
-                "top put opportunities across all stocks, or wants to compare puts across multiple tickers."
-            ),
-            "offset": {
-                "type": "integer",
-                "description": "Number of results to skip. Use for pagination — pass 10 to get results 11–20, 20 for 21–30, etc. Default 0.",
-            },
+                "top put opportunities across all stocks, or wants to compare puts across multiple tickers. "
+                "Results are paginated — default page size is 10. To get the next page, call this tool "
+                "again with the `next_offset` value from the previous response. "
+                "Never re-call with a larger limit to get more results."
+            ),   
             "parameters": {
                 "type": "object",
                 "properties": {
                     "limit": {
                         "type": "integer",
                         "description": "Number of top results to return. Default 10.",
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": (
+                        "Pagination cursor. To get the next page, pass the `next_offset` value "
+                        "returned in the previous response. Do NOT increase `limit` to get more results — "
+                        "always use `offset` instead. Default 0."
+                    ),
                     },
                     "min_score": {
                         "type": "number",
@@ -5662,6 +5673,8 @@ def _handle_scan_put_opportunities(args: dict) -> str:
         #"total_symbols_scanned": symbols.count(),
         "total_results_available": len(results),  # agent knows more exist
         "offset": offset,
+        "limit": limit,
+        "next_offset": offset + len(page) if (offset + len(page)) < len(results) else None,  # None signals no more pages
         "results_returned": len(page),
         "filters_applied": {
             "min_score": min_score,
