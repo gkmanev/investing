@@ -7,6 +7,7 @@ import urllib.request
 import urllib.error
 from datetime import date, datetime
 from decimal import Decimal
+from itertools import combinations
 from typing import Any, Dict, List
 
 from anthropic import Anthropic
@@ -85,8 +86,8 @@ If the user asks about covered calls, selling calls against owned shares, call i
 
 If the user asks for a monthly income plan, reliable income plan, consistent income ideas, option income plan, or a portfolio income plan, call build_monthly_income_plan.
 - If the user provides owned positions, pass them through as `positions` and prioritize covered calls on those holdings.
-- If the user provides available cash, buying power, or a collateral budget, pass it as `account_size` or `max_cash_required` and include a cash-secured put / wheel idea.
-- If the user provides both owned positions and cash budget, return a mixed plan: covered calls on the owned positions plus one primary CSP/wheel idea for the cash allocation.
+- If the user provides available cash, buying power, or a collateral budget, pass it as `account_size` or `max_cash_required` and include one or more cash-secured put / wheel ideas sized to fit that budget.
+- If the user provides both owned positions and cash budget, return a mixed plan: covered calls on the owned positions plus a diversified CSP/wheel allocation for the cash portion when possible.
 - If the user does not provide owned positions, do not pretend they own shares. Default to CSP/wheel ideas only.
 - If the user provides a monthly target, use `monthly_income_target` and explicitly say whether the estimated normalized monthly income reaches that target.
 - Use `estimated_monthly_income` only for the normalized monthly premium estimate derived from the specific contract DTE. Do not present it as guaranteed income.
@@ -1248,6 +1249,123 @@ def _estimate_normalized_monthly_income(premium_amount, dte):
     if dte_value is None or dte_value <= 0:
         return round(premium_value, 2)
     return round(premium_value * (30 / dte_value), 2)
+
+
+def _select_diversified_put_allocation(put_ideas, total_budget=None, *, max_positions=3):
+    if not put_ideas:
+        return [], [], None
+
+    max_positions = max(1, _to_int(max_positions) or 1)
+    ranked_entries = []
+    for index, item in enumerate(put_ideas):
+        ranked_entries.append({
+            "index": index,
+            "idea": item,
+            "cash_required": _to_float(item.get("cash_required")),
+            "score": _to_float(item.get("score")) or 0,
+            "estimated_monthly_income": _to_float(item.get("estimated_monthly_income")) or 0,
+        })
+
+    def _annotate_selected(entries, budget):
+        selected = []
+        remaining_cash = budget
+        total_cash_required = 0.0
+        total_monthly_income = 0.0
+
+        for rank, entry in enumerate(sorted(entries, key=lambda candidate: candidate["index"]), start=1):
+            cash_required = entry["cash_required"]
+            if cash_required is not None:
+                total_cash_required += cash_required
+            total_monthly_income += entry["estimated_monthly_income"]
+
+            idea = {
+                **entry["idea"],
+                "allocation_rank": rank,
+                "allocated": True,
+                "allocated_cash_required": cash_required,
+            }
+            if remaining_cash is not None and cash_required is not None:
+                remaining_cash = round(max(remaining_cash - cash_required, 0), 2)
+                idea["remaining_cash_after_allocation"] = remaining_cash
+            else:
+                idea["remaining_cash_after_allocation"] = None
+            selected.append(idea)
+
+        budget_value = _to_float(budget)
+        return selected, {
+            "positions_selected": len(selected),
+            "diversified": len(selected) > 1,
+            "budget": budget_value,
+            "total_cash_required": round(total_cash_required, 2),
+            "remaining_cash": (
+                round(max((budget_value or 0) - total_cash_required, 0), 2)
+                if budget_value is not None
+                else None
+            ),
+            "estimated_monthly_income": round(total_monthly_income, 2),
+        }
+
+    budget_value = _to_float(total_budget)
+    if budget_value is None or budget_value <= 0:
+        selected, summary = _annotate_selected([ranked_entries[0]], None)
+        alternatives = [
+            {**entry["idea"], "allocated": False}
+            for entry in ranked_entries[1:]
+        ]
+        return selected, alternatives, summary
+
+    affordable_entries = [
+        entry
+        for entry in ranked_entries
+        if entry["cash_required"] is not None
+        and entry["cash_required"] > 0
+        and entry["cash_required"] <= budget_value
+    ]
+    if not affordable_entries:
+        return [], [], {
+            "positions_selected": 0,
+            "diversified": False,
+            "budget": budget_value,
+            "total_cash_required": 0.0,
+            "remaining_cash": round(budget_value, 2),
+            "estimated_monthly_income": 0.0,
+        }
+
+    combo_limit = min(max_positions, len(affordable_entries))
+    best_combo = None
+    best_metrics = None
+
+    for position_count in range(1, combo_limit + 1):
+        for combo in combinations(affordable_entries, position_count):
+            combo_cash_required = round(
+                sum(entry["cash_required"] or 0 for entry in combo),
+                2,
+            )
+            if combo_cash_required > budget_value:
+                continue
+
+            metrics = (
+                position_count,
+                round(sum(entry["score"] for entry in combo), 4),
+                round(sum(entry["estimated_monthly_income"] for entry in combo), 2),
+                combo_cash_required,
+                -sum(entry["index"] for entry in combo),
+            )
+            if best_metrics is None or metrics > best_metrics:
+                best_metrics = metrics
+                best_combo = combo
+
+    if not best_combo:
+        best_combo = (affordable_entries[0],)
+
+    selected, summary = _annotate_selected(list(best_combo), budget_value)
+    selected_indexes = {entry["index"] for entry in best_combo}
+    alternatives = [
+        {**entry["idea"], "allocated": False}
+        for entry in affordable_entries
+        if entry["index"] not in selected_indexes
+    ]
+    return selected, alternatives, summary
 
 
 def _build_put_contract_cash_metrics(strike, mid, budget=None):
@@ -5924,12 +6042,21 @@ def _handle_build_monthly_income_plan(args: dict) -> str:
     covered_call_positions = covered_call_positions[:limit]
 
     primary_put_idea = None
+    allocated_put_ideas = []
     alternative_put_ideas = []
+    put_allocation_summary = None
     put_plan_warning = None
     include_put_ideas = bool(not raw_positions or effective_cash_budget is not None)
 
     if include_put_ideas:
-        put_scan_args = {"limit": max(3, limit)}
+        put_selection_limit = max(1, min(limit, 3))
+        put_scan_args = {
+            "limit": (
+                max(6, put_selection_limit * 4)
+                if effective_cash_budget is not None
+                else max(3, limit)
+            )
+        }
         if account_size is not None:
             put_scan_args["account_size"] = account_size
         if max_cash_required is not None:
@@ -5947,14 +6074,15 @@ def _handle_build_monthly_income_plan(args: dict) -> str:
         else:
             put_opportunities = put_payload.get("opportunities") or []
             if put_opportunities:
-                primary_put_idea = {
-                    **put_opportunities[0],
-                    "estimated_monthly_income": _estimate_normalized_monthly_income(
-                        put_opportunities[0].get("premium_received"),
-                        put_opportunities[0].get("dte"),
-                    ),
-                }
-                alternative_put_ideas = [
+                enriched_put_ideas = [
+                    {
+                        **put_opportunities[0],
+                        "estimated_monthly_income": _estimate_normalized_monthly_income(
+                            put_opportunities[0].get("premium_received"),
+                            put_opportunities[0].get("dte"),
+                        ),
+                    }
+                ] + [
                     {
                         **item,
                         "estimated_monthly_income": _estimate_normalized_monthly_income(
@@ -5962,8 +6090,16 @@ def _handle_build_monthly_income_plan(args: dict) -> str:
                             item.get("dte"),
                         ),
                     }
-                    for item in put_opportunities[1:limit]
+                    for item in put_opportunities[1:]
                 ]
+                allocated_put_ideas, alternative_put_ideas, put_allocation_summary = (
+                    _select_diversified_put_allocation(
+                        enriched_put_ideas,
+                        total_budget=effective_cash_budget,
+                        max_positions=put_selection_limit,
+                    )
+                )
+                primary_put_idea = allocated_put_ideas[0] if allocated_put_ideas else None
             else:
                 put_plan_warning = "No cash-secured put ideas matched the current filters."
 
@@ -5974,13 +6110,16 @@ def _handle_build_monthly_income_plan(args: dict) -> str:
         ),
         2,
     )
-    primary_put_monthly_income = (
-        _to_float(primary_put_idea.get("estimated_monthly_income"))
-        if primary_put_idea
-        else None
+    total_put_monthly_income = round(
+        sum(
+            _to_float(idea.get("estimated_monthly_income")) or 0
+            for idea in allocated_put_ideas
+        ),
+        2,
     )
+    primary_put_monthly_income = _to_float(primary_put_idea.get("estimated_monthly_income")) if primary_put_idea else None
     total_estimated_monthly_income = round(
-        covered_call_monthly_income + (primary_put_monthly_income or 0),
+        covered_call_monthly_income + total_put_monthly_income,
         2,
     )
 
@@ -5995,9 +6134,13 @@ def _handle_build_monthly_income_plan(args: dict) -> str:
         )
     if put_plan_warning:
         warnings.append(put_plan_warning)
+    if put_allocation_summary and put_allocation_summary.get("diversified"):
+        warnings.append(
+            f"The CSP cash allocation was diversified across {put_allocation_summary['positions_selected']} tickers."
+        )
     if primary_put_idea and len(alternative_put_ideas) > 0:
         warnings.append(
-            "Alternative CSP ideas reuse the same capital conceptually; do not sum their premiums on top of the primary put idea."
+            "Only the allocated CSP ideas are included in the monthly income total; alternative CSP ideas are replacements, not additive."
         )
     if monthly_income_target is not None:
         warnings.append(
@@ -6049,14 +6192,18 @@ def _handle_build_monthly_income_plan(args: dict) -> str:
             "monthly_income_target": monthly_income_target,
             "owned_positions_provided": bool(raw_positions),
             "covered_call_positions_evaluated": len(covered_call_positions),
+            "allocated_put_positions": len(allocated_put_ideas),
             "primary_put_idea_included": primary_put_idea is not None,
             "covered_call_positions": covered_call_positions,
+            "allocated_put_ideas": allocated_put_ideas,
             "primary_put_idea": primary_put_idea,
             "alternative_put_ideas": alternative_put_ideas,
+            "put_allocation_summary": put_allocation_summary,
             "skipped_positions": skipped_positions,
             "summary": {
                 "estimated_monthly_income_from_covered_calls": covered_call_monthly_income,
                 "estimated_monthly_income_from_primary_put": primary_put_monthly_income,
+                "estimated_monthly_income_from_puts": total_put_monthly_income,
                 "estimated_total_monthly_income": total_estimated_monthly_income,
                 "monthly_income_target": monthly_income_target,
                 "target_met": target_met,

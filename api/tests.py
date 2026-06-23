@@ -3718,10 +3718,10 @@ class PutWheelAgentViewTests(APITestCase):
             },
         )
         Symbol.objects.create(
-            ticker="SMALL",
+            ticker="LARGE",
             price=Decimal("104.00"),
             rsi=Decimal("51.00"),
-            score=86,
+            score=90,
             classification="High-quality compounder",
             liquidity=Symbol.LIQUIDITY_GOOD,
             technical_score=Symbol.TechnicalScore.BUY,
@@ -3736,6 +3736,52 @@ class PutWheelAgentViewTests(APITestCase):
                         "iv": 29.00,
                         "volume": 240,
                         "open_interest": 1400,
+                    }
+                ]
+            },
+        )
+        Symbol.objects.create(
+            ticker="MID",
+            price=Decimal("72.00"),
+            rsi=Decimal("49.00"),
+            score=88,
+            classification="High-quality compounder",
+            liquidity=Symbol.LIQUIDITY_GOOD,
+            technical_score=Symbol.TechnicalScore.BUY,
+            option_data={
+                "puts": [
+                    {
+                        "strike": 60,
+                        "expiration": put_expiration.isoformat(),
+                        "bid": 1.50,
+                        "ask": 1.70,
+                        "delta": -0.24,
+                        "iv": 30.00,
+                        "volume": 260,
+                        "open_interest": 1500,
+                    }
+                ]
+            },
+        )
+        Symbol.objects.create(
+            ticker="SMALL",
+            price=Decimal("41.00"),
+            rsi=Decimal("47.00"),
+            score=86,
+            classification="High-quality compounder",
+            liquidity=Symbol.LIQUIDITY_GOOD,
+            technical_score=Symbol.TechnicalScore.BUY,
+            option_data={
+                "puts": [
+                    {
+                        "strike": 30,
+                        "expiration": put_expiration.isoformat(),
+                        "bid": 0.90,
+                        "ask": 1.10,
+                        "delta": -0.20,
+                        "iv": 27.00,
+                        "volume": 220,
+                        "open_interest": 1300,
                     }
                 ]
             },
@@ -3755,11 +3801,28 @@ class PutWheelAgentViewTests(APITestCase):
         self.assertEqual(payload["covered_call_positions_evaluated"], 1)
         self.assertEqual(payload["covered_call_positions"][0]["symbol"], "AAPL")
         self.assertEqual(payload["covered_call_positions"][0]["best_contract"]["strike"], 210.0)
-        self.assertEqual(payload["primary_put_idea"]["ticker"], "SMALL")
-        self.assertEqual(payload["primary_put_idea"]["cash_required"], 9500)
+        self.assertEqual(payload["allocated_put_positions"], 2)
+        self.assertCountEqual(
+            [item["ticker"] for item in payload["allocated_put_ideas"]],
+            ["MID", "SMALL"],
+        )
+        self.assertEqual(
+            payload["primary_put_idea"]["ticker"],
+            payload["allocated_put_ideas"][0]["ticker"],
+        )
+        self.assertEqual(payload["put_allocation_summary"]["total_cash_required"], 9000.0)
+        self.assertEqual(payload["put_allocation_summary"]["remaining_cash"], 1000.0)
+        self.assertEqual(
+            [item["ticker"] for item in payload["alternative_put_ideas"]],
+            ["LARGE"],
+        )
         self.assertEqual(payload["summary"]["monthly_income_target"], 600.0)
-        self.assertFalse(payload["summary"]["target_met"])
+        self.assertTrue(payload["summary"]["target_met"])
         self.assertGreater(payload["summary"]["estimated_total_monthly_income"], 0)
+        self.assertGreater(
+            payload["summary"]["estimated_monthly_income_from_puts"],
+            payload["summary"]["estimated_monthly_income_from_primary_put"],
+        )
 
     def test_handle_build_monthly_income_plan_positions_only_returns_covered_calls(self) -> None:
         expiration = date.today() + timedelta(days=28)
@@ -3859,6 +3922,8 @@ class PutWheelAgentViewTests(APITestCase):
         self.assertEqual(payload["plan_type"], "cash_secured_puts_only")
         self.assertEqual(payload["primary_put_idea"]["ticker"], "FIT")
         self.assertEqual(payload["primary_put_idea"]["cash_required"], 9500)
+        self.assertEqual(payload["allocated_put_positions"], 1)
+        self.assertEqual(len(payload["allocated_put_ideas"]), 1)
         self.assertEqual(payload["summary"]["target_met"], False)
         self.assertIn(
             "No owned positions were provided, so the plan defaults to cash-secured put / wheel ideas only.",
