@@ -32,8 +32,6 @@ Always format your responses using Markdown. Use **bold** for emphasis, `## head
 
 For follow-up screener refinements, rerun the relevant tool with the updated hard filters. Do not manually restate, prune, or partially reuse a previously rendered table when the user adds a new constraint.
 
-When a tool parameter has a documented default, rely on that default unless the user explicitly asks for a specific value. In particular, for market-wide scan tools, omit `limit` unless the user asks for a result count.
-
 If the user asks about long-term business quality, fundamentals, moat, financial health, balance sheet, margins, ROIC, FCF, or whether the company is good to own, call analyze_stock.
 
 The tool returns a structured report with:
@@ -592,12 +590,16 @@ TOOLS = [
                 "opportunities ranked by composite score. Use this when the user asks for today's best puts, "
                 "top put opportunities across all stocks, or wants to compare puts across multiple tickers."
             ),
+            "offset": {
+                "type": "integer",
+                "description": "Number of results to skip. Use for pagination — pass 10 to get results 11–20, 20 for 21–30, etc. Default 0.",
+            },
             "parameters": {
                 "type": "object",
                 "properties": {
                     "limit": {
                         "type": "integer",
-                        "description": "Number of top results to return. Default 15.",
+                        "description": "Number of top results to return. Default 10.",
                     },
                     "min_score": {
                         "type": "number",
@@ -681,7 +683,7 @@ TOOLS = [
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Number of results to return. Default 15."
+                        "description": "Number of results to return. Default 10."
                     },
                     "max_dte": {
                         "type": "integer"
@@ -724,7 +726,7 @@ TOOLS = [
                 "properties": {
                     "limit": {
                         "type": "integer",
-                        "description": "Number of top results to return. Default 15.",
+                        "description": "Number of top results to return. Default 10.",
                     },
                     "min_roi": {
                         "type": "number",
@@ -5536,7 +5538,8 @@ def _handle_spread_opportunity(args: dict) -> str:
 
 
 def _handle_scan_put_opportunities(args: dict) -> str:
-    limit = int(args.get("limit") or 15)
+    limit = int(args.get("limit") or 10)
+    offset = int(args.get("offset") or 0)
     min_score = float(args.get("min_score") or 50)
     min_roi = _to_float(args.get("min_roi"))
     max_dte = _to_int(args.get("max_dte"))
@@ -5651,12 +5654,15 @@ def _handle_scan_put_opportunities(args: dict) -> str:
         })
 
     results.sort(key=lambda x: x["score"], reverse=True)
-    top = results[:limit]
+    page = results[offset : offset + limit]  # slice instead of just [:limit]
+    #top = results[:limit]
 
     return json.dumps({
         "scan_date": today.isoformat(),
-        "total_symbols_scanned": symbols.count(),
-        "results_returned": len(top),
+        #"total_symbols_scanned": symbols.count(),
+        "total_results_available": len(results),  # agent knows more exist
+        "offset": offset,
+        "results_returned": len(page),
         "filters_applied": {
             "min_score": min_score,
             "min_roi": min_roi,
@@ -5670,7 +5676,7 @@ def _handle_scan_put_opportunities(args: dict) -> str:
             "max_cash_required": max_cash_required,
             "effective_max_cash_required": effective_cash_budget,
         },
-        "opportunities": top,
+        "opportunities": page,
     }, default=_json_default)
 
 
@@ -5678,7 +5684,7 @@ def _handle_scan_spread_opportunities(args: dict) -> str:
     spread_type = _normalize_spread_type(args.get("spread_type"))
     directional_view = _normalize_directional_view(args.get("directional_view"))
     risk_profile = _normalize_risk_profile(args.get("risk_profile"))
-    limit = int(args.get("limit") or 15)
+    limit = int(args.get("limit") or 10)
     max_dte = _to_int(args.get("max_dte"))
     min_return_on_risk_pct = _to_float(args.get("min_return_on_risk_pct"))
     min_probability_of_profit = _to_float(args.get("min_probability_of_profit"))
@@ -5822,7 +5828,7 @@ def _handle_scan_spread_opportunities(args: dict) -> str:
 
 
 def _handle_scan_covered_call_opportunities(args: dict) -> str:
-    limit = int(args.get("limit") or 15)
+    limit = int(args.get("limit") or 10)
     min_roi = _to_float(args.get("min_roi"))
     max_delta = _to_float(args.get("max_delta"))
     max_dte = _to_int(args.get("max_dte"))
