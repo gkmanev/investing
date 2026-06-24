@@ -509,10 +509,37 @@ class FinancialModelingPrepClient:
         payload = self._fetch_json(url)
         if not isinstance(payload, list) or not payload:
             return None
-        last = payload[-1]
-        if not isinstance(last, dict):
+        latest_entry: dict[str, Any] | None = None
+        latest_timestamp: datetime | None = None
+
+        for entry in payload:
+            if not isinstance(entry, dict):
+                continue
+
+            entry_timestamp = None
+            raw_timestamp = entry.get("date")
+            if raw_timestamp:
+                try:
+                    entry_timestamp = datetime.fromisoformat(
+                        str(raw_timestamp).replace("Z", "+00:00")
+                    )
+                except ValueError:
+                    entry_timestamp = None
+
+            if latest_entry is None:
+                latest_entry = entry
+                latest_timestamp = entry_timestamp
+                continue
+
+            if entry_timestamp is not None and (
+                latest_timestamp is None or entry_timestamp > latest_timestamp
+            ):
+                latest_entry = entry
+                latest_timestamp = entry_timestamp
+
+        if latest_entry is None:
             return None
-        return last.get("rsi")
+        return latest_entry.get("rsi")
 
 
 class Command(BaseCommand):

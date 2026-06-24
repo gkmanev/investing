@@ -5,8 +5,6 @@ import json
 import urllib.error
 from typing import Any
 
-import numpy as np
-import pandas as pd
 import requests
 from django.core.management import call_command
 from django.core.management.base import CommandError
@@ -124,17 +122,10 @@ class InitialScreenerHelpersTestCase(APITestCase):
         self.assertIsNone(result)
         self.assertEqual(debug["status"], "empty_result")
 
-    @patch("api.management.commands.initial_screener.talib.RSI")
-    @patch("api.management.commands.initial_screener.yf.download")
-    def test_fetch_price_and_rsi_uses_fmp_for_price_and_yfinance_for_rsi(
-        self,
-        mock_download: MagicMock,
-        mock_rsi: MagicMock,
-    ) -> None:
-        mock_download.return_value = pd.DataFrame({"Close": [100.0, 101.0, 102.0]})
-        mock_rsi.return_value = np.array([np.nan, 44.12, 55.67])
+    def test_fetch_price_and_rsi_uses_fmp_for_price_and_rsi(self) -> None:
         price_client = MagicMock()
         price_client.get_underlying_price.return_value = "123.45"
+        price_client.get_rsi.return_value = "55.67"
 
         price, rsi = initial_screener_command._fetch_price_and_rsi(
             "AAPL",
@@ -144,19 +135,12 @@ class InitialScreenerHelpersTestCase(APITestCase):
         self.assertEqual(price, Decimal("123.45"))
         self.assertEqual(rsi, Decimal("55.67"))
         price_client.get_underlying_price.assert_called_once_with("AAPL")
-        mock_download.assert_called_once()
+        price_client.get_rsi.assert_called_once_with("AAPL")
 
-    @patch("api.management.commands.initial_screener.talib.RSI")
-    @patch("api.management.commands.initial_screener.yf.download")
-    def test_fetch_price_and_rsi_does_not_fallback_to_yfinance_price(
-        self,
-        mock_download: MagicMock,
-        mock_rsi: MagicMock,
-    ) -> None:
-        mock_download.return_value = pd.DataFrame({"Close": [90.0, 91.0, 92.0]})
-        mock_rsi.return_value = np.array([np.nan, 40.01, 41.25])
+    def test_fetch_price_and_rsi_returns_rsi_even_if_fmp_price_fails(self) -> None:
         price_client = MagicMock()
         price_client.get_underlying_price.side_effect = ValueError("bad quote")
+        price_client.get_rsi.return_value = "41.25"
 
         price, rsi = initial_screener_command._fetch_price_and_rsi(
             "AAPL",
@@ -165,6 +149,7 @@ class InitialScreenerHelpersTestCase(APITestCase):
 
         self.assertIsNone(price)
         self.assertEqual(rsi, Decimal("41.25"))
+        price_client.get_rsi.assert_called_once_with("AAPL")
 
 
 class InvestmentAPITestCase(APITestCase):
@@ -2092,7 +2077,7 @@ class TradingViewScrapeCommandTests(APITestCase):
 
     @patch("api.management.commands.trading_view_scrape.certifi.where", return_value="dummy.pem")
     @patch("api.management.commands.trading_view_scrape.urllib.request.urlopen")
-    def test_fmp_client_get_rsi_returns_last_value(
+    def test_fmp_client_get_rsi_returns_latest_timestamp_value(
         self,
         mock_urlopen: MagicMock,
         _mock_certifi_where: MagicMock,
@@ -2109,7 +2094,7 @@ class TradingViewScrapeCommandTests(APITestCase):
 
         rsi = FinancialModelingPrepClient(api_key="test-fmp-key").get_rsi("AAPL")
 
-        self.assertEqual(rsi, 57.32)
+        self.assertEqual(rsi, 62.10)
         called_url = mock_urlopen.call_args[0][0]
         self.assertIn("technical-indicators/rsi", called_url)
         self.assertIn("symbol=AAPL", called_url)

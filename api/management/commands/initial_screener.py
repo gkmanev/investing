@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
-import tempfile
 import threading
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -10,11 +8,7 @@ from decimal import Decimal, InvalidOperation
 from datetime import date, datetime
 from typing import Any, Optional
 
-import numpy as np
-import pandas as pd
 import requests
-import talib
-import yfinance as yf
 from django.conf import settings
 from django.core.management.base import BaseCommand
 
@@ -57,19 +51,6 @@ TV_EXCHANGE_ALIASES = {
 }
 logger = logging.getLogger(__name__)
 TECHNICAL_SCORE_MISSING = object()
-
-
-def _configure_yfinance_cache() -> None:
-    """Best-effort cache setup to avoid noisy tz-cache errors on ephemeral hosts."""
-    if not hasattr(yf, "set_tz_cache_location"):
-        return
-
-    cache_dir = os.path.join(tempfile.gettempdir(), "py-yfinance")
-    try:
-        os.makedirs(cache_dir, exist_ok=True)
-        yf.set_tz_cache_location(cache_dir)
-    except Exception as exc:
-        logger.warning("Failed to configure yfinance tz cache at %s: %s", cache_dir, exc)
 
 
 def _mask_secret(value: str) -> str:
@@ -227,58 +208,33 @@ def _fetch_price_and_rsi(
     *,
     price_client: FinancialModelingPrepClient | None = None,
 ) -> tuple[Decimal | None, Decimal | None]:
+    if price_client is None:
+        return None, None
+
     price = None
-    if price_client is not None:
-        try:
-            price = _coerce_decimal(price_client.get_underlying_price(ticker))
-        except (
-            urllib.error.HTTPError,
-            urllib.error.URLError,
-            KeyError,
-            TypeError,
-            ValueError,
-        ):
-            price = None
+    rsi = None
 
     try:
-        df = yf.download(
-            ticker,
-            period="3mo",
-            progress=False,
-            actions=False,
-            auto_adjust=False,
-            group_by="column",
-        )
-    except Exception:
-        return price, None
+        price = _coerce_decimal(price_client.get_underlying_price(ticker))
+    except (
+        urllib.error.HTTPError,
+        urllib.error.URLError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ):
+        price = None
 
-    if df is None or df.empty:
-        return price, None
-
-    close = df.get("Close")
-    if close is None:
-        return price, None
-
-    if isinstance(close, pd.DataFrame):
-        if close.shape[1] == 1:
-            close = close.iloc[:, 0]
-        else:
-            close = close[ticker] if ticker in close.columns else close.iloc[:, 0]
-
-    close = close.dropna()
-    if close.empty:
-        return price, None
-
-    rsi = None
-    closes = close.astype(float).to_numpy()
-    if closes.size:
-        rsi_values = talib.RSI(closes, timeperiod=14)
-        valid_rsi = rsi_values[~np.isnan(rsi_values)]
-        if valid_rsi.size:
-            try:
-                rsi = Decimal(str(valid_rsi[-1]))
-            except (InvalidOperation, ValueError, TypeError):
-                rsi = None
+    try:
+        rsi = _coerce_decimal(price_client.get_rsi(ticker))
+    except (
+        urllib.error.HTTPError,
+        urllib.error.URLError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ):
+        rsi = None
 
     return price, rsi
 
@@ -488,7 +444,6 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options) -> None:
-        _configure_yfinance_cache()
         symbols = list(Symbol.objects.filter(score__gte=SCORE_MIN).order_by("ticker"))
         if not symbols:
             self.stdout.write("No symbols matched the initial screener criteria.")
@@ -505,7 +460,7 @@ class Command(BaseCommand):
         price_client = FinancialModelingPrepClient(api_key=fmp_api_key) if fmp_api_key else None
         if not fmp_api_key:
             self.stderr.write(
-                "FINANCIAL_MODELING_API_KEY is not configured; FMP price and DCF skipped."
+                "FINANCIAL_MODELING_API_KEY is not configured; FMP price, RSI, and DCF skipped."
             )
         else:
             self.stdout.write(
