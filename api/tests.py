@@ -2099,7 +2099,7 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.assertIn("technical-indicators/rsi", called_url)
         self.assertIn("symbol=AAPL", called_url)
         self.assertIn("periodLength=14", called_url)
-        self.assertIn("timeframe=1hour", called_url)
+        self.assertIn("timeframe=1day", called_url)
 
     @patch("api.management.commands.trading_view_scrape.certifi.where", return_value="dummy.pem")
     @patch("api.management.commands.trading_view_scrape.time.sleep")

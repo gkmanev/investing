@@ -497,7 +497,7 @@ class FinancialModelingPrepClient:
         quote = self._resolve_quote(ticker)
         return quote["price"], quote.get("volume")
 
-    def get_rsi(self, ticker: str, period_length: int = 14, timeframe: str = "1hour") -> Any:
+    def get_rsi(self, ticker: str, period_length: int = 14, timeframe: str = "1day") -> Any:
         normalized_ticker = ticker.upper()
         query = urllib.parse.urlencode({
             "symbol": normalized_ticker,
