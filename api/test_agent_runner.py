@@ -4,6 +4,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 
 from api.agent_views import (
+    OUT_OF_SCOPE_MESSAGE,
     _augment_tool_args_from_query,
     _extract_owned_positions_from_query,
     run_agent,
@@ -148,6 +149,24 @@ class RunAgentTests(TestCase):
         _, kwargs = mock_openai.call_args
         self.assertEqual(kwargs["timeout"], 45)
         self.assertEqual(kwargs["max_retries"], 1)
+
+    @override_settings(
+        AGENT_MODEL_PROVIDER="openai",
+        AGENT_MODEL="gpt-4o-mini",
+        OPENAI_API_KEY="test-openai-key",
+    )
+    @patch("api.agent_views.OpenAI")
+    def test_run_agent_returns_hard_coded_scope_message_for_unsupported_queries(
+        self,
+        mock_openai: MagicMock,
+    ) -> None:
+        result = run_agent("What is the best pasta recipe?", [])
+
+        self.assertEqual(result["answer"], OUT_OF_SCOPE_MESSAGE)
+        self.assertEqual(result["history"][-1]["content"], OUT_OF_SCOPE_MESSAGE)
+        self.assertEqual(result["history"][-2]["content"], "What is the best pasta recipe?")
+        self.assertEqual(result["used_tools"], [])
+        mock_openai.assert_not_called()
 
     @override_settings(
         AGENT_MODEL_PROVIDER="openai",

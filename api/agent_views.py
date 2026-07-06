@@ -24,6 +24,10 @@ from api.models import AgentRun, Symbol
 
 logger = logging.getLogger(__name__)
 
+OUT_OF_SCOPE_MESSAGE = (
+    "PutPulse is specialized in options, stocks fundamentals and related questions."
+)
+
 
 SYSTEM_PROMPT = """
 You are a long-term equity analyst and options trading assistant.
@@ -301,12 +305,12 @@ TOOLS = [
         "function": {
             "name": "get_put_wheel_opportunity",
             "description": (
-                        "Fetch current option data from the database for a symbol and evaluate the best available "
-                        "cash-secured put / wheel opportunity. The function ranks available put contracts using "
-                        "DTE, delta, ROI, downside buffer, bid/ask spread, liquidity, RSI, quality score, and earnings risk. "
-                        "Returns the best put contract, top candidates, rating, score, warnings, and supporting context. "
-                        "Use this when the user asks about put selling, cash-secured puts, the wheel strategy, "
-                        "or option income opportunities for a specific ticker."
+                "Fetch current option data from the database for a symbol and evaluate the best available "
+                "cash-secured put / wheel opportunity. The function ranks available put contracts using "
+                "DTE, delta, ROI, downside buffer, bid/ask spread, liquidity, RSI, quality score, and earnings risk. "
+                "Returns the best put contract, top candidates, rating, score, warnings, and supporting context. "
+                "Use this when the user asks about put selling, cash-secured puts, the wheel strategy, "
+                "or option income opportunities for a specific ticker."
             ),
             "parameters": {
                 "type": "object",
@@ -1292,6 +1296,107 @@ def _is_show_more_follow_up(query: str) -> bool:
             normalized,
         )
     )
+
+
+def _is_simple_social_query(query: str) -> bool:
+    normalized = " ".join(str(query or "").strip().lower().split())
+    if not normalized:
+        return False
+    return bool(
+        re.fullmatch(
+            r"(hi|hello|hey|yo|thanks|thank you|ok|okay|cool|great|nice|got it|understood)[!.?]*",
+            normalized,
+        )
+    )
+
+
+def _is_supported_putpulse_query(query: str) -> bool:
+    normalized_query = " ".join(str(query or "").strip().lower().split())
+    if not normalized_query:
+        return True
+
+    if _is_simple_social_query(normalized_query):
+        return True
+
+    if _is_show_more_follow_up(normalized_query):
+        return True
+
+    if _extract_owned_positions_from_query(query):
+        return True
+
+    if _extract_underlying_price_filters_from_query(query) or _extract_rsi_filters_from_query(query):
+        return True
+
+    supported_patterns = [
+        r"\boptions?\b",
+        r"\bputs?\b",
+        r"\bcalls?\b",
+        r"\bcsp\b",
+        r"\bcash[- ]secured puts?\b",
+        r"\bwheel\b",
+        r"\bcovered calls?\b",
+        r"\bspreads?\b",
+        r"\bcredit spreads?\b",
+        r"\bdebit spreads?\b",
+        r"\bverticals?\b",
+        r"\bbull put\b",
+        r"\bbear call\b",
+        r"\bbull call\b",
+        r"\bbear put\b",
+        r"\biron condors?\b",
+        r"\biron butterflies?\b",
+        r"\bstrike\b",
+        r"\bexpiration\b",
+        r"\bexpiry\b",
+        r"\bdte\b",
+        r"\bdelta\b",
+        r"\biv\b",
+        r"\bimplied volatility\b",
+        r"\bpremium\b",
+        r"\bassignment\b",
+        r"\bcall-away\b",
+        r"\bbreakeven\b",
+        r"\broi\b",
+        r"\bgreeks?\b",
+        r"\btheta\b",
+        r"\bvega\b",
+        r"\bgamma\b",
+        r"\brsi\b",
+        r"\boverbought\b",
+        r"\boversold\b",
+        r"\bstock(s)?\b",
+        r"\bticker(s)?\b",
+        r"\bsymbol(s)?\b",
+        r"\bcompan(y|ies)\b",
+        r"\bfundamental(s)?\b",
+        r"\bfinancial(s| health)?\b",
+        r"\bbalance sheet\b",
+        r"\bcash flow\b",
+        r"\bmargins?\b",
+        r"\broic\b",
+        r"\bfcf\b",
+        r"\bmoat\b",
+        r"\bearnings\b",
+        r"\bex-dividend\b",
+        r"\bquality\b",
+        r"\bportfolio income\b",
+        r"\bmonthly income\b",
+        r"\bscreener\b",
+        r"\bscan\b",
+        r"\bcompare\b.*\b[A-Z]{1,5}\b",
+        r"\banaly[sz]e\b.*\b[A-Z]{1,5}\b",
+        r"\brank\b.*\b[A-Z]{1,5}\b",
+        r"\bevaluate\b.*\b[A-Z]{1,5}\b",
+        r"\bcheck\b.*\b[A-Z]{1,5}\b",
+    ]
+    if any(re.search(pattern, query, re.IGNORECASE) for pattern in supported_patterns):
+        return True
+
+    stripped_query = str(query or "").strip()
+    if re.fullmatch(r"[A-Z]{1,5}", stripped_query):
+        return True
+
+    return False
 
 
 def _build_pagination_follow_up_context(
@@ -7028,6 +7133,20 @@ def run_agent(
     raw_history = history or []
     conversation_history = _history_without_meta(raw_history)
     history_tool_state = _extract_history_tool_state(raw_history)
+
+    if not _is_supported_putpulse_query(normalized_query):
+        answer = OUT_OF_SCOPE_MESSAGE
+        return {
+            "answer": answer,
+            "history": _build_agent_history(
+                conversation_history,
+                user_query=normalized_query,
+                answer=answer,
+                tool_state=history_tool_state,
+            ),
+            "used_tools": [],
+        }
+
     prepared_query = _prepare_agent_query(normalized_query, history=raw_history)
     provider = _get_agent_provider()
     model_name = _get_agent_model(provider)
