@@ -228,7 +228,7 @@ class InvestmentViewSet(FilterMixin, viewsets.ModelViewSet):
         return super().list(request, *args, **kwargs)
 
     def get_queryset(self):  # type: ignore[override]
-        queryset = super().get_queryset()
+        queryset = super().get_queryset().prefetch_related("expiration_snapshots")
         params = self.request.query_params
 
         category = params.get("category")

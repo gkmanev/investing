@@ -3048,6 +3048,8 @@ class TradingViewScrapeCommandTests(APITestCase):
         )
 
     def test_symbol_serializer_returns_raw_option_and_call_data(self) -> None:
+        near_expiration = date.today() + timedelta(days=7)
+        far_expiration = date.today() + timedelta(days=21)
         self.symbol.option_volume = 321
         self.symbol.option_iv = Decimal("18.7500")
         self.symbol.option_data = {
@@ -3091,6 +3093,34 @@ class TradingViewScrapeCommandTests(APITestCase):
                 "updated_at",
             ]
         )
+        SymbolExpirationSnapshot.objects.create(
+            symbol=self.symbol,
+            expiration_date=near_expiration,
+            dte=7,
+            option_volume=210,
+            option_iv=Decimal("20.1000"),
+            roi=Decimal("3.2500"),
+            option_data={
+                "option_symbol": "AAPL_WEEKLY",
+                "strike_price": 94.0,
+                "expiration_date": near_expiration.isoformat(),
+                "roi": 3.25,
+            },
+        )
+        SymbolExpirationSnapshot.objects.create(
+            symbol=self.symbol,
+            expiration_date=far_expiration,
+            dte=21,
+            option_volume=330,
+            option_iv=Decimal("18.7500"),
+            roi=Decimal("4.5000"),
+            option_data={
+                "option_symbol": "AAPL_MONTHLY",
+                "strike_price": 95.0,
+                "expiration_date": far_expiration.isoformat(),
+                "roi": 4.5,
+            },
+        )
 
         data = SymbolSerializer(self.symbol).data
 
@@ -3122,6 +3152,19 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.assertEqual(data["call_data"][0]["iv"], 17.25)
         self.assertEqual(data["call_data"][0]["mid"], 1.2)
         self.assertEqual(data["call_data"][0]["delta"], 0.42)
+        self.assertEqual(len(data["expiration_trades"]), 2)
+        self.assertEqual(
+            [item["expiration_date"] for item in data["expiration_trades"]],
+            [near_expiration.isoformat(), far_expiration.isoformat()],
+        )
+        self.assertEqual(
+            data["expiration_trades"][0]["option_data"]["option_symbol"],
+            "AAPL_WEEKLY",
+        )
+        self.assertEqual(
+            data["expiration_trades"][1]["option_data"]["option_symbol"],
+            "AAPL_MONTHLY",
+        )
 
 
 class ExpirationSnapshotScreeningTests(APITestCase):

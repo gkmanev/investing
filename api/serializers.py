@@ -7,6 +7,7 @@ from .models import (
     ScreenerFilter,
     ScreenerType,
     Symbol,
+    SymbolExpirationSnapshot,
 )
 
 
@@ -100,7 +101,27 @@ class FinancialStatementSerializer(serializers.ModelSerializer):
         return cleaned.upper()
 
 
+class SymbolExpirationSnapshotSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SymbolExpirationSnapshot
+        fields = [
+            "expiration_date",
+            "dte",
+            "option_volume",
+            "option_iv",
+            "roi",
+            "option_data",
+        ]
+        read_only_fields = fields
+
+
 class SymbolSerializer(serializers.ModelSerializer):
+    expiration_trades = SymbolExpirationSnapshotSerializer(
+        source="expiration_snapshots",
+        many=True,
+        read_only=True,
+    )
+
     class Meta:
         model = Symbol
         fields = [
@@ -122,6 +143,7 @@ class SymbolSerializer(serializers.ModelSerializer):
             "next_earnings_date",
             "option_data",
             "call_data",
+            "expiration_trades",
             "roi",
             "seeking_alpha_ticker_id",
             "created_at",
