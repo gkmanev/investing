@@ -2649,12 +2649,26 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.assertEqual(contract_debug["call_count"], 1)
         self.assertEqual(contract_debug["filtered_call_count"], 1)
         self.assertEqual(
-            contract_debug["matching_puts"][0]["option_symbol"],
-            "AAPL_PUT_MAIN",
+            contract_debug["matching_puts"][0],
+            {
+                "expiration_date": datetime.strptime(str(expiration), "%Y%m%d").date().isoformat(),
+                "strike": 95.0,
+                "current_price": 100.0,
+                "delta": -0.34,
+                "bid": 3.4,
+                "ask": 3.6,
+            },
         )
         self.assertEqual(
-            contract_debug["fetched_calls"][0]["option_symbol"],
-            "AAPL_CALL_1",
+            contract_debug["fetched_calls"][0],
+            {
+                "expiration_date": datetime.strptime(str(expiration), "%Y%m%d").date().isoformat(),
+                "strike": 110.0,
+                "current_price": 100.0,
+                "delta": 0.42,
+                "bid": 1.1,
+                "ask": 1.3,
+            },
         )
 
     def test_collect_call_contracts_allows_missing_liquidity_and_sorts_by_strike(

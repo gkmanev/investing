@@ -1062,6 +1062,7 @@ class Command(BaseCommand):
                     ticker=symbol.ticker,
                     exchange=exchange,
                     expiration=expiration_date,
+                    underlying_price=underlying_price,
                     chain=chain,
                     delta_min=delta_min,
                     delta_max=delta_max,
@@ -1607,6 +1608,7 @@ class Command(BaseCommand):
         ticker: str,
         exchange: str,
         expiration: date,
+        underlying_price: Decimal,
         chain: list[dict[str, Any]],
         delta_min: Decimal,
         delta_max: Decimal,
@@ -1616,7 +1618,11 @@ class Command(BaseCommand):
         roi_threshold: Decimal,
     ) -> str:
         matching_puts = [
-            self._serialize_option_data(option)
+            self._serialize_debug_contract(
+                option,
+                expiration=expiration,
+                underlying_price=underlying_price,
+            )
             for option in sorted(
                 delta_put_candidates,
                 key=lambda item: self._to_decimal(item.get("strike_price"))
@@ -1625,7 +1631,11 @@ class Command(BaseCommand):
             )
         ]
         fetched_calls = [
-            self._serialize_option_data(row)
+            self._serialize_debug_contract(
+                row,
+                expiration=expiration,
+                underlying_price=underlying_price,
+            )
             for row in sorted(
                 (
                     row
@@ -1651,17 +1661,47 @@ class Command(BaseCommand):
                     "filtered_call_count": len(call_candidates),
                     "matching_puts": matching_puts,
                     "roi_put_candidates": [
-                        self._serialize_option_data(option) for option in roi_candidates
+                        self._serialize_debug_contract(
+                            option,
+                            expiration=expiration,
+                            underlying_price=underlying_price,
+                        )
+                        for option in roi_candidates
                     ],
                     "fetched_calls": fetched_calls,
                     "filtered_calls": [
-                        self._serialize_option_data(option) for option in call_candidates
+                        self._serialize_debug_contract(
+                            option,
+                            expiration=expiration,
+                            underlying_price=underlying_price,
+                        )
+                        for option in call_candidates
                     ],
                 }
             },
             indent=2,
             sort_keys=True,
         )
+
+    def _serialize_debug_contract(
+        self,
+        option: dict[str, Any],
+        *,
+        expiration: date,
+        underlying_price: Decimal,
+    ) -> dict[str, Any]:
+        strike_price = self._to_decimal(option.get("strike_price") or option.get("strike"))
+        delta_value = self._to_decimal(option.get("delta"))
+        bid_value = self._to_decimal(option.get("bid"))
+        ask_value = self._to_decimal(option.get("ask"))
+        return {
+            "expiration_date": expiration.isoformat(),
+            "strike": float(strike_price) if strike_price is not None else None,
+            "current_price": float(underlying_price),
+            "delta": float(delta_value) if delta_value is not None else None,
+            "bid": float(bid_value) if bid_value is not None else None,
+            "ask": float(ask_value) if ask_value is not None else None,
+        }
 
     def _update_symbol_snapshot(
         self,
