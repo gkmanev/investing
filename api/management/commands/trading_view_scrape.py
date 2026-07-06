@@ -1041,6 +1041,7 @@ class Command(BaseCommand):
                 delta_max=delta_max,
                 roi_threshold=None,
                 option_type="put",
+                underlying_price=underlying_price,
             )
         ]
         roi_candidates = [
@@ -1352,6 +1353,7 @@ class Command(BaseCommand):
         delta_max: Decimal,
         roi_threshold: Decimal | None,
         option_type: str = "put",
+        underlying_price: Decimal | None = None,
     ) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
 
@@ -1365,6 +1367,12 @@ class Command(BaseCommand):
 
             strike_price = self._to_decimal(row.get("strike_price"))
             if strike_price is None:
+                continue
+            if (
+                option_type == "put"
+                and underlying_price is not None
+                and strike_price >= underlying_price
+            ):
                 continue
 
             roi = self._calculate_roi_value(

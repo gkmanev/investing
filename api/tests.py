@@ -2821,7 +2821,7 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.assertEqual(self.symbol.price, Decimal("100.00"))
         self.assertIsNone(self.symbol.rsi)
 
-    def test_process_symbol_rejects_snapshot_when_put_strike_exceeds_price(self) -> None:
+    def test_process_symbol_skips_puts_at_or_above_underlying_price(self) -> None:
         expiration = self._expiration_int()
         original_updated_at = self.symbol.updated_at
         self.price_client.get_price_and_volume.return_value = ("26.9050", 500000)
@@ -2845,26 +2845,27 @@ class TradingViewScrapeCommandTests(APITestCase):
             )
         ]
 
-        with self.assertRaisesMessage(
-            CommandError,
-            "Inconsistent market snapshot for AAPL: underlying price 26.9050 is not above selected put strike 245.",
-        ):
-            self.command._process_symbol(
-                client=client,
-                price_client=self.price_client,
-                symbol=self.symbol,
-                exchange="NASDAQ",
-                min_dte=25,
-                max_dte=40,
-                delta_min=Decimal("-0.37"),
-                delta_max=Decimal("-0.24"),
-                roi_threshold=Decimal("2"),
-                fetch_rsi=True,
-            )
+        changed, was_cleared = self.command._process_symbol(
+            client=client,
+            price_client=self.price_client,
+            symbol=self.symbol,
+            exchange="NASDAQ",
+            min_dte=25,
+            max_dte=40,
+            delta_min=Decimal("-0.37"),
+            delta_max=Decimal("-0.24"),
+            roi_threshold=Decimal("2"),
+            fetch_rsi=True,
+        )
 
         self.symbol.refresh_from_db()
-        self.assertEqual(self.symbol.price, Decimal("100.00"))
-        self.assertEqual(self.symbol.updated_at, original_updated_at)
+        self.assertTrue(changed)
+        self.assertFalse(was_cleared)
+        self.assertEqual(self.symbol.price, Decimal("26.9050"))
+        self.assertEqual(self.symbol.option_exp, datetime.strptime(str(expiration), "%Y%m%d").date())
+        self.assertIsNone(self.symbol.option_data)
+        self.assertIsNone(self.symbol.roi)
+        self.assertGreater(self.symbol.updated_at, original_updated_at)
 
     @patch("api.management.commands.trading_view_scrape.certifi.where", return_value="dummy.pem")
     @patch("api.management.commands.trading_view_scrape.urllib.request.urlopen")
