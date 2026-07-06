@@ -2642,13 +2642,14 @@ class TradingViewScrapeCommandTests(APITestCase):
         debug_payload = json.loads(reporter.call_args_list[0].args[0])
         contract_debug = debug_payload["debug_contracts"]
         self.assertEqual(contract_debug["ticker"], "AAPL")
-        self.assertEqual(contract_debug["fetched_put_count"], 2)
-        self.assertEqual(contract_debug["delta_put_count"], 1)
+        self.assertEqual(contract_debug["put_delta_min"], -0.37)
+        self.assertEqual(contract_debug["put_delta_max"], -0.24)
+        self.assertEqual(contract_debug["matching_put_count"], 1)
         self.assertEqual(contract_debug["roi_put_count"], 1)
         self.assertEqual(contract_debug["call_count"], 1)
         self.assertEqual(contract_debug["filtered_call_count"], 1)
         self.assertEqual(
-            contract_debug["delta_put_candidates"][0]["option_symbol"],
+            contract_debug["matching_puts"][0]["option_symbol"],
             "AAPL_PUT_MAIN",
         )
         self.assertEqual(

@@ -1062,6 +1062,8 @@ class Command(BaseCommand):
                     exchange=exchange,
                     expiration=expiration_date,
                     chain=chain,
+                    delta_min=delta_min,
+                    delta_max=delta_max,
                     delta_put_candidates=delta_put_candidates,
                     roi_candidates=roi_candidates,
                     call_candidates=call_candidates,
@@ -1598,19 +1600,17 @@ class Command(BaseCommand):
         exchange: str,
         expiration: date,
         chain: list[dict[str, Any]],
+        delta_min: Decimal,
+        delta_max: Decimal,
         delta_put_candidates: list[dict[str, Any]],
         roi_candidates: list[dict[str, Any]],
         call_candidates: list[dict[str, Any]],
         roi_threshold: Decimal,
     ) -> str:
-        fetched_puts = [
-            self._serialize_option_data(row)
-            for row in sorted(
-                (
-                    row
-                    for row in chain
-                    if str(row.get("option_type", "")).lower() == "put"
-                ),
+        matching_puts = [
+            self._serialize_option_data(option)
+            for option in sorted(
+                delta_put_candidates,
                 key=lambda item: self._to_decimal(item.get("strike_price"))
                 or Decimal("999999999"),
                 reverse=True,
@@ -1634,17 +1634,14 @@ class Command(BaseCommand):
                     "ticker": ticker,
                     "exchange": exchange,
                     "expiration": expiration.isoformat(),
+                    "put_delta_min": float(delta_min),
+                    "put_delta_max": float(delta_max),
                     "roi_threshold": float(roi_threshold),
-                    "fetched_put_count": len(fetched_puts),
-                    "delta_put_count": len(delta_put_candidates),
+                    "matching_put_count": len(matching_puts),
                     "roi_put_count": len(roi_candidates),
                     "call_count": len(fetched_calls),
                     "filtered_call_count": len(call_candidates),
-                    "fetched_puts": fetched_puts,
-                    "delta_put_candidates": [
-                        self._serialize_option_data(option)
-                        for option in delta_put_candidates
-                    ],
+                    "matching_puts": matching_puts,
                     "roi_put_candidates": [
                         self._serialize_option_data(option) for option in roi_candidates
                     ],
