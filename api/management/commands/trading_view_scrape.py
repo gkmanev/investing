@@ -1023,15 +1023,21 @@ class Command(BaseCommand):
             volume_data.get("strike_volumes", {}),
         )
 
-        roi_candidates = [
+        delta_put_candidates = [
             self._annotate_contract(candidate, expiration_date=expiration_date, dte=dte)
             for candidate in self._build_roi_candidates(
                 chain=chain,
                 delta_min=delta_min,
                 delta_max=delta_max,
-                roi_threshold=roi_threshold,
+                roi_threshold=None,
                 option_type="put",
             )
+        ]
+        roi_candidates = [
+            candidate
+            for candidate in delta_put_candidates
+            if self._to_decimal(candidate.get("roi")) is not None
+            and self._to_decimal(candidate.get("roi")) >= roi_threshold
         ]
         best_candidate = self._select_roi_candidate(roi_candidates)
 
@@ -1070,8 +1076,13 @@ class Command(BaseCommand):
         )
 
         put_data = (
-            {"puts": [self._serialize_option_data(candidate) for candidate in roi_candidates]}
-            if roi_candidates
+            {
+                "puts": [
+                    self._serialize_option_data(candidate)
+                    for candidate in delta_put_candidates
+                ]
+            }
+            if delta_put_candidates
             else None
         )
         call_data = (
@@ -1091,8 +1102,13 @@ class Command(BaseCommand):
                 if call_candidates
                 else "no qualifying calls"
             )
+            put_status = (
+                f"no puts met roi >= {roi_threshold} within delta range"
+                if delta_put_candidates
+                else "no puts in delta range"
+            )
             self._write_status(
-                f"{symbol.ticker}: no puts in delta range for {expiration_date}; "
+                f"{symbol.ticker}: {put_status} for {expiration_date}; "
                 f"price/expiration updated, option data cleared; {call_status}.",
                 reporter=reporter,
             )
@@ -1308,7 +1324,7 @@ class Command(BaseCommand):
         chain: list[dict[str, Any]],
         delta_min: Decimal,
         delta_max: Decimal,
-        roi_threshold: Decimal,
+        roi_threshold: Decimal | None,
         option_type: str = "put",
     ) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
@@ -1330,7 +1346,9 @@ class Command(BaseCommand):
                 ask_price=row.get("ask"),
                 strike_price=strike_price,
             )
-            if roi is None or roi < roi_threshold:
+            if roi is None:
+                continue
+            if roi_threshold is not None and roi < roi_threshold:
                 continue
 
             option = dict(row)

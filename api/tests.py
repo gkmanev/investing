@@ -2445,6 +2445,12 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.assertIsNone(self.symbol.option_iv)
         self.assertIsNone(self.symbol.option_data)
         self.assertIsNone(self.symbol.roi)
+        snapshot = SymbolExpirationSnapshot.objects.get(
+            symbol=self.symbol,
+            expiration_date=datetime.strptime(str(expiration), "%Y%m%d").date(),
+        )
+        self.assertEqual(snapshot.put_data["puts"][0]["option_symbol"], "AAPL_LOW_ROI")
+        self.assertEqual(snapshot.put_data["puts"][0]["roi"], 0.16)
 
     def test_process_symbol_reports_saved_calls_when_no_put_candidate(self) -> None:
         expiration = self._expiration_int()
@@ -2503,7 +2509,7 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.assertTrue(changed)
         self.assertFalse(was_cleared)
         reporter.assert_called_once_with(
-            f"AAPL: no puts in delta range for "
+            f"AAPL: no puts met roi >= 2 within delta range for "
             f"{datetime.strptime(str(expiration), '%Y%m%d').date()}; "
             "price/expiration updated, option data cleared; saved 2 calls."
         )
@@ -2568,7 +2574,7 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.assertTrue(changed)
         self.assertFalse(was_cleared)
         reporter.assert_called_once_with(
-            f"AAPL: no puts in delta range for "
+            f"AAPL: no puts met roi >= 2 within delta range for "
             f"{datetime.strptime(str(expiration), '%Y%m%d').date()}; "
             "price/expiration updated, option data cleared; no qualifying calls."
         )
