@@ -2583,6 +2583,79 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.assertIsNone(self.symbol.call_data)
         self.assertEqual(self.symbol.option_volume, 410)
 
+    def test_process_symbol_debug_contracts_prints_full_contract_dump(self) -> None:
+        expiration = self._expiration_int()
+        client = MagicMock()
+        self.price_client.get_rsi.return_value = "55.75"
+        client.get_expirations.return_value = [expiration]
+        client.get_expiration_volume_data.return_value = {
+            "total_volume": 840,
+            "strike_volumes": {
+                "95": {"call_volume": 90, "put_volume": 130, "total_volume": 220},
+                "110": {"call_volume": 250, "put_volume": 40, "total_volume": 290},
+            },
+        }
+        client.get_chain.return_value = [
+            self._option_row(
+                strike="95",
+                bid="3.40",
+                ask="3.60",
+                delta="-0.34",
+                option_symbol="AAPL_PUT_MAIN",
+            ),
+            self._option_row(
+                strike="94",
+                bid="1.00",
+                ask="1.20",
+                delta="-0.20",
+                option_symbol="AAPL_PUT_OUTSIDE_DELTA",
+            ),
+            self._option_row(
+                strike="110",
+                bid="1.10",
+                ask="1.30",
+                delta="0.42",
+                option_symbol="AAPL_CALL_1",
+                option_type="call",
+            ),
+        ]
+        reporter = MagicMock()
+
+        changed, was_cleared = self.command._process_symbol(
+            client=client,
+            price_client=self.price_client,
+            symbol=self.symbol,
+            exchange="NASDAQ",
+            min_dte=25,
+            max_dte=40,
+            delta_min=Decimal("-0.37"),
+            delta_max=Decimal("-0.24"),
+            roi_threshold=Decimal("2"),
+            fetch_rsi=True,
+            debug_contracts=True,
+            reporter=reporter,
+        )
+
+        self.assertTrue(changed)
+        self.assertFalse(was_cleared)
+        self.assertGreaterEqual(reporter.call_count, 2)
+        debug_payload = json.loads(reporter.call_args_list[0].args[0])
+        contract_debug = debug_payload["debug_contracts"]
+        self.assertEqual(contract_debug["ticker"], "AAPL")
+        self.assertEqual(contract_debug["fetched_put_count"], 2)
+        self.assertEqual(contract_debug["delta_put_count"], 1)
+        self.assertEqual(contract_debug["roi_put_count"], 1)
+        self.assertEqual(contract_debug["call_count"], 1)
+        self.assertEqual(contract_debug["filtered_call_count"], 1)
+        self.assertEqual(
+            contract_debug["delta_put_candidates"][0]["option_symbol"],
+            "AAPL_PUT_MAIN",
+        )
+        self.assertEqual(
+            contract_debug["fetched_calls"][0]["option_symbol"],
+            "AAPL_CALL_1",
+        )
+
     def test_collect_call_contracts_allows_missing_liquidity_and_sorts_by_strike(
         self,
     ) -> None:

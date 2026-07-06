@@ -648,6 +648,12 @@ class Command(BaseCommand):
             dest="debug_call_chain",
             help="Print the fetched and filtered call chain for each processed symbol.",
         )
+        parser.add_argument(
+            "--debug-contracts",
+            action="store_true",
+            dest="debug_contracts",
+            help="Print all fetched put and call contract parameters for each expiration.",
+        )
 
     def handle(self, *args: Any, **options: Any) -> str:
         min_dte = options["min_dte"]
@@ -756,6 +762,7 @@ class Command(BaseCommand):
                     roi_threshold=roi_threshold,
                     fetch_rsi=not options["skip_rsi"],
                     debug_call_chain=options["debug_call_chain"],
+                    debug_contracts=options["debug_contracts"],
                     reporter=reporter,
                 )
             finally:
@@ -815,6 +822,7 @@ class Command(BaseCommand):
         roi_threshold: Decimal,
         fetch_rsi: bool,
         debug_call_chain: bool = False,
+        debug_contracts: bool = False,
         reporter: Callable[[str], None] | None = None,
     ) -> tuple[bool, bool]:
         had_option_metrics = any(
@@ -918,6 +926,7 @@ class Command(BaseCommand):
                 delta_max=delta_max,
                 roi_threshold=roi_threshold,
                 debug_call_chain=debug_call_chain,
+                debug_contracts=debug_contracts,
                 reporter=reporter,
             )
             for expiration, dte, expiration_date in selected_expirations
@@ -966,6 +975,7 @@ class Command(BaseCommand):
         delta_max: Decimal,
         roi_threshold: Decimal,
         debug_call_chain: bool = False,
+        debug_contracts: bool = False,
         reporter: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
         chain_response: dict[str, Any] | None = None
@@ -1045,6 +1055,20 @@ class Command(BaseCommand):
             self._annotate_contract(candidate, expiration_date=expiration_date, dte=dte)
             for candidate in self._collect_call_contracts(chain=chain)
         ]
+        if debug_contracts:
+            self._write_status(
+                self._format_contract_debug_output(
+                    ticker=symbol.ticker,
+                    exchange=exchange,
+                    expiration=expiration_date,
+                    chain=chain,
+                    delta_put_candidates=delta_put_candidates,
+                    roi_candidates=roi_candidates,
+                    call_candidates=call_candidates,
+                    roi_threshold=roi_threshold,
+                ),
+                reporter=reporter,
+            )
         if debug_call_chain:
             self._write_status(
                 self._format_call_chain_debug_output(
@@ -1561,6 +1585,73 @@ class Command(BaseCommand):
                     "filtered_call_count": len(filtered_calls),
                     "fetched_calls": fetched_calls,
                     "filtered_calls": filtered_calls,
+                }
+            },
+            indent=2,
+            sort_keys=True,
+        )
+
+    def _format_contract_debug_output(
+        self,
+        *,
+        ticker: str,
+        exchange: str,
+        expiration: date,
+        chain: list[dict[str, Any]],
+        delta_put_candidates: list[dict[str, Any]],
+        roi_candidates: list[dict[str, Any]],
+        call_candidates: list[dict[str, Any]],
+        roi_threshold: Decimal,
+    ) -> str:
+        fetched_puts = [
+            self._serialize_option_data(row)
+            for row in sorted(
+                (
+                    row
+                    for row in chain
+                    if str(row.get("option_type", "")).lower() == "put"
+                ),
+                key=lambda item: self._to_decimal(item.get("strike_price"))
+                or Decimal("999999999"),
+                reverse=True,
+            )
+        ]
+        fetched_calls = [
+            self._serialize_option_data(row)
+            for row in sorted(
+                (
+                    row
+                    for row in chain
+                    if str(row.get("option_type", "")).lower() == "call"
+                ),
+                key=lambda item: self._to_decimal(item.get("strike_price"))
+                or Decimal("999999999"),
+            )
+        ]
+        return json.dumps(
+            {
+                "debug_contracts": {
+                    "ticker": ticker,
+                    "exchange": exchange,
+                    "expiration": expiration.isoformat(),
+                    "roi_threshold": float(roi_threshold),
+                    "fetched_put_count": len(fetched_puts),
+                    "delta_put_count": len(delta_put_candidates),
+                    "roi_put_count": len(roi_candidates),
+                    "call_count": len(fetched_calls),
+                    "filtered_call_count": len(call_candidates),
+                    "fetched_puts": fetched_puts,
+                    "delta_put_candidates": [
+                        self._serialize_option_data(option)
+                        for option in delta_put_candidates
+                    ],
+                    "roi_put_candidates": [
+                        self._serialize_option_data(option) for option in roi_candidates
+                    ],
+                    "fetched_calls": fetched_calls,
+                    "filtered_calls": [
+                        self._serialize_option_data(option) for option in call_candidates
+                    ],
                 }
             },
             indent=2,
