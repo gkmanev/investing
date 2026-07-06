@@ -19,7 +19,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from api.helper import FinancialMetricsCalculator
-from api.models import AgentRun, Symbol
+from api.models import AgentRun, Symbol, SymbolExpirationSnapshot
 
 
 logger = logging.getLogger(__name__)
@@ -1929,6 +1929,54 @@ def _extract_call_contracts(option_data):
             "open_interest": open_interest,
         })
     return contracts
+
+
+def _get_expiration_snapshots_for_symbol(sym):
+    if not getattr(sym, "pk", None):
+        return []
+
+    prefetched = getattr(sym, "_prefetched_objects_cache", {})
+    if "expiration_snapshots" in prefetched:
+        return list(prefetched["expiration_snapshots"])
+
+    return list(
+        SymbolExpirationSnapshot.objects.filter(symbol=sym).order_by("expiration_date")
+    )
+
+
+def _build_grouped_snapshot_payload(sym, *, option_type):
+    grouped = {}
+    for snapshot in _get_expiration_snapshots_for_symbol(sym):
+        expiration_key = snapshot.expiration_date.isoformat()
+        if option_type == "put":
+            payload = snapshot.put_data
+            if not payload and isinstance(snapshot.option_data, dict):
+                payload = {"puts": [snapshot.option_data]}
+        else:
+            payload = snapshot.call_data
+
+        if isinstance(payload, dict) and payload:
+            grouped[expiration_key] = payload
+
+    return grouped
+
+
+def _get_symbol_put_contracts(sym):
+    snapshot_payload = _build_grouped_snapshot_payload(sym, option_type="put")
+    if snapshot_payload:
+        return _extract_put_contracts(snapshot_payload)
+    return _extract_put_contracts(sym.option_data or {})
+
+
+def _get_symbol_call_payload(sym):
+    snapshot_payload = _build_grouped_snapshot_payload(sym, option_type="call")
+    if snapshot_payload:
+        return snapshot_payload
+    return sym.call_data or sym.option_data or {}
+
+
+def _get_symbol_call_contracts(sym):
+    return _extract_call_contracts(_get_symbol_call_payload(sym))
 
 
 def _dedupe_preserve_order(items):
@@ -4036,8 +4084,9 @@ def _evaluate_spread_candidates(
     technical_score = sym.technical_score
     next_earnings_date = _parse_date(sym.next_earnings_date)
     symbol_iv = _normalize_iv_percent(sym.option_iv)
-    put_contracts = _extract_put_contracts(sym.option_data or {})
-    call_contracts = _extract_call_contracts(sym.call_data or sym.option_data or {})
+    put_contracts = _get_symbol_put_contracts(sym)
+    call_payload = _get_symbol_call_payload(sym)
+    call_contracts = _extract_call_contracts(call_payload)
     profile = _spread_profile(risk_profile, overrides=profile_overrides)
     resolved_view = _resolve_spread_directional_view(
         directional_view=directional_view,
@@ -4936,7 +4985,7 @@ def _evaluate_covered_call_symbol(
     quality_score = _to_float(sym.score)
     technical_score = sym.technical_score
     next_earnings_date = _parse_date(sym.next_earnings_date)
-    call_data = sym.call_data or sym.option_data or {}
+    call_data = _get_symbol_call_payload(sym)
     call_contracts = _extract_call_contracts(call_data)
     filter_profile = _resolve_covered_call_filters(
         style=style,
@@ -5428,7 +5477,9 @@ def _handle_put_wheel_opportunity(
         })
 
     try:
-        sym = Symbol.objects.filter(ticker__iexact=symbol).first()
+        sym = Symbol.objects.prefetch_related("expiration_snapshots").filter(
+            ticker__iexact=symbol
+        ).first()
     except Exception as e:
         return json.dumps({
             "error": "Database error while fetching symbol data",
@@ -5450,8 +5501,7 @@ def _handle_put_wheel_opportunity(
     technical_score = sym.technical_score
     next_earnings_date = _parse_date(sym.next_earnings_date)
 
-    option_data = sym.option_data or {}
-    put_contracts = _extract_put_contracts(option_data)
+    put_contracts = _get_symbol_put_contracts(sym)
 
     if not put_contracts:
         return json.dumps({
@@ -5546,7 +5596,7 @@ def _handle_put_wheel_opportunity(
     best = evaluated[0]
     top_candidates = evaluated[:5]
 
-    call_contracts = _extract_call_contracts(sym.call_data or {})
+    call_contracts = _get_symbol_call_contracts(sym)
     calls_summary = []
     for c in call_contracts:
         if not c["strike"] or not c["mid"] or not c["expiration_date"]:
@@ -5665,7 +5715,9 @@ def _handle_covered_call_opportunity(args: dict) -> str:
         })
 
     try:
-        sym = Symbol.objects.filter(ticker__iexact=symbol).first()
+        sym = Symbol.objects.prefetch_related("expiration_snapshots").filter(
+            ticker__iexact=symbol
+        ).first()
     except Exception as e:
         return json.dumps({
             "error": "Database error while fetching symbol data",
@@ -5713,7 +5765,9 @@ def _handle_spread_opportunity(args: dict) -> str:
     preferred_width = _to_float(args.get("width"))
 
     try:
-        sym = Symbol.objects.filter(ticker__iexact=symbol).first()
+        sym = Symbol.objects.prefetch_related("expiration_snapshots").filter(
+            ticker__iexact=symbol
+        ).first()
     except Exception as e:
         return json.dumps({
             "error": "Database error while fetching symbol data",
@@ -5846,7 +5900,12 @@ def _handle_scan_put_opportunities(args: dict) -> str:
     today = date.today()
 
     try:
-        symbols = Symbol.objects.exclude(option_data=None).filter(score__gte=65)
+        symbols = (
+            Symbol.objects.filter(score__gte=65)
+            .filter(Q(option_data__isnull=False) | Q(expiration_snapshots__isnull=False))
+            .prefetch_related("expiration_snapshots")
+            .distinct()
+        )
     except Exception as e:
         return json.dumps({"error": "Database error", "details": str(e)})
 
@@ -5869,7 +5928,7 @@ def _handle_scan_put_opportunities(args: dict) -> str:
             if rsi is None or rsi > max_rsi:
                 continue
 
-        put_contracts = _extract_put_contracts(sym.option_data or {})
+        put_contracts = _get_symbol_put_contracts(sym)
         if not put_contracts:
             continue
 
@@ -6005,8 +6064,14 @@ def _handle_scan_spread_opportunities(args: dict) -> str:
         profile_overrides["debit_short_delta_max"] = clamped_short_delta
 
     try:
-        symbols = Symbol.objects.filter(
-            Q(option_data__isnull=False) | Q(call_data__isnull=False)
+        symbols = (
+            Symbol.objects.filter(
+                Q(option_data__isnull=False)
+                | Q(call_data__isnull=False)
+                | Q(expiration_snapshots__isnull=False)
+            )
+            .prefetch_related("expiration_snapshots")
+            .distinct()
         )
     except Exception as e:
         return json.dumps({"error": "Database error", "details": str(e)})
@@ -6123,7 +6188,9 @@ def _handle_scan_covered_call_opportunities(args: dict) -> str:
     today = date.today()
 
     try:
-        symbols = Symbol.objects.filter(score__gte=65)
+        symbols = Symbol.objects.filter(score__gte=65).prefetch_related(
+            "expiration_snapshots"
+        )
     except Exception as e:
         return json.dumps({"error": "Database error", "details": str(e)})
 
@@ -6599,7 +6666,9 @@ def _handle_compare_spread_candidates(args: dict) -> str:
 
     for symbol in symbols:
         try:
-            sym = Symbol.objects.filter(ticker__iexact=symbol).first()
+            sym = Symbol.objects.prefetch_related("expiration_snapshots").filter(
+                ticker__iexact=symbol
+            ).first()
         except Exception as e:
             skipped.append(
                 {

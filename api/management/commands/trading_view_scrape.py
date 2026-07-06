@@ -16,15 +16,15 @@ import certifi
 import requests
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
-from django.db import close_old_connections
+from django.db import close_old_connections, transaction
 from django.utils import timezone
 
-from api.models import Symbol
+from api.models import Symbol, SymbolExpirationSnapshot
 
 
 DEFAULT_EXCHANGE = "NASDAQ"
-MIN_DTE = 25
-MAX_DTE = 55
+MIN_DTE = 0
+MAX_DTE = 50
 PUT_DELTA_MIN = Decimal("-0.37")
 PUT_DELTA_MAX = Decimal("-0.24")
 ROI_THRESHOLD = Decimal("2")
@@ -201,20 +201,33 @@ class TradingViewOptions:
         min_dte: int,
         max_dte: int,
     ) -> int | None:
+        matching = self.list_expirations_in_range(
+            expirations,
+            min_dte=min_dte,
+            max_dte=max_dte,
+        )
+        if not matching:
+            return None
+        return matching[0][0]
+
+    def list_expirations_in_range(
+        self,
+        expirations: list[int],
+        *,
+        min_dte: int,
+        max_dte: int,
+    ) -> list[tuple[int, int, date]]:
         today = date.today()
-        candidates: list[tuple[int, int]] = []
+        candidates: list[tuple[int, int, date]] = []
 
         for expiration in expirations:
             expiration_date = datetime.strptime(str(expiration), "%Y%m%d").date()
             dte = (expiration_date - today).days
             if min_dte <= dte <= max_dte:
-                candidates.append((dte, expiration))
+                candidates.append((expiration, dte, expiration_date))
 
-        if not candidates:
-            return None
-
-        candidates.sort(key=lambda item: item[0])
-        return candidates[0][1]
+        candidates.sort(key=lambda item: (item[1], item[0]))
+        return candidates
 
     def get_chain(
         self,
@@ -696,6 +709,7 @@ class Command(BaseCommand):
                 "option_volume",
                 "option_iv",
                 "option_data",
+                "call_data",
                 "roi",
                 "updated_at",
             )
@@ -803,6 +817,15 @@ class Command(BaseCommand):
         debug_call_chain: bool = False,
         reporter: Callable[[str], None] | None = None,
     ) -> tuple[bool, bool]:
+        had_option_metrics = any(
+            value is not None
+            for value in (
+                symbol.option_data,
+                symbol.roi,
+                symbol.option_volume,
+                symbol.option_iv,
+            )
+        )
         if price_client is None:
             underlying_price = self._to_decimal(symbol.price)
             monthly_rsi = symbol.rsi
@@ -828,7 +851,7 @@ class Command(BaseCommand):
 
         try:
             expirations = client.get_expirations(exchange=exchange, ticker=symbol.ticker)
-            selected = client.pick_expiration(
+            selected_expirations = client.list_expirations_in_range(
                 expirations,
                 min_dte=min_dte,
                 max_dte=max_dte,
@@ -854,40 +877,111 @@ class Command(BaseCommand):
                 )
             raise CommandError("Missing or invalid underlying price.")
 
-        if selected is None:
-            changed = self._update_symbol_snapshot(
-                symbol,
-                price=underlying_price,
-                rsi=monthly_rsi,
-                option_exp=None,
-                option_volume=None,
-                option_iv=None,
-                option_data=None,
-                call_data=None,
-                roi=None,
-            )
+        if not selected_expirations:
+            window_start = date.today() + timedelta(days=min_dte)
+            window_end = date.today() + timedelta(days=max_dte)
+            with transaction.atomic():
+                snapshots_changed = self._sync_expiration_snapshots(
+                    symbol=symbol,
+                    snapshots=[],
+                    window_start=window_start,
+                    window_end=window_end,
+                )
+                symbol_changed = self._update_symbol_snapshot(
+                    symbol,
+                    price=underlying_price,
+                    rsi=monthly_rsi,
+                    option_exp=None,
+                    option_volume=None,
+                    option_iv=None,
+                    option_data=None,
+                    call_data=None,
+                    roi=None,
+                )
+            changed = snapshots_changed or symbol_changed
             self._write_status(
                 f"{symbol.ticker}: no expiration in {min_dte}-{max_dte} DTE window.",
                 reporter=reporter,
             )
             return changed, changed
 
-        selected_date = datetime.strptime(str(selected), "%Y%m%d").date()
+        expiration_snapshots = [
+            self._build_expiration_snapshot(
+                client=client,
+                symbol=symbol,
+                exchange=exchange,
+                expiration=expiration,
+                expiration_date=expiration_date,
+                dte=dte,
+                underlying_price=underlying_price,
+                delta_min=delta_min,
+                delta_max=delta_max,
+                roi_threshold=roi_threshold,
+                debug_call_chain=debug_call_chain,
+                reporter=reporter,
+            )
+            for expiration, dte, expiration_date in selected_expirations
+        ]
 
+        primary_snapshot = self._select_primary_expiration_snapshot(expiration_snapshots)
+        window_start = date.today() + timedelta(days=min_dte)
+        window_end = date.today() + timedelta(days=max_dte)
+
+        with transaction.atomic():
+            snapshots_changed = self._sync_expiration_snapshots(
+                symbol=symbol,
+                snapshots=expiration_snapshots,
+                window_start=window_start,
+                window_end=window_end,
+            )
+            symbol_changed = self._update_symbol_snapshot(
+                symbol,
+                price=underlying_price,
+                rsi=monthly_rsi,
+                option_exp=primary_snapshot["expiration_date"] if primary_snapshot else None,
+                option_volume=primary_snapshot["option_volume"] if primary_snapshot else None,
+                option_iv=primary_snapshot["option_iv"] if primary_snapshot else None,
+                option_data=primary_snapshot["option_data"] if primary_snapshot else None,
+                call_data=primary_snapshot["summary_call_data"] if primary_snapshot else None,
+                roi=primary_snapshot["roi"] if primary_snapshot else None,
+            )
+
+        changed = snapshots_changed or symbol_changed
+        was_cleared = (
+            primary_snapshot is None or primary_snapshot["option_data"] is None
+        ) and had_option_metrics and changed
+        return changed, was_cleared
+
+    def _build_expiration_snapshot(
+        self,
+        *,
+        client: TradingViewOptions,
+        symbol: Symbol,
+        exchange: str,
+        expiration: int,
+        expiration_date: date,
+        dte: int,
+        underlying_price: Decimal,
+        delta_min: Decimal,
+        delta_max: Decimal,
+        roi_threshold: Decimal,
+        debug_call_chain: bool = False,
+        reporter: Callable[[str], None] | None = None,
+    ) -> dict[str, Any]:
         chain_response: dict[str, Any] | None = None
         try:
             if debug_call_chain:
                 chain_response = client.get_chain_response(
                     exchange=exchange,
                     ticker=symbol.ticker,
-                    expiration=selected,
+                    expiration=expiration,
                 )
                 chain = client.parse_chain_response(chain_response)
             else:
                 chain = client.get_chain(
                     exchange=exchange,
                     ticker=symbol.ticker,
-                    expiration=selected,
+                    expiration=expiration,
                 )
         except requests.RequestException as exc:
             raise CommandError(
@@ -895,19 +989,19 @@ class Command(BaseCommand):
                     exchange=exchange,
                     ticker=symbol.ticker,
                     exc=exc,
-                    context=f"chain {selected}",
+                    context=f"chain {expiration}",
                 )
             ) from exc
         except (KeyError, TypeError, ValueError) as exc:
             raise CommandError(
-                f"TradingView returned invalid chain data for {exchange}:{symbol.ticker} {selected}."
+                f"TradingView returned invalid chain data for {exchange}:{symbol.ticker} {expiration}."
             ) from exc
 
         try:
             volume_data = client.get_expiration_volume_data(
                 exchange=exchange,
                 ticker=symbol.ticker,
-                expiration=selected,
+                expiration=expiration,
             )
         except requests.RequestException as exc:
             raise CommandError(
@@ -915,12 +1009,12 @@ class Command(BaseCommand):
                     exchange=exchange,
                     ticker=symbol.ticker,
                     exc=exc,
-                    context=f"volume {selected}",
+                    context=f"volume {expiration}",
                 )
             ) from exc
         except (KeyError, TypeError, ValueError) as exc:
             raise CommandError(
-                f"TradingView returned invalid volume data for {exchange}:{symbol.ticker} {selected}."
+                f"TradingView returned invalid volume data for {exchange}:{symbol.ticker} {expiration}."
             ) from exc
 
         expiration_volume = self._to_int(volume_data.get("total_volume"))
@@ -929,22 +1023,28 @@ class Command(BaseCommand):
             volume_data.get("strike_volumes", {}),
         )
 
-        roi_candidates = self._build_roi_candidates(
-            chain=chain,
-            delta_min=delta_min,
-            delta_max=delta_max,
-            roi_threshold=roi_threshold,
-            option_type="put",
-        )
+        roi_candidates = [
+            self._annotate_contract(candidate, expiration_date=expiration_date, dte=dte)
+            for candidate in self._build_roi_candidates(
+                chain=chain,
+                delta_min=delta_min,
+                delta_max=delta_max,
+                roi_threshold=roi_threshold,
+                option_type="put",
+            )
+        ]
         best_candidate = self._select_roi_candidate(roi_candidates)
 
-        call_candidates = self._collect_call_contracts(chain=chain)
+        call_candidates = [
+            self._annotate_contract(candidate, expiration_date=expiration_date, dte=dte)
+            for candidate in self._collect_call_contracts(chain=chain)
+        ]
         if debug_call_chain:
             self._write_status(
                 self._format_call_chain_debug_output(
                     ticker=symbol.ticker,
                     exchange=exchange,
-                    expiration=selected_date,
+                    expiration=expiration_date,
                     chain=chain,
                     call_candidates=call_candidates,
                     raw_chain_response=chain_response,
@@ -952,24 +1052,9 @@ class Command(BaseCommand):
                 reporter=reporter,
             )
 
-        had_option_metrics = any(
-            value is not None
-            for value in (
-                symbol.option_data,
-                symbol.roi,
-                symbol.option_volume,
-                symbol.option_iv,
-            )
-        )
-
         option_data = (
             self._build_option_snapshot(best_candidate, roi_candidates)
             if best_candidate is not None
-            else None
-        )
-        call_data = (
-            [self._serialize_option_data(c) for c in call_candidates]
-            if call_candidates
             else None
         )
         roi_value = (
@@ -977,23 +1062,27 @@ class Command(BaseCommand):
             if best_candidate is not None
             else None
         )
-        option_volume = self._to_int(expiration_volume)
         option_iv = self._to_decimal(best_candidate.get("iv")) if best_candidate else None
         self._validate_snapshot_consistency(
             ticker=symbol.ticker,
             underlying_price=underlying_price,
             option_data=option_data,
         )
-        changed = self._update_symbol_snapshot(
-            symbol,
-            price=underlying_price,
-            rsi=monthly_rsi,
-            option_exp=selected_date,
-            option_volume=option_volume,
-            option_iv=option_iv,
-            option_data=option_data,
-            call_data=call_data,
-            roi=roi_value,
+
+        put_data = (
+            {"puts": [self._serialize_option_data(candidate) for candidate in roi_candidates]}
+            if roi_candidates
+            else None
+        )
+        call_data = (
+            {"calls": [self._serialize_option_data(candidate) for candidate in call_candidates]}
+            if call_candidates
+            else None
+        )
+        summary_call_data = (
+            [self._serialize_option_data(candidate) for candidate in call_candidates]
+            if call_candidates
+            else None
         )
 
         if best_candidate is None:
@@ -1003,21 +1092,149 @@ class Command(BaseCommand):
                 else "no qualifying calls"
             )
             self._write_status(
-                f"{symbol.ticker}: no puts in delta range for {selected_date}; "
+                f"{symbol.ticker}: no puts in delta range for {expiration_date}; "
                 f"price/expiration updated, option data cleared; {call_status}.",
                 reporter=reporter,
             )
-            return changed, had_option_metrics and changed
+        else:
+            self._write_status(
+                f"{symbol.ticker}: exp {expiration_date} price {underlying_price} "
+                f"strike {best_candidate['strike_price']} bid {best_candidate['bid']} "
+                f"ask {best_candidate['ask']} delta {best_candidate['delta']} "
+                f"vol {best_candidate.get('volume')} iv {best_candidate.get('iv')} "
+                f"roi {best_candidate['roi']}",
+                reporter=reporter,
+            )
 
-        self._write_status(
-            f"{symbol.ticker}: exp {selected_date} price {underlying_price} "
-            f"strike {best_candidate['strike_price']} bid {best_candidate['bid']} "
-            f"ask {best_candidate['ask']} delta {best_candidate['delta']} "
-            f"vol {best_candidate.get('volume')} iv {best_candidate.get('iv')} "
-            f"roi {best_candidate['roi']}",
-            reporter=reporter,
-        )
-        return changed, False
+        return {
+            "expiration_date": expiration_date,
+            "dte": dte,
+            "option_volume": self._to_int(expiration_volume),
+            "option_iv": option_iv,
+            "option_data": option_data,
+            "put_data": put_data,
+            "call_data": call_data,
+            "summary_call_data": summary_call_data,
+            "roi": roi_value,
+        }
+
+    def _select_primary_expiration_snapshot(
+        self,
+        snapshots: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        if not snapshots:
+            return None
+
+        best_snapshot: dict[str, Any] | None = None
+        best_roi: Decimal | None = None
+        best_delta: Decimal | None = None
+
+        for snapshot in snapshots:
+            option_data = snapshot.get("option_data")
+            roi_value = self._to_decimal(snapshot.get("roi"))
+            delta_value = self._to_decimal(option_data.get("delta")) if option_data else None
+            if option_data is None or roi_value is None or delta_value is None:
+                continue
+
+            if best_snapshot is None or best_roi is None or roi_value > best_roi:
+                best_snapshot = snapshot
+                best_roi = roi_value
+                best_delta = delta_value
+                continue
+
+            if roi_value == best_roi:
+                if best_delta is None or abs(delta_value) < abs(best_delta):
+                    best_snapshot = snapshot
+                    best_delta = delta_value
+                    continue
+                if abs(delta_value) == abs(best_delta) and snapshot["expiration_date"] < best_snapshot["expiration_date"]:
+                    best_snapshot = snapshot
+                    best_delta = delta_value
+
+        if best_snapshot is not None:
+            return best_snapshot
+
+        return min(snapshots, key=lambda item: item["expiration_date"])
+
+    def _sync_expiration_snapshots(
+        self,
+        *,
+        symbol: Symbol,
+        snapshots: list[dict[str, Any]],
+        window_start: date,
+        window_end: date,
+    ) -> bool:
+        existing_by_date = {
+            snapshot.expiration_date: snapshot
+            for snapshot in SymbolExpirationSnapshot.objects.filter(
+                symbol=symbol,
+                expiration_date__gte=window_start,
+                expiration_date__lte=window_end,
+            )
+        }
+        changed = False
+        seen_dates: set[date] = set()
+
+        for snapshot_data in snapshots:
+            expiration_date = snapshot_data["expiration_date"]
+            seen_dates.add(expiration_date)
+            existing = existing_by_date.get(expiration_date)
+            if existing is None:
+                SymbolExpirationSnapshot.objects.create(
+                    symbol=symbol,
+                    expiration_date=expiration_date,
+                    dte=snapshot_data["dte"],
+                    option_volume=snapshot_data["option_volume"],
+                    option_iv=snapshot_data["option_iv"],
+                    roi=snapshot_data["roi"],
+                    option_data=snapshot_data["option_data"],
+                    put_data=snapshot_data["put_data"],
+                    call_data=snapshot_data["call_data"],
+                )
+                changed = True
+                continue
+
+            changed_fields: list[str] = []
+            for field in (
+                "dte",
+                "option_volume",
+                "option_iv",
+                "roi",
+                "option_data",
+                "put_data",
+                "call_data",
+            ):
+                value = snapshot_data[field]
+                if getattr(existing, field) != value:
+                    setattr(existing, field, value)
+                    changed_fields.append(field)
+
+            if changed_fields:
+                existing.save(update_fields=[*changed_fields, "updated_at"])
+                changed = True
+
+        stale_dates = [exp_date for exp_date in existing_by_date if exp_date not in seen_dates]
+        if stale_dates:
+            SymbolExpirationSnapshot.objects.filter(
+                symbol=symbol,
+                expiration_date__in=stale_dates,
+            ).delete()
+            changed = True
+
+        return changed
+
+    @staticmethod
+    def _annotate_contract(
+        option: dict[str, Any],
+        *,
+        expiration_date: date,
+        dte: int,
+    ) -> dict[str, Any]:
+        annotated = dict(option)
+        annotated["expiration"] = expiration_date.isoformat()
+        annotated["expiration_date"] = expiration_date.isoformat()
+        annotated["dte"] = dte
+        return annotated
 
     def _write_status(
         self,
@@ -1342,7 +1559,7 @@ class Command(BaseCommand):
         option_volume: int | None,
         option_iv: Decimal | None,
         option_data: dict[str, Any] | None,
-        call_data: dict[str, Any] | None,
+        call_data: Any | None,
         roi: Decimal | None,
     ) -> bool:
         changed_fields: list[str] = []

@@ -140,6 +140,38 @@ class Symbol(models.Model):
         return self.ticker
 
 
+class SymbolExpirationSnapshot(models.Model):
+    """Stores per-expiration option snapshots for a symbol."""
+
+    symbol = models.ForeignKey(
+        Symbol,
+        related_name="expiration_snapshots",
+        on_delete=models.CASCADE,
+    )
+    expiration_date = models.DateField(db_index=True)
+    dte = models.PositiveIntegerField()
+    option_volume = models.BigIntegerField(null=True, blank=True)
+    option_iv = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
+    roi = models.DecimalField(max_digits=7, decimal_places=4, null=True, blank=True)
+    option_data = models.JSONField(null=True, blank=True)
+    put_data = models.JSONField(null=True, blank=True)
+    call_data = models.JSONField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["symbol__ticker", "expiration_date"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["symbol", "expiration_date"],
+                name="unique_symbol_expiration_snapshot",
+            )
+        ]
+
+    def __str__(self) -> str:  # pragma: no cover - simple data representation
+        return f"{self.symbol.ticker} {self.expiration_date:%Y-%m-%d}"
+
+
 class DailyBrief(models.Model):
     """Stores the ranked daily brief picks generated from Symbol snapshots."""
 

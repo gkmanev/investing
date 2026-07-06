@@ -30,7 +30,15 @@ from api.management.commands.trading_view_scrape import (
     TradingViewOptions,
 )
 
-from .models import CboeSecurity, DueDiligenceReport, Investment, ScreenerFilter, ScreenerType, Symbol
+from .models import (
+    CboeSecurity,
+    DueDiligenceReport,
+    Investment,
+    ScreenerFilter,
+    ScreenerType,
+    Symbol,
+    SymbolExpirationSnapshot,
+)
 from .serializers import SymbolSerializer
 
 
@@ -2837,6 +2845,113 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.assertEqual(self.symbol.option_data["contract_volume"], 454)
         self.price_client.get_price_and_volume.assert_called_once_with("AAPL")
 
+    def test_process_symbol_persists_all_expiration_snapshots_in_window(self) -> None:
+        near_expiration = self._expiration_int(days=4)
+        far_expiration = self._expiration_int(days=18)
+        near_date = datetime.strptime(str(near_expiration), "%Y%m%d").date()
+        far_date = datetime.strptime(str(far_expiration), "%Y%m%d").date()
+        self.price_client.get_rsi.return_value = "55.75"
+        client = MagicMock()
+        client.get_expirations.return_value = [far_expiration, near_expiration]
+        client.get_expiration_volume_data.side_effect = [
+            {
+                "total_volume": 410,
+                "strike_volumes": {
+                    "95": {
+                        "call_volume": 60,
+                        "put_volume": 140,
+                        "total_volume": 200,
+                    }
+                },
+            },
+            {
+                "total_volume": 980,
+                "strike_volumes": {
+                    "95": {
+                        "call_volume": 180,
+                        "put_volume": 500,
+                        "total_volume": 680,
+                    }
+                },
+            },
+        ]
+        client.get_chain.side_effect = [
+            [
+                self._option_row(
+                    strike="95",
+                    bid="1.00",
+                    ask="1.20",
+                    delta="-0.28",
+                    option_symbol="AAPL_WEEKLY",
+                ),
+                self._option_row(
+                    strike="110",
+                    bid="0.80",
+                    ask="1.00",
+                    delta="0.25",
+                    option_symbol="AAPL_WEEKLY_CALL",
+                    option_type="call",
+                ),
+            ],
+            [
+                self._option_row(
+                    strike="95",
+                    bid="3.40",
+                    ask="3.60",
+                    delta="-0.34",
+                    option_symbol="AAPL_MONTHLY",
+                ),
+                self._option_row(
+                    strike="112",
+                    bid="1.10",
+                    ask="1.30",
+                    delta="0.33",
+                    option_symbol="AAPL_MONTHLY_CALL",
+                    option_type="call",
+                ),
+            ],
+        ]
+
+        changed, was_cleared = self.command._process_symbol(
+            client=client,
+            price_client=self.price_client,
+            symbol=self.symbol,
+            exchange="NASDAQ",
+            min_dte=0,
+            max_dte=50,
+            delta_min=Decimal("-0.37"),
+            delta_max=Decimal("-0.24"),
+            roi_threshold=Decimal("1"),
+            fetch_rsi=True,
+        )
+
+        self.assertTrue(changed)
+        self.assertFalse(was_cleared)
+
+        self.symbol.refresh_from_db()
+        self.assertEqual(self.symbol.option_exp, far_date)
+        self.assertEqual(self.symbol.option_data["option_symbol"], "AAPL_MONTHLY")
+        self.assertEqual(self.symbol.call_data[0]["option_symbol"], "AAPL_MONTHLY_CALL")
+
+        snapshots = list(
+            SymbolExpirationSnapshot.objects.filter(symbol=self.symbol).order_by(
+                "expiration_date"
+            )
+        )
+        self.assertEqual([snapshot.expiration_date for snapshot in snapshots], [near_date, far_date])
+        self.assertEqual(
+            snapshots[0].put_data["puts"][0]["option_symbol"],
+            "AAPL_WEEKLY",
+        )
+        self.assertEqual(
+            snapshots[0].put_data["puts"][0]["expiration"],
+            near_date.isoformat(),
+        )
+        self.assertEqual(
+            snapshots[1].call_data["calls"][0]["option_symbol"],
+            "AAPL_MONTHLY_CALL",
+        )
+
     def test_symbol_serializer_returns_raw_option_and_call_data(self) -> None:
         self.symbol.option_volume = 321
         self.symbol.option_iv = Decimal("18.7500")
@@ -2912,6 +3027,74 @@ class TradingViewScrapeCommandTests(APITestCase):
         self.assertEqual(data["call_data"][0]["iv"], 17.25)
         self.assertEqual(data["call_data"][0]["mid"], 1.2)
         self.assertEqual(data["call_data"][0]["delta"], 0.42)
+
+
+class ExpirationSnapshotScreeningTests(APITestCase):
+    def test_scan_put_opportunities_reads_expiration_snapshots(self) -> None:
+        symbol = Symbol.objects.create(
+            ticker="AAPL",
+            exchange="NASDAQ",
+            score=82,
+            price=Decimal("100.00"),
+            rsi=Decimal("48.00"),
+            technical_score=Symbol.TechnicalScore.BUY,
+        )
+        expiration = date.today() + timedelta(days=4)
+        SymbolExpirationSnapshot.objects.create(
+            symbol=symbol,
+            expiration_date=expiration,
+            dte=4,
+            option_volume=500,
+            option_iv=Decimal("22.5000"),
+            roi=Decimal("1.16"),
+            option_data={
+                "option_symbol": "AAPL_WEEKLY",
+                "option_type": "put",
+                "strike": 95.0,
+                "strike_price": 95.0,
+                "bid": 1.0,
+                "ask": 1.2,
+                "mid": 1.1,
+                "delta": -0.25,
+                "iv": 22.5,
+                "volume": 120,
+                "open_interest": 200,
+                "expiration": expiration.isoformat(),
+                "expiration_date": expiration.isoformat(),
+                "dte": 4,
+                "roi": 1.16,
+            },
+            put_data={
+                "puts": [
+                    {
+                        "option_symbol": "AAPL_WEEKLY",
+                        "option_type": "put",
+                        "strike": 95.0,
+                        "strike_price": 95.0,
+                        "bid": 1.0,
+                        "ask": 1.2,
+                        "mid": 1.1,
+                        "delta": -0.25,
+                        "iv": 22.5,
+                        "volume": 120,
+                        "open_interest": 200,
+                        "expiration": expiration.isoformat(),
+                        "expiration_date": expiration.isoformat(),
+                        "dte": 4,
+                        "roi": 1.16,
+                    }
+                ]
+            },
+        )
+
+        payload = json.loads(
+            agent_views._handle_scan_put_opportunities({"limit": 5, "max_dte": 7})
+        )
+
+        self.assertEqual(payload["results_returned"], 1)
+        self.assertEqual(payload["opportunities"][0]["ticker"], "AAPL")
+        self.assertEqual(payload["opportunities"][0]["expiration"], expiration.isoformat())
+        self.assertEqual(payload["opportunities"][0]["dte"], 4)
 
 
 class AIAgentsPotentialCommandTestCase(APITestCase):
