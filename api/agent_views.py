@@ -1188,11 +1188,57 @@ def _extract_rsi_filters_from_query(query: str) -> dict[str, float]:
     return {}
 
 
+def _parse_money_amount(raw_value):
+    if raw_value is None:
+        return None
+    try:
+        return float(str(raw_value).replace(",", "").strip())
+    except Exception:
+        return None
+
+
+def _extract_cash_budget_from_query(query: str) -> dict[str, float]:
+    if not query:
+        return {}
+
+    normalized_query = " ".join(str(query).split())
+    amount_pattern = r"\$?\s*(?P<amount>\d[\d,]*(?:\.\d+)?)\s*\$?"
+
+    max_cash_patterns = [
+        rf"\b(?:max(?:imum)?\s+)?(?:csp\s+)?collateral\b[^.\n]*?{amount_pattern}\b",
+        rf"\bmax(?:imum)?\s+(?:cash\s+required|cash-secured put budget|put budget|per-position budget|position size)\b[^.\n]*?{amount_pattern}\b",
+        rf"\b{amount_pattern}\b[^.\n]*?\b(?:max(?:imum)?\s+)?(?:csp\s+)?collateral\b",
+    ]
+    for pattern in max_cash_patterns:
+        match = re.search(pattern, normalized_query, re.IGNORECASE)
+        if not match:
+            continue
+        amount = _parse_money_amount(match.group("amount"))
+        if amount is not None and amount > 0:
+            return {"max_cash_required": amount}
+
+    account_size_patterns = [
+        rf"\b(?:i\s+have|have|with|using)\b[^.\n]*?{amount_pattern}[^.\n]*?\b(?:to\s+deploy|available\s+cash|cash|buying\s+power|account\s+size|capital|budget)\b",
+        rf"\b(?:available\s+cash|cash\s+to\s+deploy|buying\s+power|account\s+size|cash\s+budget|capital\s+to\s+deploy)\b[^.\n]*?{amount_pattern}\b",
+        rf"\b{amount_pattern}\b[^.\n]*?\b(?:to\s+deploy|available\s+cash|buying\s+power|account\s+size|cash\s+budget|capital)\b",
+    ]
+    for pattern in account_size_patterns:
+        match = re.search(pattern, normalized_query, re.IGNORECASE)
+        if not match:
+            continue
+        amount = _parse_money_amount(match.group("amount"))
+        if amount is not None and amount > 0:
+            return {"account_size": amount}
+
+    return {}
+
+
 def _build_structured_query_context(query: str) -> str:
     positions = _extract_owned_positions_from_query(query)
     price_filters = _extract_underlying_price_filters_from_query(query)
     rsi_filters = _extract_rsi_filters_from_query(query)
-    if not positions and not price_filters and not rsi_filters:
+    cash_budget = _extract_cash_budget_from_query(query)
+    if not positions and not price_filters and not rsi_filters and not cash_budget:
         return ""
 
     lines = []
@@ -1243,6 +1289,22 @@ def _build_structured_query_context(query: str) -> str:
             )
         lines.append(
             "Important: for market-wide stock or option scans, apply these RSI filters as hard tool arguments."
+        )
+
+    if cash_budget:
+        if lines:
+            lines.append("")
+        lines.append("Structured budget extracted from the user's message:")
+        if cash_budget.get("account_size") is not None:
+            lines.append(
+                f"- account_size={cash_budget['account_size']} (total cash available to deploy)"
+            )
+        if cash_budget.get("max_cash_required") is not None:
+            lines.append(
+                f"- max_cash_required={cash_budget['max_cash_required']} (maximum collateral per position)"
+            )
+        lines.append(
+            "Important: treat these cash constraints as hard tool arguments for income plans, CSP scans, and put comparisons."
         )
 
     return "\n".join(lines)
@@ -1322,6 +1384,9 @@ def _is_supported_putpulse_query(query: str) -> bool:
         return True
 
     if _extract_owned_positions_from_query(query):
+        return True
+
+    if _extract_cash_budget_from_query(query):
         return True
 
     if _extract_underlying_price_filters_from_query(query) or _extract_rsi_filters_from_query(query):
@@ -7114,10 +7179,34 @@ def _augment_tool_args_from_query(
     user_query: str,
     history: list[dict[str, Any]] | None = None,
 ) -> dict:
-    if tool_name != "scan_put_opportunities":
-        return tool_args
-
     merged_args = dict(tool_args or {})
+
+    if tool_name in {
+        "analyze_stock",
+        "get_put_wheel_opportunity",
+        "build_monthly_income_plan",
+        "scan_put_opportunities",
+        "compare_put_candidates",
+    }:
+        merged_args.update(_extract_cash_budget_from_query(user_query))
+
+    if tool_name == "build_monthly_income_plan":
+        extracted_positions = _extract_owned_positions_from_query(user_query)
+        if extracted_positions and "positions" not in merged_args:
+            normalized_positions = []
+            for position in extracted_positions:
+                normalized_position = {
+                    "symbol": position["symbol"],
+                    "shares_owned": position.get("shares_owned") or 100,
+                }
+                if position.get("cost_basis") is not None:
+                    normalized_position["cost_basis"] = position["cost_basis"]
+                normalized_positions.append(normalized_position)
+            merged_args["positions"] = normalized_positions
+
+    if tool_name != "scan_put_opportunities":
+        return merged_args
+
     if _is_show_more_follow_up(user_query):
         scan_state = _extract_history_tool_state(history).get("scan_put_opportunities")
         if isinstance(scan_state, dict):
