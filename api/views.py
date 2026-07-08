@@ -10,12 +10,12 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 
+from .entitlements import has_full_access
 from .models import (
     CboeSecurity,
     DueDiligenceReport,
     FinancialStatement,
     Investment,
-    PremiumSubscription,
     ScreenerFilter,
     ScreenerType,
     Symbol,
@@ -36,14 +36,7 @@ SYMBOL_FILTER_PARAMS = {
 
 
 def _user_is_premium(user) -> bool:
-    if not hasattr(user, "is_authenticated") or not user.is_authenticated:
-        return False
-    if user.is_staff:
-        return True
-    try:
-        return user.premium_subscription.is_active
-    except PremiumSubscription.DoesNotExist:
-        return False
+    return has_full_access(user)
 from .serializers import (
     DueDiligenceReportSerializer,
     FinancialStatementSerializer,
@@ -228,7 +221,7 @@ class InvestmentViewSet(FilterMixin, viewsets.ModelViewSet):
         return super().list(request, *args, **kwargs)
 
     def get_queryset(self):  # type: ignore[override]
-        queryset = super().get_queryset().prefetch_related("expiration_snapshots")
+        queryset = super().get_queryset()
         params = self.request.query_params
 
         category = params.get("category")

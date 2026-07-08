@@ -80,6 +80,7 @@ def run_agent_run(agent_run_id: int) -> None:
             agent_run.query,
             agent_run.history_json,
             agent_run_id=agent_run_id,
+            user=agent_run.user,
         )
     except Exception as exc:
         agent_run.status = AgentRun.Status.FAILED

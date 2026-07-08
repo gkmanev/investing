@@ -25,6 +25,7 @@ from .daily_brief_services import (
     activate_pending_subscription_after_verification,
     subscribe_user,
 )
+from .entitlements import serialize_plan_context
 from .models import EmailVerificationToken, PremiumSubscription
 from .subscription_views import PremiumSubscriptionSerializer
 
@@ -40,12 +41,18 @@ def _premium_data(user) -> dict | None:
         return None
 
 
+def _plan_data(user) -> dict:
+    return serialize_plan_context(user)
+
+
 def _build_auth_payload(user) -> tuple[dict, str]:
     refresh = RefreshToken.for_user(user)
+    plan_data = _plan_data(user)
     return {
         "access": str(refresh.access_token),
         "user": UserSerializer(user).data,
         "premium_subscription": _premium_data(user),
+        **plan_data,
     }, str(refresh)
 
 
@@ -143,7 +150,8 @@ class VerifyEmailView(APIView):
 
         user = token_obj.user
         user.is_active = True
-        user.save(update_fields=["is_active"])
+        user.date_joined = timezone.now()
+        user.save(update_fields=["is_active", "date_joined"])
         activate_pending_subscription_after_verification(user)
         EmailVerificationToken.objects.filter(user=user).delete()
 
@@ -225,6 +233,13 @@ class RefreshView(APIView):
 
         premium = None
         serialized_user = None
+        plan_data = {
+            "plan": "free",
+            "trial_days_left": None,
+            "has_full_access": False,
+            "entitlements": {},
+            "trial_expired": False,
+        }
         try:
             token = RefreshToken(refresh_token)
             user_id = token.payload.get("user_id")
@@ -233,6 +248,7 @@ class RefreshView(APIView):
                 if user is not None:
                     premium = _premium_data(user)
                     serialized_user = UserSerializer(user).data
+                    plan_data = _plan_data(user)
         except Exception:
             pass
 
@@ -247,6 +263,7 @@ class RefreshView(APIView):
                 "access": serializer.validated_data["access"],
                 "user": serialized_user,
                 "premium_subscription": premium,
+                **plan_data,
             },
             status=status.HTTP_200_OK,
         )
@@ -278,10 +295,12 @@ class MeView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        plan_data = _plan_data(request.user)
         return Response(
             {
                 **UserSerializer(request.user).data,
                 "premium_subscription": _premium_data(request.user),
+                **plan_data,
             },
             status=status.HTTP_200_OK,
         )

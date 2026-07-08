@@ -7,13 +7,28 @@ from api.agent_views import (
     _augment_tool_args_from_query,
     _extract_cash_budget_from_query,
     _extract_owned_positions_from_query,
+    handle_tool_call,
     run_agent,
 )
+from api.entitlements import get_plan_context
 from api.models import AgentRun
 from api.tasks import run_agent_run
 
 
 class RunAgentTests(TestCase):
+    def create_user(self, **overrides):
+        defaults = {
+            "username": "runner-user",
+            "password": "test-pass-123",
+            "email": "runner@example.com",
+        }
+        defaults.update(overrides)
+        password = defaults.pop("password")
+        user = get_user_model().objects.create_user(**defaults)
+        user.set_password(password)
+        user.save(update_fields=["password"])
+        return user
+
     def test_extract_owned_positions_from_query_parses_cost_basis_and_shared_shares(self) -> None:
         positions = _extract_owned_positions_from_query(
             "I own B at 42$, PLTR at 70, 100 shares each"
@@ -239,6 +254,63 @@ class RunAgentTests(TestCase):
 
     @override_settings(
         AGENT_MODEL_PROVIDER="openai",
+        AGENT_MODEL="",
+        OPENAI_API_KEY="test-openai-key",
+    )
+    @patch("api.agent_views.OpenAI")
+    def test_run_agent_uses_free_model_and_trims_history_for_free_users(
+        self,
+        mock_openai: MagicMock,
+    ) -> None:
+        user = self.create_user(username="free-user")
+
+        message = MagicMock()
+        message.tool_calls = None
+        message.content = "Free answer"
+
+        response_payload = MagicMock()
+        response_payload.choices = [MagicMock(message=message)]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = response_payload
+        mock_openai.return_value = mock_client
+
+        history = [
+            {"role": "assistant", "content": f"Earlier {index}"}
+            for index in range(12)
+        ]
+        result = run_agent("Analyze AAPL", history, user=user)
+
+        self.assertEqual(result["answer"], "Free answer")
+        create_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        self.assertEqual(create_kwargs["model"], "gpt-4.1-mini")
+        self.assertEqual(len(create_kwargs["messages"]), 10)
+        self.assertEqual(create_kwargs["messages"][1]["content"], "Earlier 4")
+        self.assertEqual(create_kwargs["messages"][-2]["content"], "Earlier 11")
+
+    def test_handle_tool_call_blocks_analyze_stock_after_free_daily_limit(self) -> None:
+        user = self.create_user(username="free-analyze")
+
+        AgentRun.objects.create(
+            user=user,
+            query="Analyze MSFT",
+            history_json=[],
+            used_tools_json=[
+                {"name": "analyze_stock", "arguments": {"symbol": "MSFT"}, "iteration": 1}
+            ],
+        )
+
+        payload = handle_tool_call(
+            "analyze_stock",
+            {"symbol": "AAPL"},
+            user=user,
+            plan_context=get_plan_context(user),
+        )
+
+        self.assertIn("daily_analyze_stock_limit_reached", payload)
+
+    @override_settings(
+        AGENT_MODEL_PROVIDER="openai",
         AGENT_MODEL="gpt-4o-mini",
         OPENAI_API_KEY="test-openai-key",
     )
@@ -437,7 +509,12 @@ class RunAgentTests(TestCase):
             [{"name": "analyze_stock", "arguments": {"symbol": "AAPL"}, "iteration": 1}],
         )
         self.assertEqual(mock_client.messages.create.call_count, 2)
-        mock_handle_tool_call.assert_called_once_with("analyze_stock", {"symbol": "AAPL"})
+        self.assertEqual(
+            mock_handle_tool_call.call_args.args,
+            ("analyze_stock", {"symbol": "AAPL"}),
+        )
+        self.assertEqual(mock_handle_tool_call.call_args.kwargs["user"], None)
+        self.assertEqual(mock_handle_tool_call.call_args.kwargs["plan_context"]["plan"], "pro")
 
         second_call_messages = mock_client.messages.create.call_args_list[1].kwargs["messages"]
         self.assertEqual(second_call_messages[-1]["role"], "user")
@@ -488,7 +565,12 @@ class RunAgentTests(TestCase):
             [{"name": "analyze_stock", "arguments": {"symbol": "AAPL"}, "iteration": 1}],
         )
         self.assertEqual(mock_client.chat.completions.create.call_count, 2)
-        mock_handle_tool_call.assert_called_once_with("analyze_stock", {"symbol": "AAPL"})
+        self.assertEqual(
+            mock_handle_tool_call.call_args.args,
+            ("analyze_stock", {"symbol": "AAPL"}),
+        )
+        self.assertEqual(mock_handle_tool_call.call_args.kwargs["user"], None)
+        self.assertEqual(mock_handle_tool_call.call_args.kwargs["plan_context"]["plan"], "pro")
 
     @override_settings(
         AGENT_MODEL_PROVIDER="openai",
@@ -527,12 +609,15 @@ class RunAgentTests(TestCase):
         result = run_agent("Provide the companies below 150$", [])
 
         self.assertEqual(result["answer"], "Filtered answer")
-        mock_handle_tool_call.assert_called_once_with(
-            "scan_put_opportunities",
-            {
-                "limit": 5,
-                "max_price": 150.0,
-            },
+        self.assertEqual(
+            mock_handle_tool_call.call_args.args,
+            (
+                "scan_put_opportunities",
+                {
+                    "limit": 5,
+                    "max_price": 150.0,
+                },
+            ),
         )
 
     @override_settings(
@@ -572,12 +657,15 @@ class RunAgentTests(TestCase):
         result = run_agent("Provide put candidates on oversold companies", [])
 
         self.assertEqual(result["answer"], "Filtered answer")
-        mock_handle_tool_call.assert_called_once_with(
-            "scan_put_opportunities",
-            {
-                "limit": 5,
-                "max_rsi": 30.0,
-            },
+        self.assertEqual(
+            mock_handle_tool_call.call_args.args,
+            (
+                "scan_put_opportunities",
+                {
+                    "limit": 5,
+                    "max_rsi": 30.0,
+                },
+            ),
         )
 
     @override_settings(
@@ -641,13 +729,16 @@ class RunAgentTests(TestCase):
         )
 
         self.assertEqual(result["answer"], "More results")
-        mock_handle_tool_call.assert_called_once_with(
-            "scan_put_opportunities",
-            {
-                "limit": 10,
-                "max_price": 200.0,
-                "offset": 10,
-            },
+        self.assertEqual(
+            mock_handle_tool_call.call_args.args,
+            (
+                "scan_put_opportunities",
+                {
+                    "limit": 10,
+                    "max_price": 200.0,
+                    "offset": 10,
+                },
+            ),
         )
 
     @override_settings(
@@ -739,6 +830,12 @@ class AgentRunTaskTests(TestCase):
         )
         self.assertIsNotNone(agent_run.started_at)
         self.assertIsNotNone(agent_run.finished_at)
+        mock_run_agent.assert_called_once_with(
+            agent_run.query,
+            agent_run.history_json,
+            agent_run_id=agent_run.id,
+            user=agent_run.user,
+        )
 
     @patch("api.agent_views.run_agent", side_effect=RuntimeError("boom"))
     def test_run_agent_run_marks_failed_and_stores_error(

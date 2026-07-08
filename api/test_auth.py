@@ -155,7 +155,9 @@ class AuthAPITestCase(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["email"], user.email)
-        self.assertFalse(response.data["has_full_access"])
+        self.assertTrue(response.data["has_full_access"])
+        self.assertEqual(response.data["plan"], "free")
+        self.assertIsNone(response.data["trial_days_left"])
         self.assertIn("premium_subscription", response.data)
         self.assertIsNone(response.data["premium_subscription"])
 
@@ -191,13 +193,29 @@ class AuthAPITestCase(APITestCase):
         self.assertIn("access", response.data)
         self.assertIn("user", response.data)
         self.assertEqual(response.data["user"]["username"], user.username)
-        self.assertFalse(response.data["user"]["has_full_access"])
+        self.assertTrue(response.data["user"]["has_full_access"])
+        self.assertEqual(response.data["plan"], "free")
+        self.assertEqual(response.data["user"]["plan"], "free")
         self.assertIn("premium_subscription", response.data)
         self.assertIn(settings.AUTH_REFRESH_COOKIE_NAME, response.cookies)
         self.assertNotEqual(
             response.cookies[settings.AUTH_REFRESH_COOKIE_NAME].value,
             old_refresh,
         )
+
+    def test_authenticated_free_user_can_use_filtered_symbol_endpoint(self) -> None:
+        user, password = self.create_user()
+        login_response = self.client.post(
+            self.login_url,
+            {"identifier": user.username, "password": password},
+            format="json",
+        )
+        access_token = login_response.data["access"]
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {access_token}")
+
+        response = self.client.get(reverse("symbol-list"), {"min_price": "10"})
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
 
     def test_logout_blacklists_refresh_cookie(self) -> None:
         user, password = self.create_user()

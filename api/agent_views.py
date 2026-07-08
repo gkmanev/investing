@@ -5,7 +5,7 @@ import re
 import time
 import urllib.request
 import urllib.error
-from datetime import date, datetime
+from datetime import date, datetime, time as dt_time, timedelta
 from decimal import Decimal
 from itertools import combinations
 from typing import Any, Dict, List
@@ -13,11 +13,13 @@ from typing import Any, Dict, List
 from anthropic import Anthropic
 from django.conf import settings
 from django.db.models import Q
+from django.utils import timezone
 from openai import OpenAI
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from api.entitlements import get_plan_context, get_plan_entitlements, serialize_plan_context
 from api.helper import FinancialMetricsCalculator
 from api.models import AgentRun, Symbol, SymbolExpirationSnapshot
 
@@ -32,6 +34,140 @@ SOCIAL_CONFIRMATION_MESSAGE = "Understood."
 QUERY_TOO_LONG_MESSAGE = (
     "Your message is too long. Please shorten it and focus on one investing question about stocks, options, or fundamentals."
 )
+
+
+def _default_internal_plan_context() -> dict[str, Any]:
+    return {
+        "plan": "pro",
+        "trial_days_left": None,
+        "entitlements": dict(get_plan_entitlements()["pro"]),
+        "has_full_access": True,
+        "trial_expired": False,
+        "subscription_active": True,
+    }
+
+
+def _resolve_runtime_plan_context(
+    *,
+    user=None,
+    plan_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if plan_context:
+        resolved = dict(plan_context)
+        entitlements = resolved.get("entitlements") or {}
+        if entitlements:
+            resolved["entitlements"] = dict(entitlements)
+            return resolved
+
+    if user is not None and getattr(user, "is_authenticated", False):
+        return get_plan_context(user)
+
+    return _default_internal_plan_context()
+
+
+def _local_day_bounds() -> tuple[datetime, datetime]:
+    today = timezone.localdate()
+    start = timezone.make_aware(datetime.combine(today, dt_time.min))
+    end = start + timedelta(days=1)
+    return start, end
+
+
+def _count_daily_agent_queries(user) -> int:
+    if user is None or not getattr(user, "is_authenticated", False):
+        return 0
+    start, end = _local_day_bounds()
+    return AgentRun.objects.filter(
+        user=user,
+        created_at__gte=start,
+        created_at__lt=end,
+    ).count()
+
+
+def _count_daily_analyze_stock_calls(user) -> int:
+    if user is None or not getattr(user, "is_authenticated", False):
+        return 0
+
+    start, end = _local_day_bounds()
+    count = 0
+    for used_tools in AgentRun.objects.filter(
+        user=user,
+        created_at__gte=start,
+        created_at__lt=end,
+    ).values_list("used_tools_json", flat=True):
+        if not isinstance(used_tools, list):
+            continue
+        count += sum(
+            1
+            for entry in used_tools
+            if isinstance(entry, dict) and entry.get("name") == "analyze_stock"
+        )
+    return count
+
+
+def _persist_used_tools(agent_run_id: int | None, used_tools: list[dict[str, Any]]) -> None:
+    if agent_run_id is None:
+        return
+    AgentRun.objects.filter(pk=agent_run_id).update(
+        used_tools_json=json.loads(json.dumps(used_tools, default=_json_default)),
+        updated_at=timezone.now(),
+    )
+
+
+def _trim_history_for_plan(
+    conversation_history: list[dict[str, Any]],
+    plan_context: dict[str, Any],
+) -> list[dict[str, Any]]:
+    max_history_items = (plan_context.get("entitlements") or {}).get("max_history_items")
+    if max_history_items is None:
+        return conversation_history
+    return conversation_history[-max(0, int(max_history_items)) :]
+
+
+def _clamp_scan_limit(requested_limit: int, plan_context: dict[str, Any]) -> int:
+    max_scan_limit = (plan_context.get("entitlements") or {}).get("max_scan_limit")
+    limit = max(1, int(requested_limit or 1))
+    if max_scan_limit is None:
+        return limit
+    return min(limit, max(1, int(max_scan_limit)))
+
+
+def _scan_pagination_error(
+    *,
+    plan_context: dict[str, Any],
+    requested_limit: int | None = None,
+    requested_offset: int | None = None,
+) -> str:
+    max_scan_limit = (plan_context.get("entitlements") or {}).get("max_scan_limit")
+    max_extra_pages = (plan_context.get("entitlements") or {}).get("max_extra_pages")
+    return json.dumps(
+        {
+            "error": "Additional scan pages are not available on the current plan.",
+            "error_code": "scan_pagination_locked",
+            "plan": plan_context.get("plan"),
+            "trial_days_left": plan_context.get("trial_days_left"),
+            "upgrade_available": True,
+            "max_scan_limit": max_scan_limit,
+            "max_extra_pages": max_extra_pages,
+            "requested_limit": requested_limit,
+            "requested_offset": requested_offset,
+        },
+        default=_json_default,
+    )
+
+
+def _scan_limit_applied_payload(
+    *,
+    plan_context: dict[str, Any],
+    requested_limit: int,
+    applied_limit: int,
+) -> dict[str, Any]:
+    return {
+        "plan": plan_context.get("plan"),
+        "trial_days_left": plan_context.get("trial_days_left"),
+        "requested_limit": requested_limit,
+        "applied_limit": applied_limit,
+        "upgrade_available": plan_context.get("plan") == "free",
+    }
 
 
 SYSTEM_PROMPT = """
@@ -5901,9 +6037,22 @@ def _handle_spread_opportunity(args: dict) -> str:
     return json.dumps(base_payload, default=_json_default)
 
 
-def _handle_scan_put_opportunities(args: dict) -> str:
-    limit = int(args.get("limit") or 10)
+def _handle_scan_put_opportunities(
+    args: dict,
+    *,
+    plan_context: dict[str, Any] | None = None,
+) -> str:
+    runtime_plan = _resolve_runtime_plan_context(plan_context=plan_context)
+    requested_limit = int(args.get("limit") or 10)
+    limit = _clamp_scan_limit(requested_limit, runtime_plan)
     offset = int(args.get("offset") or 0)
+    max_extra_pages = (runtime_plan.get("entitlements") or {}).get("max_extra_pages")
+    if max_extra_pages is not None and offset > 0:
+        return _scan_pagination_error(
+            plan_context=runtime_plan,
+            requested_limit=requested_limit,
+            requested_offset=offset,
+        )
     min_score = float(args.get("min_score") or 50)
     min_roi = _to_float(args.get("min_roi"))
     max_dte = _to_int(args.get("max_dte"))
@@ -6027,9 +6176,12 @@ def _handle_scan_put_opportunities(args: dict) -> str:
 
     return json.dumps({
         "scan_date": today.isoformat(),
+        "plan": runtime_plan.get("plan"),
+        "trial_days_left": runtime_plan.get("trial_days_left"),
         "total_results_available": len(results),
         "offset": offset,
         "limit": limit,
+        "requested_limit": requested_limit,
         "next_offset": offset + len(page) if (offset + len(page)) < len(results) else None,
         "results_returned": len(page),
         "filters_applied": {
@@ -6044,16 +6196,27 @@ def _handle_scan_put_opportunities(args: dict) -> str:
             "account_size": account_size,
             "max_cash_required": max_cash_required,
             "effective_max_cash_required": effective_cash_budget,
+            "limit_applied": _scan_limit_applied_payload(
+                plan_context=runtime_plan,
+                requested_limit=requested_limit,
+                applied_limit=limit,
+            ),
         },
         "opportunities": page,
     }, default=_json_default)
 
 
-def _handle_scan_spread_opportunities(args: dict) -> str:
+def _handle_scan_spread_opportunities(
+    args: dict,
+    *,
+    plan_context: dict[str, Any] | None = None,
+) -> str:
     spread_type = _normalize_spread_type(args.get("spread_type"))
     directional_view = _normalize_directional_view(args.get("directional_view"))
     risk_profile = _normalize_risk_profile(args.get("risk_profile"))
-    limit = int(args.get("limit") or 10)
+    runtime_plan = _resolve_runtime_plan_context(plan_context=plan_context)
+    requested_limit = int(args.get("limit") or 10)
+    limit = _clamp_scan_limit(requested_limit, runtime_plan)
     max_dte = _to_int(args.get("max_dte"))
     min_return_on_risk_pct = _to_float(args.get("min_return_on_risk_pct"))
     min_probability_of_profit = _to_float(args.get("min_probability_of_profit"))
@@ -6180,6 +6343,8 @@ def _handle_scan_spread_opportunities(args: dict) -> str:
 
     return json.dumps({
         "scan_date": today.isoformat(),
+        "plan": runtime_plan.get("plan"),
+        "trial_days_left": runtime_plan.get("trial_days_left"),
         "total_symbols_scanned": symbols.count(),
         "results_returned": len(top),
         "spread_type_requested": spread_type,
@@ -6190,6 +6355,7 @@ def _handle_scan_spread_opportunities(args: dict) -> str:
             "directional_view": directional_view,
             "risk_profile": risk_profile,
             "limit": limit,
+            "requested_limit": requested_limit,
             "max_dte": max_dte,
             "min_return_on_risk_pct": min_return_on_risk_pct,
             "min_probability_of_profit": min_probability_of_profit,
@@ -6197,13 +6363,24 @@ def _handle_scan_spread_opportunities(args: dict) -> str:
             "min_quality_score": min_quality_score,
             "max_short_delta": max_short_delta,
             "exclude_earnings": exclude_earnings,
+            "limit_applied": _scan_limit_applied_payload(
+                plan_context=runtime_plan,
+                requested_limit=requested_limit,
+                applied_limit=limit,
+            ),
         },
         "opportunities": top,
     }, default=_json_default)
 
 
-def _handle_scan_covered_call_opportunities(args: dict) -> str:
-    limit = int(args.get("limit") or 10)
+def _handle_scan_covered_call_opportunities(
+    args: dict,
+    *,
+    plan_context: dict[str, Any] | None = None,
+) -> str:
+    runtime_plan = _resolve_runtime_plan_context(plan_context=plan_context)
+    requested_limit = int(args.get("limit") or 10)
+    limit = _clamp_scan_limit(requested_limit, runtime_plan)
     min_roi = _to_float(args.get("min_roi"))
     max_delta = _to_float(args.get("max_delta"))
     max_dte = _to_int(args.get("max_dte"))
@@ -6277,21 +6454,35 @@ def _handle_scan_covered_call_opportunities(args: dict) -> str:
 
     return json.dumps({
         "scan_date": today.isoformat(),
+        "plan": runtime_plan.get("plan"),
+        "trial_days_left": runtime_plan.get("trial_days_left"),
         "total_symbols_scanned": symbols.count(),
         "results_returned": len(top),
         "filters_applied": {
+            "limit": limit,
+            "requested_limit": requested_limit,
             "min_roi": min_roi,
             "max_delta": max_delta,
             "max_dte": max_dte,
             "style": "balanced",
             "covered_call_strategy": "balanced_income",
             "shares_assumed": 100,
+            "limit_applied": _scan_limit_applied_payload(
+                plan_context=runtime_plan,
+                requested_limit=requested_limit,
+                applied_limit=limit,
+            ),
         },
         "opportunities": top,
     }, default=_json_default)
 
 
-def _handle_build_monthly_income_plan(args: dict) -> str:
+def _handle_build_monthly_income_plan(
+    args: dict,
+    *,
+    plan_context: dict[str, Any] | None = None,
+) -> str:
+    runtime_plan = _resolve_runtime_plan_context(plan_context=plan_context)
     monthly_income_target = _to_float(args.get("monthly_income_target"))
     account_size = _to_float(args.get("account_size"))
     max_cash_required = _to_float(args.get("max_cash_required"))
@@ -6453,7 +6644,9 @@ def _handle_build_monthly_income_plan(args: dict) -> str:
         if max_put_dte is not None:
             put_scan_args["max_dte"] = max_put_dte
 
-        put_payload = json.loads(_handle_scan_put_opportunities(put_scan_args))
+        put_payload = json.loads(
+            _handle_scan_put_opportunities(put_scan_args, plan_context=runtime_plan)
+        )
         if put_payload.get("error"):
             put_plan_warning = put_payload["error"]
         else:
@@ -6550,6 +6743,8 @@ def _handle_build_monthly_income_plan(args: dict) -> str:
     else:
         return json.dumps(
             {
+                "plan": runtime_plan.get("plan"),
+                "trial_days_left": runtime_plan.get("trial_days_left"),
                 "error": "No valid monthly income plan candidates found.",
                 "skipped_positions": skipped_positions,
                 "filters_applied": {
@@ -6573,6 +6768,8 @@ def _handle_build_monthly_income_plan(args: dict) -> str:
 
     return json.dumps(
         {
+            "plan": runtime_plan.get("plan"),
+            "trial_days_left": runtime_plan.get("trial_days_left"),
             "plan_type": plan_type,
             "monthly_income_target": monthly_income_target,
             "owned_positions_provided": bool(raw_positions),
@@ -7067,8 +7264,34 @@ def _handle_compare_covered_call_candidates(args: dict) -> str:
     }, default=_json_default)
 
 
-def handle_tool_call(tool_name: str, tool_args: dict) -> str:
+def handle_tool_call(
+    tool_name: str,
+    tool_args: dict,
+    *,
+    user=None,
+    plan_context: dict[str, Any] | None = None,
+) -> str:
+    runtime_plan = _resolve_runtime_plan_context(user=user, plan_context=plan_context)
     if tool_name == "analyze_stock":
+        daily_limit = (runtime_plan.get("entitlements") or {}).get("daily_analyze_stock")
+        if daily_limit is not None and user is not None:
+            used_today = _count_daily_analyze_stock_calls(user)
+            if used_today >= daily_limit:
+                return json.dumps(
+                    {
+                        "error": (
+                            "daily_analyze_stock_limit_reached: "
+                            f"{runtime_plan.get('plan')} plan allows {daily_limit} "
+                            "analyze_stock call(s) per day."
+                        ),
+                        "error_code": "daily_analyze_stock_limit_reached",
+                        "plan": runtime_plan.get("plan"),
+                        "trial_days_left": runtime_plan.get("trial_days_left"),
+                        "limit": daily_limit,
+                        "used_today": used_today,
+                        "upgrade_available": runtime_plan.get("plan") == "free",
+                    }
+                )
         symbol = tool_args["symbol"]
         try:
             raw_data = FMPClient().fetch_financial_data(symbol)
@@ -7104,19 +7327,19 @@ def handle_tool_call(tool_name: str, tool_args: dict) -> str:
         return _handle_covered_call_opportunity(tool_args)
 
     if tool_name == "build_monthly_income_plan":
-        return _handle_build_monthly_income_plan(tool_args)
+        return _handle_build_monthly_income_plan(tool_args, plan_context=runtime_plan)
 
     if tool_name == "get_spread_opportunity":
         return _handle_spread_opportunity(tool_args)
 
     if tool_name == "scan_put_opportunities":
-        return _handle_scan_put_opportunities(tool_args)
+        return _handle_scan_put_opportunities(tool_args, plan_context=runtime_plan)
 
     if tool_name == "scan_spread_opportunities":
-        return _handle_scan_spread_opportunities(tool_args)
+        return _handle_scan_spread_opportunities(tool_args, plan_context=runtime_plan)
 
     if tool_name == "scan_covered_call_opportunities":
-        return _handle_scan_covered_call_opportunities(tool_args)
+        return _handle_scan_covered_call_opportunities(tool_args, plan_context=runtime_plan)
 
     if tool_name == "compare_spread_candidates":
         return _handle_compare_spread_candidates(tool_args)
@@ -7185,8 +7408,7 @@ def _augment_tool_args_from_query(
     return merged_args
 
 
-def _get_agent_provider() -> str:
-    provider = str(getattr(settings, "AGENT_MODEL_PROVIDER", "anthropic")).strip().lower()
+def _validate_provider(provider: str) -> str:
     if provider not in {"anthropic", "openai", "gemini"}:
         raise ValueError(
             "AGENT_MODEL_PROVIDER must be one of 'anthropic', 'openai', or 'gemini'"
@@ -7194,15 +7416,50 @@ def _get_agent_provider() -> str:
     return provider
 
 
-def _get_agent_model(provider: str) -> str:
+def _get_agent_provider(plan: str) -> str:
+    global_provider = str(getattr(settings, "AGENT_MODEL_PROVIDER", "anthropic")).strip().lower()
+
+    if plan == "free":
+        configured_provider = str(
+            getattr(settings, "AGENT_MODEL_PROVIDER_FREE", "")
+        ).strip().lower()
+        if configured_provider:
+            return _validate_provider(configured_provider)
+        return _validate_provider(global_provider)
+
+    if plan == "pro":
+        configured_provider = str(
+            getattr(settings, "AGENT_MODEL_PROVIDER_PRO", "")
+        ).strip().lower()
+        if configured_provider:
+            return _validate_provider(configured_provider)
+        return _validate_provider(global_provider)
+
+    return _validate_provider(global_provider)
+
+
+def _get_agent_model(provider: str, plan: str) -> str:
     configured_model = str(getattr(settings, "AGENT_MODEL", "")).strip()
     if configured_model:
         return configured_model
+    if plan == "free":
+        configured_free_model = str(getattr(settings, "AGENT_MODEL_FREE", "")).strip()
+        if configured_free_model:
+            return configured_free_model
+        if provider == "anthropic":
+            return "claude-3-5-haiku-latest"
+        if provider == "gemini":
+            return "gemini-2.5-flash"
+        return "gpt-4.1-mini"
+
+    configured_pro_model = str(getattr(settings, "AGENT_MODEL_PRO", "")).strip()
+    if configured_pro_model:
+        return configured_pro_model
     if provider == "anthropic":
         return "claude-sonnet-4-5"
     if provider == "gemini":
         return "gemini-2.5-flash"
-    return "gpt-4.1-mini"
+    return "gpt-4.1"
 
 
 def _serialize_tool_trace_entry(tool_name: str, tool_args: dict[str, Any], iteration: int) -> dict[str, Any]:
@@ -7237,6 +7494,8 @@ def run_agent(
     history: list[dict[str, Any]] | None = None,
     *,
     agent_run_id: int | None = None,
+    user=None,
+    plan_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_query = (query or "").strip()
     if not normalized_query:
@@ -7246,7 +7505,11 @@ def run_agent(
         raise ValueError("history must be a list")
 
     raw_history = history or []
-    conversation_history = _history_without_meta(raw_history)
+    runtime_plan = _resolve_runtime_plan_context(user=user, plan_context=plan_context)
+    conversation_history = _trim_history_for_plan(
+        _history_without_meta(raw_history),
+        runtime_plan,
+    )
     history_tool_state = _extract_history_tool_state(raw_history)
 
     fast_path_response = _get_fast_path_response(normalized_query)
@@ -7269,8 +7532,8 @@ def run_agent(
         }
 
     prepared_query = _prepare_agent_query(normalized_query, history=raw_history)
-    provider = _get_agent_provider()
-    model_name = _get_agent_model(provider)
+    provider = _get_agent_provider(runtime_plan["plan"])
+    model_name = _get_agent_model(provider, runtime_plan["plan"])
     max_iterations = max(1, int(getattr(settings, "AGENT_MAX_ITERATIONS", 10)))
     llm_timeout_seconds = max(
         1, int(getattr(settings, "AGENT_OPENAI_TIMEOUT_SECONDS", 45))
@@ -7438,7 +7701,13 @@ def run_agent(
                 used_tools.append(
                     _serialize_tool_trace_entry(tool_use.name, tool_input, iteration)
                 )
-                result = handle_tool_call(tool_use.name, tool_input)
+                _persist_used_tools(agent_run_id, used_tools)
+                result = handle_tool_call(
+                    tool_use.name,
+                    tool_input,
+                    user=user,
+                    plan_context=runtime_plan,
+                )
                 tool_state = _update_history_tool_state(
                     tool_state,
                     tool_name=tool_use.name,
@@ -7527,9 +7796,12 @@ def run_agent(
                         iteration,
                     )
                 )
+                _persist_used_tools(agent_run_id, used_tools)
                 result = handle_tool_call(
                     tool_call.function.name,
                     tool_args,
+                    user=user,
+                    plan_context=runtime_plan,
                 )
                 tool_state = _update_history_tool_state(
                     tool_state,
@@ -7561,6 +7833,7 @@ def run_agent(
 
 def serialize_agent_run(agent_run: AgentRun) -> dict[str, Any]:
     used_tools = agent_run.used_tools_json or []
+    plan_data = serialize_plan_context(agent_run.user)
     return {
         "job_id": agent_run.id,
         "status": agent_run.status,
@@ -7571,6 +7844,8 @@ def serialize_agent_run(agent_run: AgentRun) -> dict[str, Any]:
         "created_at": agent_run.created_at.isoformat() if agent_run.created_at else None,
         "started_at": agent_run.started_at.isoformat() if agent_run.started_at else None,
         "finished_at": agent_run.finished_at.isoformat() if agent_run.finished_at else None,
+        "plan": plan_data["plan"],
+        "trial_days_left": plan_data["trial_days_left"],
     }
 
 
@@ -7586,6 +7861,24 @@ class AgentView(APIView):
         history = request.data.get("history", [])
         if history is not None and not isinstance(history, list):
             return Response({"error": "history must be a list"}, status=400)
+
+        plan_context = get_plan_context(request.user)
+        daily_query_limit = (plan_context.get("entitlements") or {}).get("daily_queries")
+        if daily_query_limit is not None:
+            used_today = _count_daily_agent_queries(request.user)
+            if used_today >= daily_query_limit:
+                return Response(
+                    {
+                        "error": "daily_limit_reached",
+                        "plan": plan_context["plan"],
+                        "trial_days_left": plan_context["trial_days_left"],
+                        "limit": daily_query_limit,
+                        "used_today": used_today,
+                        "trial_expired": plan_context["trial_expired"],
+                        "upgrade_available": True,
+                    },
+                    status=429,
+                )
 
         agent_run = AgentRun.objects.create(
             user=request.user,

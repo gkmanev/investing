@@ -1,9 +1,9 @@
 from django.contrib.auth import authenticate, get_user_model
 from django.contrib.auth.password_validation import validate_password
-from django.core.exceptions import ObjectDoesNotExist
 from django.db.models import Q
 from rest_framework import serializers
 
+from .entitlements import serialize_plan_context
 from .models import EmailVerificationToken
 
 
@@ -12,6 +12,8 @@ User = get_user_model()
 
 class UserSerializer(serializers.ModelSerializer):
     has_full_access = serializers.SerializerMethodField()
+    plan = serializers.SerializerMethodField()
+    trial_days_left = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -24,16 +26,19 @@ class UserSerializer(serializers.ModelSerializer):
             "is_staff",
             "is_superuser",
             "has_full_access",
+            "plan",
+            "trial_days_left",
         ]
         read_only_fields = fields
 
     def get_has_full_access(self, obj) -> bool:
-        if getattr(obj, "is_staff", False):
-            return True
-        try:
-            return bool(obj.premium_subscription.is_active)
-        except ObjectDoesNotExist:
-            return False
+        return bool(serialize_plan_context(obj)["has_full_access"])
+
+    def get_plan(self, obj) -> str:
+        return str(serialize_plan_context(obj)["plan"])
+
+    def get_trial_days_left(self, obj) -> int | None:
+        return serialize_plan_context(obj)["trial_days_left"]
 
 
 class RegisterSerializer(serializers.ModelSerializer):

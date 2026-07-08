@@ -42,6 +42,8 @@ class AgentApiTests(APITestCase):
         self.assertEqual(agent_run.status, AgentRun.Status.PENDING)
         self.assertEqual(response.data["used_tools"], [])
         self.assertIsNone(response.data["used_tool"])
+        self.assertEqual(response.data["plan"], "free")
+        self.assertIsNone(response.data["trial_days_left"])
         mock_delay.assert_called_once_with(agent_run.id)
 
     def test_post_agent_rejects_non_list_history(self) -> None:
@@ -53,6 +55,31 @@ class AgentApiTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(response.data["error"], "history must be a list")
+
+    @patch("api.tasks.run_agent_run.delay")
+    def test_post_agent_enforces_free_daily_query_limit(
+        self,
+        mock_delay: MagicMock,
+    ) -> None:
+        for index in range(3):
+            AgentRun.objects.create(
+                user=self.user,
+                query=f"Earlier query {index}",
+                history_json=[],
+            )
+
+        response = self.client.post(
+            reverse("agent"),
+            {"query": "Hello again", "history": []},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+        self.assertEqual(response.data["error"], "daily_limit_reached")
+        self.assertEqual(response.data["plan"], "free")
+        self.assertEqual(response.data["limit"], 3)
+        self.assertFalse(response.data["trial_expired"])
+        mock_delay.assert_not_called()
 
     def test_get_agent_detail_returns_own_run(self) -> None:
         agent_run = AgentRun.objects.create(
@@ -81,6 +108,8 @@ class AgentApiTests(APITestCase):
             response.data["used_tool"],
             {"name": "analyze_stock", "arguments": {"symbol": "AAPL"}, "iteration": 1},
         )
+        self.assertEqual(response.data["plan"], "free")
+        self.assertIsNone(response.data["trial_days_left"])
 
     def test_get_agent_detail_hides_other_users_runs(self) -> None:
         agent_run = AgentRun.objects.create(
