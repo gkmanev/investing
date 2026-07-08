@@ -24,13 +24,25 @@ from api.models import AgentRun, Symbol, SymbolExpirationSnapshot
 
 logger = logging.getLogger(__name__)
 
-OUT_OF_SCOPE_MESSAGE = (
-    "PutPulse is specialized in options, stocks fundamentals and related questions."
+SOCIAL_GREETING_MESSAGE = (
+    "Hi. Ask about stocks, fundamentals, options, covered calls, cash-secured puts, wheels, or spreads."
+)
+SOCIAL_ACKNOWLEDGEMENT_MESSAGE = "You're welcome."
+SOCIAL_CONFIRMATION_MESSAGE = "Understood."
+QUERY_TOO_LONG_MESSAGE = (
+    "Your message is too long. Please shorten it and focus on one investing question about stocks, options, or fundamentals."
 )
 
 
 SYSTEM_PROMPT = """
 You are a long-term equity analyst and options trading assistant.
+
+Scope handling:
+- PutPulse specializes in stocks, stock fundamentals, options, wheel/CSP, covered calls, spreads, screening, and related portfolio income questions.
+- If the user's request is clearly unrelated to those areas, briefly explain that PutPulse specializes in those topics and cannot help with the unrelated request.
+- If the user's request is ambiguous, terse, or depends on prior conversation context, first interpret it in the most reasonable in-scope way instead of refusing.
+- Do not over-refuse borderline requests that can reasonably be understood as stock, fundamentals, options, screening, or portfolio-income questions.
+- If only part of the request is in scope, help with the in-scope part and briefly decline the rest.
 
 Always format your responses using Markdown. Use **bold** for emphasis, `## headers` to separate sections, bullet lists for flags/signals, and tables for ranked comparisons or multi-ticker data. Never return plain prose where a table or list would be clearer.
 
@@ -1000,6 +1012,22 @@ def _json_default(value):
     return str(value)
 
 
+def _truncate_text_for_log(value: Any, max_chars: int = 500) -> str:
+    text = "" if value is None else str(value)
+    if len(text) <= max_chars:
+        return text
+    return f"{text[:max_chars]}..."
+
+
+def _log_agent_response(run_id: int | None, query: str, answer: str) -> None:
+    logger.info(
+        "Agent response run_id=%s query=%r answer=%r",
+        run_id,
+        _truncate_text_for_log(query),
+        _truncate_text_for_log(answer),
+    )
+
+
 def _to_float(value):
     try:
         if value is None or value == "":
@@ -1203,6 +1231,10 @@ def _extract_cash_budget_from_query(query: str) -> dict[str, float]:
 
     normalized_query = " ".join(str(query).split())
     amount_pattern = r"\$?\s*(?P<amount>\d[\d,]*(?:\.\d+)?)\s*\$?"
+    account_budget_terms = (
+        r"available\s+cash|cash\s+to\s+deploy|buying\s+power|account\s+size|"
+        r"cash\s+budget|capital\s+to\s+deploy|capital|cash\s+account|cash\s+acct|cash\s+balance"
+    )
 
     max_cash_patterns = [
         rf"\b(?:max(?:imum)?\s+)?(?:csp\s+)?collateral\b[^.\n]*?{amount_pattern}\b",
@@ -1218,9 +1250,9 @@ def _extract_cash_budget_from_query(query: str) -> dict[str, float]:
             return {"max_cash_required": amount}
 
     account_size_patterns = [
-        rf"\b(?:i\s+have|have|with|using)\b[^.\n]*?{amount_pattern}[^.\n]*?\b(?:to\s+deploy|available\s+cash|cash|buying\s+power|account\s+size|capital|budget)\b",
-        rf"\b(?:available\s+cash|cash\s+to\s+deploy|buying\s+power|account\s+size|cash\s+budget|capital\s+to\s+deploy)\b[^.\n]*?{amount_pattern}\b",
-        rf"\b{amount_pattern}\b[^.\n]*?\b(?:to\s+deploy|available\s+cash|buying\s+power|account\s+size|cash\s+budget|capital)\b",
+        rf"\b(?:i\s+have|have|with|using|for\s+my|in\s+my|my)\b[^.\n]*?{amount_pattern}[^.\n]*?\b(?:cash|budget|{account_budget_terms})\b",
+        rf"\b(?:{account_budget_terms})\b[^.\n]*?{amount_pattern}\b",
+        rf"\b{amount_pattern}\b[^.\n]*?\b(?:cash|budget|{account_budget_terms})\b",
     ]
     for pattern in account_size_patterns:
         match = re.search(pattern, normalized_query, re.IGNORECASE)
@@ -1360,108 +1392,33 @@ def _is_show_more_follow_up(query: str) -> bool:
     )
 
 
-def _is_simple_social_query(query: str) -> bool:
+def _get_simple_social_response(query: str) -> str | None:
     normalized = " ".join(str(query or "").strip().lower().split())
     if not normalized:
-        return False
-    return bool(
-        re.fullmatch(
-            r"(hi|hello|hey|yo|thanks|thank you|ok|okay|cool|great|nice|got it|understood)[!.?]*",
-            normalized,
-        )
-    )
+        return None
+
+    if re.fullmatch(r"(hi|hello|hey|yo)[!.?]*", normalized):
+        return SOCIAL_GREETING_MESSAGE
+
+    if re.fullmatch(r"(thanks|thank you)[!.?]*", normalized):
+        return SOCIAL_ACKNOWLEDGEMENT_MESSAGE
+
+    if re.fullmatch(r"(ok|okay|cool|great|nice|got it|understood)[!.?]*", normalized):
+        return SOCIAL_CONFIRMATION_MESSAGE
+
+    return None
 
 
-def _is_supported_putpulse_query(query: str) -> bool:
-    normalized_query = " ".join(str(query or "").strip().lower().split())
-    if not normalized_query:
-        return True
+def _is_simple_social_query(query: str) -> bool:
+    return _get_simple_social_response(query) is not None
 
-    if _is_simple_social_query(normalized_query):
-        return True
 
-    if _is_show_more_follow_up(normalized_query):
-        return True
+def _get_fast_path_response(query: str) -> str | None:
+    max_query_chars = max(1, int(getattr(settings, "AGENT_MAX_QUERY_CHARS", 12000)))
+    if len(query) > max_query_chars:
+        return QUERY_TOO_LONG_MESSAGE
 
-    if _extract_owned_positions_from_query(query):
-        return True
-
-    if _extract_cash_budget_from_query(query):
-        return True
-
-    if _extract_underlying_price_filters_from_query(query) or _extract_rsi_filters_from_query(query):
-        return True
-
-    supported_patterns = [
-        r"\boptions?\b",
-        r"\bputs?\b",
-        r"\bcalls?\b",
-        r"\bcsp\b",
-        r"\bcash[- ]secured puts?\b",
-        r"\bwheel\b",
-        r"\bcovered calls?\b",
-        r"\bspreads?\b",
-        r"\bcredit spreads?\b",
-        r"\bdebit spreads?\b",
-        r"\bverticals?\b",
-        r"\bbull put\b",
-        r"\bbear call\b",
-        r"\bbull call\b",
-        r"\bbear put\b",
-        r"\biron condors?\b",
-        r"\biron butterflies?\b",
-        r"\bstrike\b",
-        r"\bexpiration\b",
-        r"\bexpiry\b",
-        r"\bdte\b",
-        r"\bdelta\b",
-        r"\biv\b",
-        r"\bimplied volatility\b",
-        r"\bpremium\b",
-        r"\bassignment\b",
-        r"\bcall-away\b",
-        r"\bbreakeven\b",
-        r"\broi\b",
-        r"\bgreeks?\b",
-        r"\btheta\b",
-        r"\bvega\b",
-        r"\bgamma\b",
-        r"\brsi\b",
-        r"\boverbought\b",
-        r"\boversold\b",
-        r"\bstock(s)?\b",
-        r"\bticker(s)?\b",
-        r"\bsymbol(s)?\b",
-        r"\bcompan(y|ies)\b",
-        r"\bfundamental(s)?\b",
-        r"\bfinancial(s| health)?\b",
-        r"\bbalance sheet\b",
-        r"\bcash flow\b",
-        r"\bmargins?\b",
-        r"\broic\b",
-        r"\bfcf\b",
-        r"\bmoat\b",
-        r"\bearnings\b",
-        r"\bex-dividend\b",
-        r"\bquality\b",
-        r"\bportfolio income\b",
-        r"\bmonthly income\b",
-        r"\bscreener\b",
-        r"\bscan\b",
-        r"\bcompare\b.*\b[A-Z]{1,5}\b",
-        r"\banaly[sz]e\b.*\b[A-Z]{1,5}\b",
-        r"\brank\b.*\b[A-Z]{1,5}\b",
-        r"\bevaluate\b.*\b[A-Z]{1,5}\b",
-        r"\bcheck\b.*\b[A-Z]{1,5}\b",
-    ]
-    if any(re.search(pattern, query, re.IGNORECASE) for pattern in supported_patterns):
-        return True
-
-    stripped_query = str(query or "").strip()
-    if re.fullmatch(r"[A-Z]{1,5}", stripped_query):
-        return True
-
-    return False
+    return _get_simple_social_response(query)
 
 
 def _build_pagination_follow_up_context(
@@ -7292,14 +7249,20 @@ def run_agent(
     conversation_history = _history_without_meta(raw_history)
     history_tool_state = _extract_history_tool_state(raw_history)
 
-    if not _is_supported_putpulse_query(normalized_query):
-        answer = OUT_OF_SCOPE_MESSAGE
+    fast_path_response = _get_fast_path_response(normalized_query)
+    if fast_path_response is not None:
+        logger.info(
+            "Agent fast-path response run_id=%s reason=%s",
+            agent_run_id,
+            "social" if _is_simple_social_query(normalized_query) else "query_too_long",
+        )
+        _log_agent_response(agent_run_id, normalized_query, fast_path_response)
         return {
-            "answer": answer,
+            "answer": fast_path_response,
             "history": _build_agent_history(
                 conversation_history,
                 user_query=normalized_query,
-                answer=answer,
+                answer=fast_path_response,
                 tool_state=history_tool_state,
             ),
             "used_tools": [],
@@ -7431,6 +7394,7 @@ def run_agent(
                     iteration,
                     time.monotonic() - started_at,
                 )
+                _log_agent_response(agent_run_id, normalized_query, answer)
                 return {
                     "answer": answer,
                     "history": _build_agent_history(
@@ -7521,18 +7485,20 @@ def run_agent(
             )
 
             if not tool_calls:
+                answer = message.content or ""
                 logger.info(
                     "Agent run completed run_id=%s iterations=%s total_elapsed=%.2fs",
                     agent_run_id,
                     iteration,
                     time.monotonic() - started_at,
                 )
+                _log_agent_response(agent_run_id, normalized_query, answer)
                 return {
-                    "answer": message.content,
+                    "answer": answer,
                     "history": _build_agent_history(
                         conversation_history,
                         user_query=normalized_query,
-                        answer=message.content,
+                        answer=answer,
                         tool_state=tool_state,
                     ),
                     "used_tools": used_tools,

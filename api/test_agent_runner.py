@@ -4,8 +4,8 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 
 from api.agent_views import (
-    OUT_OF_SCOPE_MESSAGE,
     _augment_tool_args_from_query,
+    _extract_cash_budget_from_query,
     _extract_owned_positions_from_query,
     run_agent,
 )
@@ -70,6 +70,16 @@ class RunAgentTests(TestCase):
                 "limit": 10,
                 "min_rsi": 75.0,
             },
+        )
+
+    def test_extract_cash_budget_from_query_parses_cash_account_phrase(self) -> None:
+        budget = _extract_cash_budget_from_query(
+            "suggest CSPs for my 20000$ cash account"
+        )
+
+        self.assertEqual(
+            budget,
+            {"account_size": 20000.0},
         )
 
     def test_augment_tool_args_from_query_reuses_previous_scan_pagination_for_show_more(self) -> None:
@@ -139,11 +149,11 @@ class RunAgentTests(TestCase):
         mock_client.chat.completions.create.return_value = response_payload
         mock_openai.return_value = mock_client
 
-        result = run_agent("Hello", [{"role": "assistant", "content": "Earlier"}])
+        result = run_agent("Analyze AAPL", [{"role": "assistant", "content": "Earlier"}])
 
         self.assertEqual(result["answer"], "Test answer")
         self.assertEqual(result["history"][-1]["content"], "Test answer")
-        self.assertEqual(result["history"][-2]["content"], "Hello")
+        self.assertEqual(result["history"][-2]["content"], "Analyze AAPL")
         self.assertEqual(result["used_tools"], [])
         mock_client.chat.completions.create.assert_called_once()
         _, kwargs = mock_openai.call_args
@@ -156,15 +166,74 @@ class RunAgentTests(TestCase):
         OPENAI_API_KEY="test-openai-key",
     )
     @patch("api.agent_views.OpenAI")
-    def test_run_agent_returns_hard_coded_scope_message_for_unsupported_queries(
+    def test_run_agent_sends_off_topic_queries_to_model_with_scope_prompt(
         self,
         mock_openai: MagicMock,
     ) -> None:
+        message = MagicMock()
+        message.tool_calls = None
+        message.content = "PutPulse focuses on stocks and options, not cooking."
+
+        response_payload = MagicMock()
+        response_payload.choices = [MagicMock(message=message)]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = response_payload
+        mock_openai.return_value = mock_client
+
         result = run_agent("What is the best pasta recipe?", [])
 
-        self.assertEqual(result["answer"], OUT_OF_SCOPE_MESSAGE)
-        self.assertEqual(result["history"][-1]["content"], OUT_OF_SCOPE_MESSAGE)
+        self.assertEqual(
+            result["answer"],
+            "PutPulse focuses on stocks and options, not cooking.",
+        )
+        self.assertEqual(
+            result["history"][-1]["content"],
+            "PutPulse focuses on stocks and options, not cooking.",
+        )
         self.assertEqual(result["history"][-2]["content"], "What is the best pasta recipe?")
+        self.assertEqual(result["used_tools"], [])
+        mock_client.chat.completions.create.assert_called_once()
+        call_messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
+        self.assertIn("Scope handling:", call_messages[0]["content"])
+        self.assertIn("clearly unrelated", call_messages[0]["content"])
+
+    @override_settings(
+        AGENT_MODEL_PROVIDER="openai",
+        AGENT_MODEL="gpt-4o-mini",
+        OPENAI_API_KEY="test-openai-key",
+    )
+    @patch("api.agent_views.OpenAI")
+    def test_run_agent_short_circuits_simple_social_queries(
+        self,
+        mock_openai: MagicMock,
+    ) -> None:
+        result = run_agent("Thanks", [])
+
+        self.assertEqual(result["answer"], "You're welcome.")
+        self.assertEqual(result["history"][-1]["content"], "You're welcome.")
+        self.assertEqual(result["history"][-2]["content"], "Thanks")
+        self.assertEqual(result["used_tools"], [])
+        mock_openai.assert_not_called()
+
+    @override_settings(
+        AGENT_MODEL_PROVIDER="openai",
+        AGENT_MODEL="gpt-4o-mini",
+        OPENAI_API_KEY="test-openai-key",
+        AGENT_MAX_QUERY_CHARS=5,
+    )
+    @patch("api.agent_views.OpenAI")
+    def test_run_agent_short_circuits_overly_long_queries(
+        self,
+        mock_openai: MagicMock,
+    ) -> None:
+        result = run_agent("Analyze AAPL", [])
+
+        self.assertEqual(
+            result["answer"],
+            "Your message is too long. Please shorten it and focus on one investing question about stocks, options, or fundamentals.",
+        )
+        self.assertEqual(result["history"][-2]["content"], "Analyze AAPL")
         self.assertEqual(result["used_tools"], [])
         mock_openai.assert_not_called()
 
@@ -230,6 +299,36 @@ class RunAgentTests(TestCase):
         self.assertIn("apply these underlying price filters as hard tool arguments", user_message)
 
     @override_settings(
+        AGENT_MODEL_PROVIDER="openai",
+        AGENT_MODEL="gpt-4o-mini",
+        OPENAI_API_KEY="test-openai-key",
+    )
+    @patch("api.agent_views.OpenAI")
+    def test_run_agent_accepts_plural_csps_with_cash_account_budget(
+        self,
+        mock_openai: MagicMock,
+    ) -> None:
+        message = MagicMock()
+        message.tool_calls = None
+        message.content = "Test answer"
+
+        response_payload = MagicMock()
+        response_payload.choices = [MagicMock(message=message)]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = response_payload
+        mock_openai.return_value = mock_client
+
+        query = "suggest CSPs for my 20000$ cash account"
+        result = run_agent(query, [])
+
+        self.assertEqual(result["answer"], "Test answer")
+        call_messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
+        user_message = call_messages[-1]["content"]
+        self.assertIn("Structured budget extracted from the user's message:", user_message)
+        self.assertIn("account_size=20000.0", user_message)
+
+    @override_settings(
         AGENT_MODEL_PROVIDER="gemini",
         AGENT_MODEL="gemini-2.5-flash",
         GEMINI_API_KEY="test-gemini-key",
@@ -251,7 +350,7 @@ class RunAgentTests(TestCase):
         mock_client.chat.completions.create.return_value = response_payload
         mock_openai.return_value = mock_client
 
-        result = run_agent("Hello", [{"role": "assistant", "content": "Earlier"}])
+        result = run_agent("Analyze AAPL", [{"role": "assistant", "content": "Earlier"}])
 
         self.assertEqual(result["answer"], "Gemini answer")
         self.assertEqual(result["history"][-1]["content"], "Gemini answer")
@@ -287,11 +386,11 @@ class RunAgentTests(TestCase):
         mock_client.messages.create.return_value = response_payload
         mock_anthropic.return_value = mock_client
 
-        result = run_agent("Hello", [{"role": "assistant", "content": "Earlier"}])
+        result = run_agent("Analyze AAPL", [{"role": "assistant", "content": "Earlier"}])
 
         self.assertEqual(result["answer"], "Anthropic answer")
         self.assertEqual(result["history"][-1]["content"], "Anthropic answer")
-        self.assertEqual(result["history"][-2]["content"], "Hello")
+        self.assertEqual(result["history"][-2]["content"], "Analyze AAPL")
         self.assertEqual(result["used_tools"], [])
         mock_client.messages.create.assert_called_once()
         _, kwargs = mock_anthropic.call_args
@@ -596,7 +695,7 @@ class RunAgentTests(TestCase):
         mock_monotonic: MagicMock,
     ) -> None:
         with self.assertRaises(RuntimeError) as exc:
-            run_agent("Hello", [])
+            run_agent("Analyze AAPL", [])
 
         self.assertIn("overall timeout (7s)", str(exc.exception))
         mock_openai.return_value.chat.completions.create.assert_not_called()
