@@ -34,6 +34,7 @@ sh ./scripts/wait-for-db.sh
 case "${SERVICE_ROLE}" in
   web)
     python manage.py migrate --noinput
+    python manage.py collectstatic --noinput
     python manage.py sync_daily_brief_schedule
     python manage.py sync_trading_jobs_schedule
     exec gunicorn investing_project.wsgi:application --bind "0.0.0.0:${PORT:-8080}" --access-logfile - --error-logfile -

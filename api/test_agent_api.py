@@ -40,6 +40,11 @@ class AgentApiTests(APITestCase):
             [{"role": "assistant", "content": "Earlier"}],
         )
         self.assertEqual(agent_run.status, AgentRun.Status.PENDING)
+        self.assertEqual(response.data["query"], "Hello")
+        self.assertEqual(
+            response.data["history"],
+            [{"role": "assistant", "content": "Earlier"}],
+        )
         self.assertEqual(response.data["used_tools"], [])
         self.assertIsNone(response.data["used_tool"])
         self.assertEqual(response.data["plan"], "free")
@@ -61,7 +66,7 @@ class AgentApiTests(APITestCase):
         self,
         mock_delay: MagicMock,
     ) -> None:
-        for index in range(3):
+        for index in range(10):
             AgentRun.objects.create(
                 user=self.user,
                 query=f"Earlier query {index}",
@@ -77,7 +82,7 @@ class AgentApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
         self.assertEqual(response.data["error"], "daily_limit_reached")
         self.assertEqual(response.data["plan"], "free")
-        self.assertEqual(response.data["limit"], 3)
+        self.assertEqual(response.data["limit"], 10)
         self.assertFalse(response.data["trial_expired"])
         mock_delay.assert_not_called()
 
@@ -97,6 +102,8 @@ class AgentApiTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["job_id"], agent_run.id)
+        self.assertEqual(response.data["query"], "Hello")
+        self.assertEqual(response.data["history"], [])
         self.assertEqual(response.data["status"], AgentRun.Status.COMPLETED)
         self.assertEqual(response.data["answer"], "Finished answer")
         self.assertEqual(response.data["error"], "")
@@ -121,3 +128,39 @@ class AgentApiTests(APITestCase):
         response = self.client.get(reverse("agent-detail", args=[agent_run.id]))
 
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_get_agent_list_returns_own_prompt_history(self) -> None:
+        older = AgentRun.objects.create(
+            user=self.user,
+            query="Older prompt",
+            history_json=[],
+            status=AgentRun.Status.PENDING,
+        )
+        newest = AgentRun.objects.create(
+            user=self.user,
+            query="Newest prompt",
+            history_json=[{"role": "assistant", "content": "Prior"}],
+            status=AgentRun.Status.COMPLETED,
+        )
+        AgentRun.objects.create(
+            user=self.other_user,
+            query="Other user prompt",
+            history_json=[],
+        )
+
+        response = self.client.get(reverse("agent"), {"limit": 10})
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 2)
+        self.assertEqual(
+            [item["job_id"] for item in response.data["results"]],
+            [newest.id, older.id],
+        )
+        self.assertEqual(
+            [item["query"] for item in response.data["results"]],
+            ["Newest prompt", "Older prompt"],
+        )
+        self.assertEqual(
+            response.data["results"][0]["history"],
+            [{"role": "assistant", "content": "Prior"}],
+        )

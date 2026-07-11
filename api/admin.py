@@ -16,6 +16,7 @@ class AgentRunAdmin(admin.ModelAdmin):
     list_display = (
         "id",
         "user",
+        "query_preview",
         "status",
         "started_at",
         "finished_at",
@@ -35,6 +36,13 @@ class AgentRunAdmin(admin.ModelAdmin):
         "created_at",
         "updated_at",
     )
+
+    @admin.display(description="Query")
+    def query_preview(self, obj: AgentRun) -> str:
+        query = (obj.query or "").strip()
+        if len(query) <= 80:
+            return query
+        return f"{query[:77]}..."
 
 
 @admin.register(Investment)

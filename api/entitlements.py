@@ -8,8 +8,8 @@ from .models import PremiumSubscription
 
 DEFAULT_PLAN_ENTITLEMENTS = {
     "free": {
-        "daily_queries": 3,
-        "max_scan_limit": 3,
+        "daily_queries": 10,
+        "max_scan_limit": 5,
         "max_extra_pages": 0,
         "daily_analyze_stock": 1,
         "max_history_items": 8,

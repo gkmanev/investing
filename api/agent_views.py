@@ -7836,6 +7836,8 @@ def serialize_agent_run(agent_run: AgentRun) -> dict[str, Any]:
     plan_data = serialize_plan_context(agent_run.user)
     return {
         "job_id": agent_run.id,
+        "query": agent_run.query,
+        "history": agent_run.history_json or [],
         "status": agent_run.status,
         "answer": agent_run.result_text,
         "error": agent_run.error_text,
@@ -7895,7 +7897,15 @@ class AgentView(APIView):
 
     def get(self, request, job_id: int | None = None):
         if job_id is None:
-            return Response({"error": "job_id is required"}, status=400)
+            requested_limit = _to_int(request.query_params.get("limit")) or 20
+            limit = max(1, min(requested_limit, 100))
+            runs = AgentRun.objects.filter(user=request.user).order_by("-created_at", "-id")[:limit]
+            return Response(
+                {
+                    "results": [serialize_agent_run(agent_run) for agent_run in runs],
+                    "count": len(runs),
+                }
+            )
         agent_run = AgentRun.objects.filter(pk=job_id, user=request.user).first()
         if agent_run is None:
             return Response({"error": "Agent run not found"}, status=404)
