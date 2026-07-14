@@ -113,25 +113,29 @@ def get_trial_days_left(user, *, plan: str | None = None) -> int | None:
 
 
 def has_full_access(user, subscription: PremiumSubscription | None = None) -> bool:
-    return bool(user is not None and getattr(user, "is_authenticated", False))
+    return resolve_effective_plan(user, subscription=subscription) == "pro"
 
 
 def get_plan_context(
     user,
     subscription: PremiumSubscription | None = None,
 ) -> dict[str, Any]:
-    plan = resolve_effective_plan(user, subscription=subscription)
+    resolved_subscription = (
+        subscription if subscription is not None else _resolve_subscription(user)
+    )
+    plan = resolve_effective_plan(user, subscription=resolved_subscription)
     entitlements = dict(get_plan_entitlements()[plan])
     trial_days_left = get_trial_days_left(user, plan=plan)
-    authenticated = bool(user is not None and getattr(user, "is_authenticated", False))
 
     return {
         "plan": plan,
         "trial_days_left": trial_days_left,
         "entitlements": entitlements,
-        "has_full_access": authenticated,
+        "has_full_access": has_full_access(user, subscription=resolved_subscription),
         "trial_expired": False,
-        "subscription_active": bool(subscription and subscription.is_active),
+        "subscription_active": bool(
+            resolved_subscription and resolved_subscription.is_active
+        ),
     }
 
 

@@ -2,14 +2,17 @@ import logging
 
 from django.db import transaction
 from django.db.models import Q
-from django.utils import timezone
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.utils import timezone
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_exempt
 from rest_framework import serializers, status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
+from rest_framework_simplejwt.authentication import JWTAuthentication
+from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 from rest_framework_simplejwt.tokens import RefreshToken
 
@@ -79,6 +82,7 @@ def _clear_refresh_cookie(response: Response) -> None:
 
 
 class RegisterView(APIView):
+    authentication_classes = []
     permission_classes = [AllowAny]
 
     def post(self, request):
@@ -124,6 +128,7 @@ class RegisterView(APIView):
 
 
 class LoginView(APIView):
+    authentication_classes = []
     permission_classes = [AllowAny]
 
     def post(self, request):
@@ -137,6 +142,7 @@ class LoginView(APIView):
 
 
 class VerifyEmailView(APIView):
+    authentication_classes = []
     permission_classes = [AllowAny]
 
     def post(self, request):
@@ -168,6 +174,7 @@ class VerifyEmailView(APIView):
 
 
 class ResendVerificationView(APIView):
+    authentication_classes = []
     permission_classes = [AllowAny]
 
     def post(self, request):
@@ -224,6 +231,7 @@ class ResendVerificationView(APIView):
 
 
 class RefreshView(APIView):
+    authentication_classes = []
     permission_classes = [AllowAny]
 
     def post(self, request):
@@ -256,7 +264,10 @@ class RefreshView(APIView):
         try:
             serializer.is_valid(raise_exception=True)
         except TokenError as exc:
-            raise InvalidToken(str(exc)) from exc
+            return Response(
+                {"detail": "Refresh token is invalid or expired."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
 
         response = Response(
             {
@@ -275,6 +286,7 @@ class RefreshView(APIView):
 
 
 class LogoutView(APIView):
+    authentication_classes = []
     permission_classes = [AllowAny]
 
     def post(self, request):
@@ -292,6 +304,7 @@ class LogoutView(APIView):
 
 
 class MeView(APIView):
+    authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -304,3 +317,11 @@ class MeView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+RegisterView = method_decorator(csrf_exempt, name="dispatch")(RegisterView)
+LoginView = method_decorator(csrf_exempt, name="dispatch")(LoginView)
+VerifyEmailView = method_decorator(csrf_exempt, name="dispatch")(VerifyEmailView)
+ResendVerificationView = method_decorator(csrf_exempt, name="dispatch")(ResendVerificationView)
+RefreshView = method_decorator(csrf_exempt, name="dispatch")(RefreshView)
+LogoutView = method_decorator(csrf_exempt, name="dispatch")(LogoutView)

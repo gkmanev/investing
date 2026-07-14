@@ -14,7 +14,7 @@ from rest_framework.test import APIClient, APITestCase
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .auth_email import send_verification_email
-from .models import EmailVerificationToken, Investment
+from .models import EmailVerificationToken, Investment, PremiumSubscription
 
 
 User = get_user_model()
@@ -89,6 +89,28 @@ class AuthAPITestCase(APITestCase):
         self.assertEqual(EmailVerificationToken.objects.filter(user=user).count(), 1)
         self.assertEqual(len(mail.outbox), 1)
 
+    @override_settings(
+        AUTH_ALLOW_PUBLIC_REGISTRATION=True,
+        EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+    )
+    def test_register_ignores_existing_session_without_requiring_csrf(self) -> None:
+        session_user, _ = self.create_user(username="session-user", email="session@example.com")
+        client = APIClient(enforce_csrf_checks=True)
+        client.force_login(session_user)
+
+        response = client.post(
+            self.register_url,
+            {
+                "username": "newuser",
+                "email": "newuser@example.com",
+                "password": "StrongPass123!",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(User.objects.filter(username="newuser").exists())
+
     @override_settings(AUTH_ALLOW_PUBLIC_REGISTRATION=True)
     @patch("api.auth_views.send_verification_email", side_effect=RuntimeError("smtp down"))
     def test_register_returns_503_when_email_delivery_fails(self, _send_email) -> None:
@@ -155,7 +177,7 @@ class AuthAPITestCase(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["email"], user.email)
-        self.assertTrue(response.data["has_full_access"])
+        self.assertFalse(response.data["has_full_access"])
         self.assertEqual(response.data["plan"], "free")
         self.assertIsNone(response.data["trial_days_left"])
         self.assertIn("premium_subscription", response.data)
@@ -193,7 +215,7 @@ class AuthAPITestCase(APITestCase):
         self.assertIn("access", response.data)
         self.assertIn("user", response.data)
         self.assertEqual(response.data["user"]["username"], user.username)
-        self.assertTrue(response.data["user"]["has_full_access"])
+        self.assertFalse(response.data["user"]["has_full_access"])
         self.assertEqual(response.data["plan"], "free")
         self.assertEqual(response.data["user"]["plan"], "free")
         self.assertIn("premium_subscription", response.data)
@@ -203,7 +225,7 @@ class AuthAPITestCase(APITestCase):
             old_refresh,
         )
 
-    def test_authenticated_free_user_can_use_filtered_symbol_endpoint(self) -> None:
+    def test_authenticated_free_user_cannot_use_filtered_symbol_endpoint(self) -> None:
         user, password = self.create_user()
         login_response = self.client.post(
             self.login_url,
@@ -215,7 +237,49 @@ class AuthAPITestCase(APITestCase):
 
         response = self.client.get(reverse("symbol-list"), {"min_price": "10"})
 
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_authenticated_paid_user_can_use_filtered_symbol_endpoint(self) -> None:
+        user, password = self.create_user()
+        PremiumSubscription.objects.create(
+            user=user,
+            stripe_subscription_id="sub_auth_paid_123",
+            stripe_customer_id="cus_auth_paid_123",
+            status=PremiumSubscription.Status.ACTIVE,
+        )
+        login_response = self.client.post(
+            self.login_url,
+            {"identifier": user.username, "password": password},
+            format="json",
+        )
+        access_token = login_response.data["access"]
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {access_token}")
+
+        response = self.client.get(reverse("symbol-list"), {"min_price": "10"})
+
         self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_me_returns_full_access_for_paid_user(self) -> None:
+        user, password = self.create_user()
+        PremiumSubscription.objects.create(
+            user=user,
+            stripe_subscription_id="sub_me_paid_123",
+            stripe_customer_id="cus_me_paid_123",
+            status=PremiumSubscription.Status.ACTIVE,
+        )
+        login_response = self.client.post(
+            self.login_url,
+            {"identifier": user.username, "password": password},
+            format="json",
+        )
+        access_token = login_response.data["access"]
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {access_token}")
+
+        response = self.client.get(self.me_url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["has_full_access"])
+        self.assertEqual(response.data["plan"], "pro")
 
     def test_logout_blacklists_refresh_cookie(self) -> None:
         user, password = self.create_user()
@@ -234,6 +298,28 @@ class AuthAPITestCase(APITestCase):
         another_client.cookies[settings.AUTH_REFRESH_COOKIE_NAME] = refresh_token
         refresh_response = another_client.post(self.refresh_url, format="json")
         self.assertEqual(refresh_response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_verify_email_ignores_existing_session_without_requiring_csrf(self) -> None:
+        session_user, _ = self.create_user(username="session-user", email="session@example.com")
+        user, _ = self.create_user(username="pending-user", email="pending@example.com", is_active=False)
+        token_obj = EmailVerificationToken.objects.create(
+            user=user,
+            expires_at=timezone.now() + timedelta(hours=24),
+        )
+        client = APIClient(enforce_csrf_checks=True)
+        client.force_login(session_user)
+
+        response = client.post(
+            self.verify_email_url,
+            {"token": str(token_obj.token)},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        user.refresh_from_db()
+        self.assertTrue(user.is_active)
+        self.assertIn("access", response.data)
+        self.assertIn(settings.AUTH_REFRESH_COOKIE_NAME, response.cookies)
 
     def test_verify_email_activates_user_and_returns_tokens(self) -> None:
         user, _ = self.create_user(is_active=False)
