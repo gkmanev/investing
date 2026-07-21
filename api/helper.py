@@ -32,26 +32,38 @@ class FinancialMetricsCalculator:
         Args:
             financial_data: Dict with keys 'balance_sheet', 'income_statement', 'cash_flow'
         """
-        self.balance_sheets = sorted(
-            financial_data.get("balance_sheet", []),
-            key=lambda x: x["date"],
-            reverse=True,
-        )[:5]  # Most recent 5 years
+        def statements_by_year(statements: Any) -> Dict[str, Dict[str, Any]]:
+            """Keep the most recent valid annual statement for each fiscal year."""
+            valid = [
+                statement
+                for statement in statements or []
+                if isinstance(statement, dict) and statement.get("date")
+            ]
+            valid.sort(key=lambda statement: str(statement["date"]), reverse=True)
+            by_year: Dict[str, Dict[str, Any]] = {}
+            for statement in valid:
+                by_year.setdefault(str(statement["date"])[:4], statement)
+            return by_year
 
-        self.income_statements = sorted(
-            financial_data.get("income_statement", []),
-            key=lambda x: x["date"],
+        balance_sheets_by_year = statements_by_year(financial_data.get("balance_sheet"))
+        income_statements_by_year = statements_by_year(financial_data.get("income_statement"))
+        cash_flows_by_year = statements_by_year(financial_data.get("cash_flow"))
+        common_years = sorted(
+            set(balance_sheets_by_year)
+            & set(income_statements_by_year)
+            & set(cash_flows_by_year),
             reverse=True,
         )[:5]
 
-        self.cash_flows = sorted(
-            financial_data.get("cash_flow", []),
-            key=lambda x: x["date"],
-            reverse=True,
-        )[:5]
-
-        if not all([self.balance_sheets, self.income_statements, self.cash_flows]):
+        if not common_years:
             raise ValueError("Missing required financial statement data")
+
+        # Every index now represents the same fiscal year across all statements.
+        # This prevents ratios from combining different reporting periods when a
+        # provider has a missing or duplicate annual filing in one endpoint.
+        self.balance_sheets = [balance_sheets_by_year[year] for year in common_years]
+        self.income_statements = [income_statements_by_year[year] for year in common_years]
+        self.cash_flows = [cash_flows_by_year[year] for year in common_years]
 
         self.symbol = self.balance_sheets[0].get("symbol", "UNKNOWN")
         self.analysis_period = f"{self.balance_sheets[-1]['date']} to {self.balance_sheets[0]['date']}"
@@ -95,9 +107,9 @@ class FinancialMetricsCalculator:
 
         # FCF Status
         positive_years = sum(1 for f in fcf_values if f["fcf"] > 0)
-        if positive_years == 5:
+        if positive_years == len(fcf_values):
             fcf_status = "positive"
-        elif positive_years >= 3:
+        elif positive_years / len(fcf_values) >= 0.6:
             fcf_status = "mixed"
         else:
             fcf_status = "negative"
@@ -414,9 +426,9 @@ class FinancialMetricsCalculator:
             1 for income in self.income_statements if (income.get("netIncome", 0) or 0) > 0
         )
 
-        if positive_earnings == 5:
+        if positive_earnings == len(self.income_statements):
             earnings_consistency = "stable"
-        elif positive_earnings >= 3:
+        elif positive_earnings / len(self.income_statements) >= 0.6:
             earnings_consistency = "cyclical_positive"
         else:
             earnings_consistency = "unstable"
