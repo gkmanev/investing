@@ -159,6 +159,10 @@ class RunAgentTests(TestCase):
 
         response_payload = MagicMock()
         response_payload.choices = [MagicMock(message=message)]
+        response_payload.usage = {
+            "prompt_tokens": 120,
+            "completion_tokens": 30,
+        }
 
         mock_client = MagicMock()
         mock_client.chat.completions.create.return_value = response_payload
@@ -170,6 +174,24 @@ class RunAgentTests(TestCase):
         self.assertEqual(result["history"][-1]["content"], "Test answer")
         self.assertEqual(result["history"][-2]["content"], "Analyze AAPL")
         self.assertEqual(result["used_tools"], [])
+        self.assertEqual(
+            result["llm_usage"],
+            [
+                {
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "prompt_key": "agent_chat",
+                    "iteration": 1,
+                    "input_tokens": 120,
+                    "output_tokens": 30,
+                    "cached_input_tokens": 0,
+                    "reasoning_tokens": 0,
+                    "web_search_calls": 0,
+                    "estimated_cost_usd": 0.000036,
+                }
+            ],
+        )
+        self.assertEqual(result["llm_usage_summary"]["estimated_cost_usd"], 3.6e-05)
         mock_client.chat.completions.create.assert_called_once()
         _, kwargs = mock_openai.call_args
         self.assertEqual(kwargs["timeout"], 45)
@@ -191,6 +213,10 @@ class RunAgentTests(TestCase):
 
         response_payload = MagicMock()
         response_payload.choices = [MagicMock(message=message)]
+        response_payload.usage = {
+            "prompt_tokens": 120,
+            "completion_tokens": 30,
+        }
 
         mock_client = MagicMock()
         mock_client.chat.completions.create.return_value = response_payload
@@ -229,6 +255,8 @@ class RunAgentTests(TestCase):
         self.assertEqual(result["history"][-1]["content"], "You're welcome.")
         self.assertEqual(result["history"][-2]["content"], "Thanks")
         self.assertEqual(result["used_tools"], [])
+        self.assertEqual(result["llm_usage"], [])
+        self.assertEqual(result["llm_usage_summary"]["estimated_cost_usd"], 0.0)
         mock_openai.assert_not_called()
 
     @override_settings(
@@ -250,6 +278,8 @@ class RunAgentTests(TestCase):
         )
         self.assertEqual(result["history"][-2]["content"], "Analyze AAPL")
         self.assertEqual(result["used_tools"], [])
+        self.assertEqual(result["llm_usage"], [])
+        self.assertEqual(result["llm_usage_summary"]["estimated_cost_usd"], 0.0)
         mock_openai.assert_not_called()
 
     @override_settings(
@@ -386,6 +416,10 @@ class RunAgentTests(TestCase):
 
         response_payload = MagicMock()
         response_payload.choices = [MagicMock(message=message)]
+        response_payload.usage = {
+            "prompt_tokens": 120,
+            "completion_tokens": 30,
+        }
 
         mock_client = MagicMock()
         mock_client.chat.completions.create.return_value = response_payload
@@ -811,6 +845,21 @@ class AgentRunTaskTests(TestCase):
             "answer": "Stored answer",
             "history": [{"role": "assistant", "content": "Stored answer"}],
             "used_tools": [{"name": "analyze_stock", "arguments": {"symbol": "AAPL"}, "iteration": 1}],
+            "llm_usage": [
+                {
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "prompt_key": "agent_chat",
+                    "iteration": 1,
+                    "input_tokens": 120,
+                    "output_tokens": 30,
+                    "cached_input_tokens": 0,
+                    "reasoning_tokens": 0,
+                    "web_search_calls": 0,
+                    "estimated_cost_usd": 0.000036,
+                }
+            ],
+            "llm_usage_summary": {"estimated_cost_usd": 3.6e-05},
         }
         agent_run = AgentRun.objects.create(
             user=self.user,
@@ -828,6 +877,24 @@ class AgentRunTaskTests(TestCase):
             agent_run.used_tools_json,
             [{"name": "analyze_stock", "arguments": {"symbol": "AAPL"}, "iteration": 1}],
         )
+        self.assertEqual(
+            agent_run.llm_usage_json,
+            [
+                {
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "prompt_key": "agent_chat",
+                    "iteration": 1,
+                    "input_tokens": 120,
+                    "output_tokens": 30,
+                    "cached_input_tokens": 0,
+                    "reasoning_tokens": 0,
+                    "web_search_calls": 0,
+                    "estimated_cost_usd": 0.000036,
+                }
+            ],
+        )
+        self.assertEqual(agent_run.llm_usage_summary_json["estimated_cost_usd"], 3.6e-05)
         self.assertIsNotNone(agent_run.started_at)
         self.assertIsNotNone(agent_run.finished_at)
         mock_run_agent.assert_called_once_with(
@@ -856,5 +923,7 @@ class AgentRunTaskTests(TestCase):
         self.assertEqual(agent_run.error_text, "boom")
         self.assertEqual(agent_run.result_text, "")
         self.assertEqual(agent_run.used_tools_json, [])
+        self.assertEqual(agent_run.llm_usage_json, [])
+        self.assertEqual(agent_run.llm_usage_summary_json, {})
         self.assertIsNotNone(agent_run.started_at)
         self.assertIsNotNone(agent_run.finished_at)

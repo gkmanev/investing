@@ -61,6 +61,8 @@ def run_agent_run(agent_run_id: int) -> None:
     agent_run.error_text = ""
     agent_run.result_text = ""
     agent_run.used_tools_json = []
+    agent_run.llm_usage_json = []
+    agent_run.llm_usage_summary_json = {}
     agent_run.save(
         update_fields=[
             "status",
@@ -69,6 +71,8 @@ def run_agent_run(agent_run_id: int) -> None:
             "error_text",
             "result_text",
             "used_tools_json",
+            "llm_usage_json",
+            "llm_usage_summary_json",
             "updated_at",
         ]
     )
@@ -104,8 +108,18 @@ def run_agent_run(agent_run_id: int) -> None:
     agent_run.status = AgentRun.Status.COMPLETED
     agent_run.result_text = result.get("answer") or ""
     agent_run.used_tools_json = result.get("used_tools") or []
+    agent_run.llm_usage_json = result.get("llm_usage") or []
+    agent_run.llm_usage_summary_json = result.get("llm_usage_summary") or {}
     agent_run.finished_at = timezone.now()
     agent_run.save(
-        update_fields=["status", "result_text", "used_tools_json", "finished_at", "updated_at"]
+        update_fields=[
+            "status",
+            "result_text",
+            "used_tools_json",
+            "llm_usage_json",
+            "llm_usage_summary_json",
+            "finished_at",
+            "updated_at",
+        ]
     )
     logger.info("AgentRun %s completed.", agent_run_id)

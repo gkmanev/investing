@@ -47,6 +47,8 @@ class AgentApiTests(APITestCase):
         )
         self.assertEqual(response.data["used_tools"], [])
         self.assertIsNone(response.data["used_tool"])
+        self.assertEqual(response.data["llm_usage"], [])
+        self.assertEqual(response.data["llm_usage_summary"]["estimated_cost_usd"], 0.0)
         self.assertEqual(response.data["plan"], "free")
         self.assertIsNone(response.data["trial_days_left"])
         mock_delay.assert_called_once_with(agent_run.id)
@@ -96,6 +98,21 @@ class AgentApiTests(APITestCase):
             used_tools_json=[
                 {"name": "analyze_stock", "arguments": {"symbol": "AAPL"}, "iteration": 1},
             ],
+            llm_usage_json=[
+                {
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "prompt_key": "agent_chat",
+                    "iteration": 1,
+                    "input_tokens": 120,
+                    "output_tokens": 30,
+                    "cached_input_tokens": 0,
+                    "reasoning_tokens": 0,
+                    "web_search_calls": 0,
+                    "estimated_cost_usd": 0.000036,
+                }
+            ],
+            llm_usage_summary_json={"estimated_cost_usd": 3.6e-05},
         )
 
         response = self.client.get(reverse("agent-detail", args=[agent_run.id]))
@@ -115,6 +132,8 @@ class AgentApiTests(APITestCase):
             response.data["used_tool"],
             {"name": "analyze_stock", "arguments": {"symbol": "AAPL"}, "iteration": 1},
         )
+        self.assertEqual(response.data["llm_usage"][0]["model"], "gpt-4o-mini")
+        self.assertEqual(response.data["llm_usage_summary"]["estimated_cost_usd"], 3.6e-05)
         self.assertEqual(response.data["plan"], "free")
         self.assertIsNone(response.data["trial_days_left"])
 

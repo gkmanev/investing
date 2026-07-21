@@ -21,6 +21,11 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from api.entitlements import get_plan_context, get_plan_entitlements, serialize_plan_context
 from api.helper import FinancialMetricsCalculator
+from api.llm_usage import (
+    calculate_usage_cost,
+    extract_anthropic_usage_metrics,
+    extract_openai_usage_metrics,
+)
 from api.models import AgentRun, Symbol, SymbolExpirationSnapshot
 
 
@@ -109,6 +114,16 @@ def _persist_used_tools(agent_run_id: int | None, used_tools: list[dict[str, Any
         return
     AgentRun.objects.filter(pk=agent_run_id).update(
         used_tools_json=json.loads(json.dumps(used_tools, default=_json_default)),
+        updated_at=timezone.now(),
+    )
+
+
+def _persist_llm_usage(agent_run_id: int | None, llm_usage: list[dict[str, Any]]) -> None:
+    if agent_run_id is None:
+        return
+    AgentRun.objects.filter(pk=agent_run_id).update(
+        llm_usage_json=json.loads(json.dumps(llm_usage, default=_json_default)),
+        llm_usage_summary_json=calculate_usage_cost(llm_usage),
         updated_at=timezone.now(),
     )
 
@@ -7497,6 +7512,7 @@ def run_agent(
     user=None,
     plan_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    empty_usage_summary = calculate_usage_cost([])
     normalized_query = (query or "").strip()
     if not normalized_query:
         raise ValueError("query is required")
@@ -7529,6 +7545,8 @@ def run_agent(
                 tool_state=history_tool_state,
             ),
             "used_tools": [],
+            "llm_usage": [],
+            "llm_usage_summary": empty_usage_summary,
         }
 
     prepared_query = _prepare_agent_query(normalized_query, history=raw_history)
@@ -7596,6 +7614,7 @@ def run_agent(
 
     started_at = time.monotonic()
     used_tools: list[dict[str, Any]] = []
+    llm_usage: list[dict[str, Any]] = []
     tool_state = history_tool_state
 
     logger.info(
@@ -7633,6 +7652,15 @@ def run_agent(
                 tool_choice={"type": "auto"},
                 max_tokens=anthropic_max_tokens,
             )
+            llm_usage.append(
+                extract_anthropic_usage_metrics(
+                    response,
+                    model=model_name,
+                    prompt_key="agent_chat",
+                    iteration=iteration,
+                )
+            )
+            _persist_llm_usage(agent_run_id, llm_usage)
 
             tool_uses = [
                 block for block in response.content if getattr(block, "type", None) == "tool_use"
@@ -7667,6 +7695,8 @@ def run_agent(
                         tool_state=tool_state,
                     ),
                     "used_tools": used_tools,
+                    "llm_usage": llm_usage,
+                    "llm_usage_summary": calculate_usage_cost(llm_usage),
                 }
 
             assistant_content = []
@@ -7741,6 +7771,16 @@ def run_agent(
                 tools=TOOLS,
                 tool_choice="auto",
             )
+            llm_usage.append(
+                extract_openai_usage_metrics(
+                    response,
+                    provider=provider,
+                    model=model_name,
+                    prompt_key="agent_chat",
+                    iteration=iteration,
+                )
+            )
+            _persist_llm_usage(agent_run_id, llm_usage)
 
             message = response.choices[0].message
             tool_calls = message.tool_calls or []
@@ -7771,6 +7811,8 @@ def run_agent(
                         tool_state=tool_state,
                     ),
                     "used_tools": used_tools,
+                    "llm_usage": llm_usage,
+                    "llm_usage_summary": calculate_usage_cost(llm_usage),
                 }
 
             messages.append(message.model_dump(exclude_none=True))
@@ -7833,6 +7875,7 @@ def run_agent(
 
 def serialize_agent_run(agent_run: AgentRun) -> dict[str, Any]:
     used_tools = agent_run.used_tools_json or []
+    llm_usage = agent_run.llm_usage_json or []
     plan_data = serialize_plan_context(agent_run.user)
     return {
         "job_id": agent_run.id,
@@ -7843,6 +7886,8 @@ def serialize_agent_run(agent_run: AgentRun) -> dict[str, Any]:
         "error": agent_run.error_text,
         "used_tools": used_tools,
         "used_tool": used_tools[-1] if used_tools else None,
+        "llm_usage": llm_usage,
+        "llm_usage_summary": agent_run.llm_usage_summary_json or calculate_usage_cost(llm_usage),
         "created_at": agent_run.created_at.isoformat() if agent_run.created_at else None,
         "started_at": agent_run.started_at.isoformat() if agent_run.started_at else None,
         "finished_at": agent_run.finished_at.isoformat() if agent_run.finished_at else None,

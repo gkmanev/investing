@@ -9,6 +9,7 @@ https://docs.djangoproject.com/en/4.2/topics/settings/
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/4.2/ref/settings/
 """
+import json
 import os
 from datetime import timedelta
 
@@ -17,6 +18,17 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def _load_json_env(name: str, default):
+    raw_value = os.getenv(name, "").strip()
+    if not raw_value:
+        return default
+    try:
+        parsed = json.loads(raw_value)
+    except json.JSONDecodeError:
+        return default
+    return parsed if isinstance(parsed, type(default)) else default
 
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -54,6 +66,15 @@ AGENT_MAX_ITERATIONS = int(os.getenv("AGENT_MAX_ITERATIONS", "10"))
 AGENT_OPENAI_TIMEOUT_SECONDS = int(os.getenv("AGENT_OPENAI_TIMEOUT_SECONDS", "45"))
 AGENT_OVERALL_TIMEOUT_SECONDS = int(os.getenv("AGENT_OVERALL_TIMEOUT_SECONDS", "90"))
 AGENT_OPENAI_MAX_RETRIES = int(os.getenv("AGENT_OPENAI_MAX_RETRIES", "1"))
+LLM_MODEL_PRICING_PER_1M_TOKENS = _load_json_env(
+    "LLM_MODEL_PRICING_PER_1M_TOKENS_JSON",
+    {},
+)
+LLM_WEB_SEARCH_COST_PER_CALL = _load_json_env("LLM_WEB_SEARCH_COST_PER_CALL_JSON", {})
+LLM_WEB_SEARCH_FIXED_INPUT_TOKENS = _load_json_env(
+    "LLM_WEB_SEARCH_FIXED_INPUT_TOKENS_JSON",
+    {},
+)
 
 RAPIDAPI_KEY = os.getenv('RAPIDAPI_KEY')
 FINANCIAL_MODELING_API_KEY = os.getenv('FINANCIAL_MODELING_API_KEY')  # still used by initial_screener / put_checker
