@@ -50,6 +50,47 @@ class ResponseBlockTests(SimpleTestCase):
         with self.assertRaises(BlockValidationError):
             validate_table_block(candidate)
 
+    def test_builds_table_from_monthly_income_plan_allocations(self) -> None:
+        tool_result = json.dumps({
+            "plan_type": "cash_secured_puts_only",
+            "allocated_put_ideas": [{
+                "ticker": "OKTA",
+                "underlying_price": 141.71,
+                "strike": 130.0,
+                "expiration": "2026-08-21",
+                "dte": 30,
+                "delta": -0.2865,
+                "premium_received": 545.0,
+                "cash_required": 13000.0,
+                "contracts_affordable": 1,
+                "estimated_monthly_income": 545.0,
+                "stock_quality_score": 84.0,
+            }],
+        })
+
+        block = table_block_from_tool_result("build_monthly_income_plan", tool_result)
+
+        self.assertEqual(block["title"], "Monthly income plan")
+        self.assertEqual([column["key"] for column in block["columns"]], [
+            "rank", "ticker", "current_price", "strike", "expiration", "dte", "delta",
+            "premium_received", "cash_required", "contracts_affordable",
+            "estimated_monthly_income", "stock_quality_score",
+        ])
+        self.assertEqual(block["rows"], [{
+            "rank": 1,
+            "ticker": "OKTA",
+            "current_price": 141.71,
+            "strike": 130.0,
+            "expiration": "2026-08-21",
+            "dte": 30,
+            "delta": -0.2865,
+            "premium_received": 545.0,
+            "cash_required": 13000.0,
+            "contracts_affordable": 1,
+            "estimated_monthly_income": 545.0,
+            "stock_quality_score": 84.0,
+        }])
+
     def test_ignores_unstructured_or_empty_tool_results(self) -> None:
         self.assertIsNone(table_block_from_tool_result("scan_put_opportunities", "not json"))
         self.assertIsNone(table_block_from_tool_result("scan_put_opportunities", json.dumps({"opportunities": []})))

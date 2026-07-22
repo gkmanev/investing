@@ -127,6 +127,8 @@ _FIELD_SPECS = (
     ("cash_required", "Cash required", "currency", ("cash_required", "max_risk", "collateral")),
     ("breakeven", "Breakeven", "currency", ("breakeven", "break_even")),
     ("downside_buffer_pct", "Downside buffer %", "percent", ("downside_buffer_pct",)),
+    ("contracts_affordable", "Contracts affordable", "number", ("contracts_affordable",)),
+    ("estimated_monthly_income", "Estimated monthly income", "currency", ("estimated_monthly_income",)),
     ("stock_quality_score", "Stock quality score", "number", ("stock_quality_score", "quality_score")),
 )
 
@@ -151,7 +153,12 @@ def table_block_from_tool_result(tool_name: str, tool_result: str) -> dict[str, 
         return None
     if not isinstance(payload, dict):
         return None
-    rows_source = payload.get("opportunities") or payload.get("ranked_candidates")
+    if tool_name == "build_monthly_income_plan":
+        rows_source = payload.get("allocated_put_ideas")
+        title = "Monthly income plan"
+    else:
+        rows_source = payload.get("opportunities") or payload.get("ranked_candidates")
+        title = "Ranked opportunities" if "opportunities" in payload else "Ranked candidates"
     if not isinstance(rows_source, list) or not rows_source:
         return None
     source_rows = [row for row in rows_source if isinstance(row, dict)][:MAX_ROWS]
@@ -173,7 +180,6 @@ def table_block_from_tool_result(tool_name: str, tool_result: str) -> dict[str, 
             if value is not None:
                 row[key] = value
         rows.append(row)
-    title = "Ranked opportunities" if "opportunities" in payload else "Ranked candidates"
     return validate_table_block({
         "type": "table",
         "version": 1,
