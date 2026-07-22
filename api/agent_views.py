@@ -201,6 +201,8 @@ For every ticker displayed from any tool response, always include a **Stock qual
 
 For every ticker displayed from any tool response, always include a **Current stock price** field or table column. Use `underlying_price`, `current_price`, or `price` from the tool response. If the tool supplies none of those values, display `N/A`; never omit the field.
 
+For tables that compare or rank ticker-based ideas, use this column order whenever the relevant fields are available: **Rank**, **Ticker**, **Current stock price**, **Strike**, **Expiration (DTE)**, **Delta**, **IV %**, **Premium received**, **ROI %**, **Cash required**, **Breakeven**, **Downside buffer %**, **Contracts affordable**, **Estimated monthly income**, **Stock quality score**. Keep **Stock quality score** as the final column. Omit option-specific columns only when the tool did not return a value for that metric; do not move the mandatory current stock price or stock quality score columns.
+
 For follow-up screener refinements, rerun the relevant tool with the updated hard filters. Do not manually restate, prune, or partially reuse a previously rendered table when the user adds a new constraint.
 
 If the user asks about long-term business quality, fundamentals, moat, financial health, balance sheet, margins, ROIC, FCF, or whether the company is good to own, call analyze_stock.
