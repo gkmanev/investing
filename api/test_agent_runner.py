@@ -1,10 +1,13 @@
+import json
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 
 from api.agent_views import (
+    TOOLS,
     _augment_tool_args_from_query,
+    _canonicalize_tool_response,
     _extract_cash_budget_from_query,
     _extract_owned_positions_from_query,
     handle_tool_call,
@@ -28,6 +31,46 @@ class RunAgentTests(TestCase):
         user.set_password(password)
         user.save(update_fields=["password"])
         return user
+
+    def test_tool_schemas_expose_all_supported_cash_filters_and_spread_labels(self) -> None:
+        tools_by_name = {
+            tool["function"]["name"]: tool["function"]
+            for tool in TOOLS
+        }
+
+        put_fields = tools_by_name["get_put_wheel_opportunity"]["parameters"][
+            "properties"
+        ]
+        self.assertIn("account_size", put_fields)
+        self.assertIn("max_cash_required", put_fields)
+
+        spread_fields = tools_by_name["scan_spread_opportunities"]["parameters"][
+            "properties"
+        ]
+        for field_name in (
+            "max_dte",
+            "min_return_on_risk_pct",
+            "min_probability_of_profit",
+            "max_risk",
+            "min_quality_score",
+            "max_short_delta",
+            "exclude_earnings",
+        ):
+            self.assertTrue(spread_fields[field_name].get("description"))
+
+    def test_tool_responses_add_canonical_vocabulary_without_removing_aliases(self) -> None:
+        payload = _canonicalize_tool_response(
+            "scan_put_opportunities",
+            '{"opportunities": [{"price": 125.5, "quality_score": 82, "score": 76, "opportunity_rating": "Good"}]}',
+        )
+
+        opportunity = json.loads(payload)["opportunities"][0]
+        self.assertEqual(opportunity["underlying_price"], 125.5)
+        self.assertEqual(opportunity["stock_quality_score"], 82)
+        self.assertEqual(opportunity["put_opportunity_score"], 76)
+        self.assertEqual(opportunity["rating"], "Good")
+        self.assertEqual(opportunity["price"], 125.5)
+        self.assertEqual(opportunity["score"], 76)
 
     def test_extract_owned_positions_from_query_parses_cost_basis_and_shared_shares(self) -> None:
         positions = _extract_owned_positions_from_query(

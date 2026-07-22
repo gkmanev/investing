@@ -481,7 +481,15 @@ TOOLS = [
                     "symbol": {
                         "type": "string",
                         "description": "Stock ticker symbol e.g. AAPL, MSFT, NVDA",
-                    }
+                    },
+                    "account_size": {
+                        "type": "number",
+                        "description": "Optional total cash available for the cash-secured put, e.g. 10000.",
+                    },
+                    "max_cash_required": {
+                        "type": "number",
+                        "description": "Optional maximum collateral allowed for one cash-secured put position.",
+                    },
                 },
                 "required": ["symbol"],
             },
@@ -864,25 +872,32 @@ TOOLS = [
                         "description": "Number of results to return. Default 10."
                     },
                     "max_dte": {
-                        "type": "integer"
+                        "type": "integer",
+                        "description": "Maximum days to expiration. Optional."
                     },
                     "min_return_on_risk_pct": {
-                        "type": "number"
+                        "type": "number",
+                        "description": "Minimum return on risk percentage for a candidate. Optional."
                     },
                     "min_probability_of_profit": {
-                        "type": "number"
+                        "type": "number",
+                        "description": "Minimum estimated probability of profit percentage. Optional."
                     },
                     "max_risk": {
-                        "type": "number"
+                        "type": "number",
+                        "description": "Maximum dollar loss per spread. Optional."
                     },
                     "min_quality_score": {
-                        "type": "number"
+                        "type": "number",
+                        "description": "Minimum stock quality score for the underlying (0-100). Optional."
                     },
                     "max_short_delta": {
-                        "type": "number"
+                        "type": "number",
+                        "description": "Maximum absolute delta of the short option leg, e.g. 0.30. Optional."
                     },
                     "exclude_earnings": {
-                        "type": "boolean"
+                        "type": "boolean",
+                        "description": "When true, exclude trades with earnings before expiration."
                     }
                 },
                 "required": []
@@ -7279,6 +7294,79 @@ def _handle_compare_covered_call_candidates(args: dict) -> str:
     }, default=_json_default)
 
 
+def _canonicalize_tool_response(tool_name: str, response: str) -> str:
+    """Add stable API field names while preserving legacy response aliases.
+
+    Tool handlers predate a shared vocabulary and therefore use combinations of
+    ``price``/``current_price`` and generic ``score`` keys.  The agent and any
+    new API consumer should use the canonical fields added here; legacy keys
+    remain during the compatibility period.
+    """
+    try:
+        payload = json.loads(response)
+    except (TypeError, ValueError):
+        return response
+
+    if not isinstance(payload, (dict, list)):
+        return response
+
+    if tool_name in {
+        "get_put_wheel_opportunity",
+        "scan_put_opportunities",
+        "compare_put_candidates",
+    }:
+        score_field = "put_opportunity_score"
+        score_sources = ("put_opportunity_score", "opportunity_score", "cumulative_score", "score")
+    elif tool_name in {
+        "get_covered_call_opportunity",
+        "scan_covered_call_opportunities",
+        "compare_covered_call_candidates",
+    }:
+        score_field = "covered_call_score"
+        score_sources = ("covered_call_score", "score")
+    elif tool_name in {
+        "get_spread_opportunity",
+        "scan_spread_opportunities",
+        "compare_spread_candidates",
+    }:
+        score_field = "spread_score"
+        score_sources = ("spread_score", "score")
+    else:
+        return response
+
+    def normalize(value: Any) -> Any:
+        if isinstance(value, list):
+            return [normalize(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+
+        normalized = {key: normalize(item) for key, item in value.items()}
+        if "underlying_price" not in normalized:
+            normalized["underlying_price"] = normalized.get(
+                "current_price", normalized.get("price")
+            )
+        if normalized.get("underlying_price") is None:
+            normalized.pop("underlying_price", None)
+
+        if "stock_quality_score" not in normalized and "quality_score" in normalized:
+            normalized["stock_quality_score"] = normalized["quality_score"]
+
+        if score_field not in normalized:
+            for source in score_sources:
+                if source in normalized:
+                    normalized[score_field] = normalized[source]
+                    break
+
+        if "rating" not in normalized:
+            for source in ("opportunity_rating", "covered_call_rating"):
+                if source in normalized:
+                    normalized["rating"] = normalized[source]
+                    break
+        return normalized
+
+    return json.dumps(normalize(payload), default=_json_default)
+
+
 def handle_tool_call(
     tool_name: str,
     tool_args: dict,
@@ -7326,46 +7414,38 @@ def handle_tool_call(
                 section.pop("fcf_margin_by_year", None)
                 section.pop("interest_coverage_by_year", None)
 
-            return json.dumps(report)
+            return _canonicalize_tool_response(tool_name, json.dumps(report))
 
         except Exception as e:
             return json.dumps({"error": str(e), "symbol": symbol})
 
     if tool_name == "get_put_wheel_opportunity":
-        return _handle_put_wheel_opportunity(
-            tool_args["symbol"],
-            account_size=_to_float(tool_args.get("account_size")),
+        result = _handle_put_wheel_opportunity(
+            tool_args["symbol"], account_size=_to_float(tool_args.get("account_size")),
             max_cash_required=_to_float(tool_args.get("max_cash_required")),
         )
+    elif tool_name == "get_covered_call_opportunity":
+        result = _handle_covered_call_opportunity(tool_args)
+    elif tool_name == "build_monthly_income_plan":
+        result = _handle_build_monthly_income_plan(tool_args, plan_context=runtime_plan)
+    elif tool_name == "get_spread_opportunity":
+        result = _handle_spread_opportunity(tool_args)
+    elif tool_name == "scan_put_opportunities":
+        result = _handle_scan_put_opportunities(tool_args, plan_context=runtime_plan)
+    elif tool_name == "scan_spread_opportunities":
+        result = _handle_scan_spread_opportunities(tool_args, plan_context=runtime_plan)
+    elif tool_name == "scan_covered_call_opportunities":
+        result = _handle_scan_covered_call_opportunities(tool_args, plan_context=runtime_plan)
+    elif tool_name == "compare_spread_candidates":
+        result = _handle_compare_spread_candidates(tool_args)
+    elif tool_name == "compare_put_candidates":
+        result = _handle_compare_put_candidates(tool_args)
+    elif tool_name == "compare_covered_call_candidates":
+        result = _handle_compare_covered_call_candidates(tool_args)
+    else:
+        return json.dumps({"error": f"Unknown tool: {tool_name}"})
 
-    if tool_name == "get_covered_call_opportunity":
-        return _handle_covered_call_opportunity(tool_args)
-
-    if tool_name == "build_monthly_income_plan":
-        return _handle_build_monthly_income_plan(tool_args, plan_context=runtime_plan)
-
-    if tool_name == "get_spread_opportunity":
-        return _handle_spread_opportunity(tool_args)
-
-    if tool_name == "scan_put_opportunities":
-        return _handle_scan_put_opportunities(tool_args, plan_context=runtime_plan)
-
-    if tool_name == "scan_spread_opportunities":
-        return _handle_scan_spread_opportunities(tool_args, plan_context=runtime_plan)
-
-    if tool_name == "scan_covered_call_opportunities":
-        return _handle_scan_covered_call_opportunities(tool_args, plan_context=runtime_plan)
-
-    if tool_name == "compare_spread_candidates":
-        return _handle_compare_spread_candidates(tool_args)
-
-    if tool_name == "compare_put_candidates":
-        return _handle_compare_put_candidates(tool_args)
-
-    if tool_name == "compare_covered_call_candidates":
-        return _handle_compare_covered_call_candidates(tool_args)
-
-    return json.dumps({"error": f"Unknown tool: {tool_name}"})
+    return _canonicalize_tool_response(tool_name, result)
 
 
 def _augment_tool_args_from_query(
