@@ -60,6 +60,7 @@ def run_agent_run(agent_run_id: int) -> None:
     agent_run.finished_at = None
     agent_run.error_text = ""
     agent_run.result_text = ""
+    agent_run.result_blocks_json = []
     agent_run.used_tools_json = []
     agent_run.llm_usage_json = []
     agent_run.llm_usage_summary_json = {}
@@ -70,6 +71,7 @@ def run_agent_run(agent_run_id: int) -> None:
             "finished_at",
             "error_text",
             "result_text",
+            "result_blocks_json",
             "used_tools_json",
             "llm_usage_json",
             "llm_usage_summary_json",
@@ -90,6 +92,7 @@ def run_agent_run(agent_run_id: int) -> None:
         agent_run.status = AgentRun.Status.FAILED
         agent_run.error_text = str(exc)
         agent_run.result_text = ""
+        agent_run.result_blocks_json = []
         agent_run.used_tools_json = []
         agent_run.finished_at = timezone.now()
         agent_run.save(
@@ -97,6 +100,7 @@ def run_agent_run(agent_run_id: int) -> None:
                 "status",
                 "error_text",
                 "result_text",
+                "result_blocks_json",
                 "used_tools_json",
                 "finished_at",
                 "updated_at",
@@ -107,6 +111,7 @@ def run_agent_run(agent_run_id: int) -> None:
 
     agent_run.status = AgentRun.Status.COMPLETED
     agent_run.result_text = result.get("answer") or ""
+    agent_run.result_blocks_json = result.get("blocks") or []
     agent_run.used_tools_json = result.get("used_tools") or []
     agent_run.llm_usage_json = result.get("llm_usage") or []
     agent_run.llm_usage_summary_json = result.get("llm_usage_summary") or {}
@@ -115,6 +120,7 @@ def run_agent_run(agent_run_id: int) -> None:
         update_fields=[
             "status",
             "result_text",
+            "result_blocks_json",
             "used_tools_json",
             "llm_usage_json",
             "llm_usage_summary_json",

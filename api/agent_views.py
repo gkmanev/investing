@@ -27,6 +27,7 @@ from api.llm_usage import (
     extract_openai_usage_metrics,
 )
 from api.models import AgentRun, Symbol, SymbolExpirationSnapshot
+from api.response_blocks import BlockValidationError, table_block_from_tool_result
 
 
 logger = logging.getLogger(__name__)
@@ -7572,6 +7573,20 @@ def _serialize_tool_trace_entry(tool_name: str, tool_args: dict[str, Any], itera
     }
 
 
+def _build_result_blocks(tool_results: list[tuple[str, str]]) -> list[dict[str, Any]]:
+    """Expose only validated tables derived from structured tool responses."""
+    blocks = []
+    for tool_name, tool_result in tool_results:
+        try:
+            block = table_block_from_tool_result(tool_name, tool_result)
+        except BlockValidationError:
+            logger.warning("Discarded invalid table block from tool=%s", tool_name, exc_info=True)
+            continue
+        if block is not None:
+            blocks.append(block)
+    return blocks
+
+
 def _build_agent_history(
     conversation_history: list[dict[str, Any]],
     *,
@@ -7625,6 +7640,7 @@ def run_agent(
         _log_agent_response(agent_run_id, normalized_query, fast_path_response)
         return {
             "answer": fast_path_response,
+            "blocks": [],
             "history": _build_agent_history(
                 conversation_history,
                 user_query=normalized_query,
@@ -7701,6 +7717,7 @@ def run_agent(
 
     started_at = time.monotonic()
     used_tools: list[dict[str, Any]] = []
+    table_tool_results: list[tuple[str, str]] = []
     llm_usage: list[dict[str, Any]] = []
     tool_state = history_tool_state
 
@@ -7775,6 +7792,7 @@ def run_agent(
                 _log_agent_response(agent_run_id, normalized_query, answer)
                 return {
                     "answer": answer,
+                    "blocks": _build_result_blocks(table_tool_results),
                     "history": _build_agent_history(
                         conversation_history,
                         user_query=normalized_query,
@@ -7825,6 +7843,7 @@ def run_agent(
                     user=user,
                     plan_context=runtime_plan,
                 )
+                table_tool_results.append((tool_use.name, result))
                 tool_state = _update_history_tool_state(
                     tool_state,
                     tool_name=tool_use.name,
@@ -7891,6 +7910,7 @@ def run_agent(
                 _log_agent_response(agent_run_id, normalized_query, answer)
                 return {
                     "answer": answer,
+                    "blocks": _build_result_blocks(table_tool_results),
                     "history": _build_agent_history(
                         conversation_history,
                         user_query=normalized_query,
@@ -7932,6 +7952,7 @@ def run_agent(
                     user=user,
                     plan_context=runtime_plan,
                 )
+                table_tool_results.append((tool_call.function.name, result))
                 tool_state = _update_history_tool_state(
                     tool_state,
                     tool_name=tool_call.function.name,
@@ -7970,6 +7991,7 @@ def serialize_agent_run(agent_run: AgentRun) -> dict[str, Any]:
         "history": agent_run.history_json or [],
         "status": agent_run.status,
         "answer": agent_run.result_text,
+        "blocks": agent_run.result_blocks_json or [],
         "error": agent_run.error_text,
         "used_tools": used_tools,
         "used_tool": used_tools[-1] if used_tools else None,

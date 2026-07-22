@@ -302,6 +302,7 @@ class AgentRun(models.Model):
         db_index=True,
     )
     result_text = models.TextField(blank=True, default="")
+    result_blocks_json = models.JSONField(default=list, blank=True)
     error_text = models.TextField(blank=True, default="")
     used_tools_json = models.JSONField(default=list, blank=True)
     llm_usage_json = models.JSONField(default=list, blank=True)

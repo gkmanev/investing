@@ -95,6 +95,9 @@ class AgentApiTests(APITestCase):
             history_json=[],
             status=AgentRun.Status.COMPLETED,
             result_text="Finished answer",
+            result_blocks_json=[
+                {"type": "table", "version": 1, "columns": [], "rows": []},
+            ],
             used_tools_json=[
                 {"name": "analyze_stock", "arguments": {"symbol": "AAPL"}, "iteration": 1},
             ],
@@ -123,6 +126,10 @@ class AgentApiTests(APITestCase):
         self.assertEqual(response.data["history"], [])
         self.assertEqual(response.data["status"], AgentRun.Status.COMPLETED)
         self.assertEqual(response.data["answer"], "Finished answer")
+        self.assertEqual(
+            response.data["blocks"],
+            [{"type": "table", "version": 1, "columns": [], "rows": []}],
+        )
         self.assertEqual(response.data["error"], "")
         self.assertEqual(
             response.data["used_tools"],

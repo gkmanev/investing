@@ -886,6 +886,7 @@ class AgentRunTaskTests(TestCase):
     ) -> None:
         mock_run_agent.return_value = {
             "answer": "Stored answer",
+            "blocks": [{"type": "table", "version": 1, "columns": [], "rows": []}],
             "history": [{"role": "assistant", "content": "Stored answer"}],
             "used_tools": [{"name": "analyze_stock", "arguments": {"symbol": "AAPL"}, "iteration": 1}],
             "llm_usage": [
@@ -915,6 +916,10 @@ class AgentRunTaskTests(TestCase):
         agent_run.refresh_from_db()
         self.assertEqual(agent_run.status, AgentRun.Status.COMPLETED)
         self.assertEqual(agent_run.result_text, "Stored answer")
+        self.assertEqual(
+            agent_run.result_blocks_json,
+            [{"type": "table", "version": 1, "columns": [], "rows": []}],
+        )
         self.assertEqual(agent_run.error_text, "")
         self.assertEqual(
             agent_run.used_tools_json,
@@ -965,6 +970,7 @@ class AgentRunTaskTests(TestCase):
         self.assertEqual(agent_run.status, AgentRun.Status.FAILED)
         self.assertEqual(agent_run.error_text, "boom")
         self.assertEqual(agent_run.result_text, "")
+        self.assertEqual(agent_run.result_blocks_json, [])
         self.assertEqual(agent_run.used_tools_json, [])
         self.assertEqual(agent_run.llm_usage_json, [])
         self.assertEqual(agent_run.llm_usage_summary_json, {})
