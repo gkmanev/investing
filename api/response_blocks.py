@@ -116,7 +116,7 @@ def validate_table_block(candidate: dict[str, Any]) -> dict[str, Any]:
 _FIELD_SPECS = (
     ("rank", "Rank", "number", ("rank",)),
     ("ticker", "Ticker", "ticker", ("ticker", "symbol")),
-    ("current_price", "Current stock price", "currency", ("underlying_price", "current_price", "price")),
+    ("current_price", "Price", "currency", ("underlying_price", "current_price", "price")),
     ("strike", "Strike", "currency", ("strike",)),
     ("expiration", "Expiration", "date", ("expiration", "expiration_date")),
     ("dte", "DTE", "number", ("dte", "days_to_expiration")),
@@ -125,7 +125,6 @@ _FIELD_SPECS = (
     ("premium_received", "Premium received", "currency", ("premium_received", "premium", "credit")),
     ("roi", "ROI %", "percent", ("roi", "roi_pct", "return_on_risk_pct", "premium_yield_pct")),
     ("cash_required", "Cash required", "currency", ("cash_required", "max_risk", "collateral")),
-    ("breakeven", "Breakeven", "currency", ("breakeven", "break_even")),
     ("downside_buffer_pct", "Downside buffer %", "percent", ("downside_buffer_pct",)),
     ("contracts_affordable", "Contracts affordable", "number", ("contracts_affordable",)),
     ("estimated_monthly_income", "Estimated monthly income", "currency", ("estimated_monthly_income",)),
