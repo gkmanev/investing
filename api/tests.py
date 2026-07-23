@@ -4241,6 +4241,7 @@ class PutWheelAgentViewTests(APITestCase):
         Symbol.objects.create(
             ticker="AAPL",
             price=Decimal("195.00"),
+            rsi=Decimal("52.50"),
             score=84,
             classification="High-quality compounder",
             technical_score=Symbol.TechnicalScore.NEUTRAL,
@@ -4294,6 +4295,7 @@ class PutWheelAgentViewTests(APITestCase):
 
         self.assertEqual(payload["symbol"], "AAPL")
         self.assertEqual(payload["stock_quality_score"], 84)
+        self.assertEqual(payload["rsi"], 52.5)
         self.assertEqual(payload["technical_score"], Symbol.TechnicalScore.NEUTRAL)
         self.assertEqual(payload["covered_share_lots"], 2)
         self.assertEqual(payload["best_contract"]["strike"], 210.0)
@@ -4873,6 +4875,7 @@ class PutWheelAgentViewTests(APITestCase):
         Symbol.objects.create(
             ticker="AAPL",
             price=Decimal("195.25"),
+            rsi=Decimal("48.25"),
             score=84,
             classification="High-quality compounder",
             technical_score=Symbol.TechnicalScore.BUY,
@@ -4918,6 +4921,7 @@ class PutWheelAgentViewTests(APITestCase):
 
         self.assertEqual(payload["symbol"], "AAPL")
         self.assertEqual(payload["stock_quality_score"], 84)
+        self.assertEqual(payload["rsi"], 48.25)
         self.assertEqual(payload["technical_score"], Symbol.TechnicalScore.BUY)
         self.assertEqual(payload["best_spread"]["spread_type"], "bull_put_credit_spread")
         self.assertEqual(payload["best_spread"]["net_credit"], 0.98)

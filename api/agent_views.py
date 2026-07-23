@@ -202,6 +202,8 @@ For every ticker displayed from any tool response, always include a **Stock qual
 
 For every ticker displayed from any tool response, always include a **Current stock price** field or table column. Use `underlying_price`, `current_price`, or `price` from the tool response. If the tool supplies none of those values, display `N/A`; never omit the field.
 
+For every ticker displayed from any tool response, always include an **RSI** field or table column. Use the `rsi` value from the tool response; if it is unavailable, display `N/A`.
+
 For tables that compare or rank ticker-based ideas, use this column order whenever the relevant fields are available: **Rank**, **Ticker**, **Price**, **Strike**, **Expiration / DTE**, **Delta**, **IV %**, **Premium received**, **ROI %**, **Cash required**, **Breakeven**, **Downside buffer %**, **Contracts affordable**, **Estimated monthly income**, **Stock quality score**. When both expiration and DTE are available, combine them in the single **Expiration / DTE** column (for example, `2026-08-21 (30 DTE)`). Keep **Stock quality score** as the final column. Omit option-specific columns only when the tool did not return a value for that metric; do not move the mandatory price or stock quality score columns.
 
 For follow-up screener refinements, rerun the relevant tool with the updated hard filters. Do not manually restate, prune, or partially reuse a previously rendered table when the user adds a new constraint.
@@ -5178,6 +5180,7 @@ def _evaluate_covered_call_symbol(
 ):
     today = date.today()
     stock_price = _to_float(sym.price)
+    rsi = _to_float(sym.rsi)
     quality_score = _to_float(sym.score)
     technical_score = sym.technical_score
     next_earnings_date = _parse_date(sym.next_earnings_date)
@@ -5206,6 +5209,7 @@ def _evaluate_covered_call_symbol(
     base_result = {
         "symbol": sym.ticker,
         "current_price": stock_price,
+        "rsi": rsi,
         "shares_owned": shares_owned,
         "cost_basis": cost_basis,
         "assigned_price": assigned_price,
@@ -5386,6 +5390,7 @@ def _evaluate_covered_call_symbol(
     return {
         "symbol": sym.ticker,
         "current_price": stock_price,
+        "rsi": rsi,
         "shares_owned": shares_owned,
         "covered_share_lots": covered_share_lots,
         "cost_basis": cost_basis,
@@ -6000,6 +6005,7 @@ def _handle_spread_opportunity(args: dict) -> str:
     base_payload = {
         "symbol": sym.ticker,
         "current_price": evaluation["stock_price"],
+        "rsi": _to_float(sym.rsi),
         "stock_quality_score": evaluation["quality_score"],
         "quality_score": evaluation["quality_score"],
         "technical_score": evaluation["technical_score"],
@@ -6337,6 +6343,7 @@ def _handle_scan_spread_opportunities(
         results.append({
             "ticker": sym.ticker,
             "price": evaluation["stock_price"],
+            "rsi": _to_float(sym.rsi),
             "classification": sym.classification,
             "stock_quality_score": quality_score,
             "quality_score": quality_score,
@@ -6456,6 +6463,7 @@ def _handle_scan_covered_call_opportunities(
         results.append({
             "ticker": sym.ticker,
             "price": payload.get("current_price"),
+            "rsi": payload.get("rsi"),
             "classification": payload.get("classification"),
             "score": best_contract.get("covered_call_score"),
             "covered_call_score": best_contract.get("covered_call_score"),
@@ -6631,6 +6639,7 @@ def _handle_build_monthly_income_plan(
             "shares_owned": shares_owned,
             "covered_share_lots": payload.get("covered_share_lots"),
             "cost_basis": payload.get("cost_basis"),
+            "rsi": payload.get("rsi"),
             "classification": payload.get("classification"),
             "stock_quality_score": payload.get("stock_quality_score"),
             "quality_score": payload.get("quality_score"),
@@ -6998,6 +7007,7 @@ def _handle_compare_spread_candidates(args: dict) -> str:
                     "symbol": symbol,
                     "spread_type_requested": requested_spread_type,
                     "price": evaluation["stock_price"],
+                    "rsi": _to_float(sym.rsi),
                     "classification": sym.classification,
                     "stock_quality_score": quality_score,
                     "quality_score": quality_score,
@@ -7264,6 +7274,7 @@ def _handle_compare_covered_call_candidates(args: dict) -> str:
             "stock_quality_score": payload.get("stock_quality_score"),
             "quality_score": payload.get("quality_score"),
             "technical_score": payload.get("technical_score"),
+            "rsi": payload.get("rsi"),
             "comparison_score": comparison_score,
             "covered_call_score": comparison_score,
             "score": comparison_score,
