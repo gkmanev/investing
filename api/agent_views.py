@@ -1,4 +1,5 @@
 import json
+import hashlib
 import logging
 import os
 import re
@@ -78,6 +79,13 @@ def _local_day_bounds() -> tuple[datetime, datetime]:
     return start, end
 
 
+def _local_week_bounds() -> tuple[datetime, datetime]:
+    today = timezone.localdate()
+    week_start_date = today - timedelta(days=today.weekday())
+    start = timezone.make_aware(datetime.combine(week_start_date, dt_time.min))
+    return start, start + timedelta(days=7)
+
+
 def _count_daily_agent_queries(user) -> int:
     if user is None or not getattr(user, "is_authenticated", False):
         return 0
@@ -89,18 +97,41 @@ def _count_daily_agent_queries(user) -> int:
     ).count()
 
 
-def _anonymous_session_key(request) -> str:
-    """Return a stable server-side session identifier for an anonymous visitor."""
-    if not request.session.session_key:
-        request.session.create()
-    return request.session.session_key
+def _count_hourly_agent_queries(user) -> int:
+    if user is None or not getattr(user, "is_authenticated", False):
+        return 0
+    window_start = timezone.now() - timedelta(hours=1)
+    return AgentRun.objects.filter(
+        user=user,
+        created_at__gte=window_start,
+    ).count()
 
 
-def _count_daily_anonymous_agent_queries(session_key: str) -> int:
-    start, end = _local_day_bounds()
+def _anonymous_identity_key(request) -> str | None:
+    """Return a privacy-preserving, weekly-trial key from IP and device fingerprint."""
+    fingerprint = str(request.headers.get("X-Device-Fingerprint", "")).strip()
+    if not fingerprint:
+        return None
+
+    client_ip = request.META.get("REMOTE_ADDR", "")
+    if getattr(settings, "AGENT_TRUST_X_FORWARDED_FOR", False):
+        forwarded_for = str(request.META.get("HTTP_X_FORWARDED_FOR", "")).strip()
+        if forwarded_for:
+            client_ip = forwarded_for.split(",", 1)[0].strip()
+
+    if not client_ip:
+        return None
+
+    identity_source = f"{client_ip}\x00{fingerprint[:512]}"
+    return hashlib.sha256(identity_source.encode("utf-8")).hexdigest()
+
+
+def _count_weekly_anonymous_agent_queries(identity_key: str) -> int:
+    """Count anonymous trial runs in the current calendar week."""
+    start, end = _local_week_bounds()
     return AgentRun.objects.filter(
         user__isnull=True,
-        anonymous_session_key=session_key,
+        anonymous_session_key=identity_key,
         created_at__gte=start,
         created_at__lt=end,
     ).count()
@@ -8035,7 +8066,7 @@ def serialize_agent_run(agent_run: AgentRun) -> dict[str, Any]:
 
 class AgentView(APIView):
     permission_classes = [AllowAny]
-    anonymous_daily_query_limit = 3
+    anonymous_weekly_query_limit = 3
 
     def post(self, request):
         query = request.data.get("query", "").strip()
@@ -8050,28 +8081,58 @@ class AgentView(APIView):
         is_authenticated = bool(getattr(request.user, "is_authenticated", False))
         plan_context = get_plan_context(request.user if is_authenticated else None)
         if is_authenticated:
+            if not request.user.is_active:
+                return Response(
+                    {"error": "email_verification_required"},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
             daily_query_limit = (plan_context.get("entitlements") or {}).get("daily_queries")
             used_today = _count_daily_agent_queries(request.user)
+            hourly_query_limit = (plan_context.get("entitlements") or {}).get("hourly_queries")
+            used_this_hour = _count_hourly_agent_queries(request.user)
             anonymous_session_key = ""
         else:
-            daily_query_limit = self.anonymous_daily_query_limit
-            anonymous_session_key = _anonymous_session_key(request)
-            used_today = _count_daily_anonymous_agent_queries(anonymous_session_key)
+            daily_query_limit = self.anonymous_weekly_query_limit
+            anonymous_session_key = _anonymous_identity_key(request)
+            if anonymous_session_key is None:
+                return Response(
+                    {"error": "device_fingerprint_required"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            used_today = _count_weekly_anonymous_agent_queries(anonymous_session_key)
+            hourly_query_limit = None
+            used_this_hour = 0
 
         if daily_query_limit is not None:
             if used_today >= daily_query_limit:
                 return Response(
                     {
-                        "error": "daily_limit_reached",
+                        "error": "weekly_limit_reached" if not is_authenticated else "daily_limit_reached",
                         "plan": plan_context["plan"],
                         "trial_days_left": plan_context["trial_days_left"],
                         "limit": daily_query_limit,
                         "used_today": used_today,
+                        "limit_scope": "weekly" if not is_authenticated else "daily",
                         "trial_expired": plan_context["trial_expired"],
                         "upgrade_available": True,
                     },
                     status=429,
                 )
+
+        if hourly_query_limit is not None and used_this_hour >= hourly_query_limit:
+            return Response(
+                {
+                    "error": "hourly_limit_reached",
+                    "plan": plan_context["plan"],
+                    "trial_days_left": plan_context["trial_days_left"],
+                    "limit": hourly_query_limit,
+                    "used_in_window": used_this_hour,
+                    "limit_scope": "hourly",
+                    "trial_expired": plan_context["trial_expired"],
+                    "upgrade_available": False,
+                },
+                status=429,
+            )
 
         agent_run = AgentRun.objects.create(
             user=request.user if is_authenticated else None,
@@ -8092,7 +8153,12 @@ class AgentView(APIView):
         if is_authenticated:
             runs = AgentRun.objects.filter(user=request.user)
         else:
-            session_key = _anonymous_session_key(request)
+            session_key = _anonymous_identity_key(request)
+            if session_key is None:
+                return Response(
+                    {"error": "device_fingerprint_required"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             runs = AgentRun.objects.filter(
                 user__isnull=True,
                 anonymous_session_key=session_key,

@@ -64,7 +64,7 @@ class AgentApiTests(APITestCase):
         self.assertEqual(response.data["error"], "history must be a list")
 
     @patch("api.tasks.run_agent_run.delay")
-    def test_anonymous_user_can_submit_three_daily_queries(
+    def test_anonymous_user_can_submit_three_weekly_queries(
         self,
         mock_delay: MagicMock,
     ) -> None:
@@ -75,6 +75,7 @@ class AgentApiTests(APITestCase):
                 reverse("agent"),
                 {"query": f"Question {index}", "history": []},
                 format="json",
+                HTTP_X_DEVICE_FINGERPRINT="anonymous-test-device",
             )
             self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
 
@@ -82,11 +83,13 @@ class AgentApiTests(APITestCase):
             reverse("agent"),
             {"query": "One too many", "history": []},
             format="json",
+            HTTP_X_DEVICE_FINGERPRINT="anonymous-test-device",
         )
 
         self.assertEqual(response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
-        self.assertEqual(response.data["error"], "daily_limit_reached")
+        self.assertEqual(response.data["error"], "weekly_limit_reached")
         self.assertEqual(response.data["limit"], 3)
+        self.assertEqual(response.data["limit_scope"], "weekly")
         self.assertEqual(
             AgentRun.objects.filter(user__isnull=True).count(),
             3,
@@ -103,10 +106,12 @@ class AgentApiTests(APITestCase):
             reverse("agent"),
             {"query": "Anonymous question", "history": []},
             format="json",
+            HTTP_X_DEVICE_FINGERPRINT="anonymous-test-device",
         )
 
         detail_response = self.client.get(
-            reverse("agent-detail", args=[response.data["job_id"]])
+            reverse("agent-detail", args=[response.data["job_id"]]),
+            HTTP_X_DEVICE_FINGERPRINT="anonymous-test-device",
         )
 
         self.assertEqual(detail_response.status_code, status.HTTP_200_OK)
@@ -118,7 +123,7 @@ class AgentApiTests(APITestCase):
         self,
         mock_delay: MagicMock,
     ) -> None:
-        for index in range(10):
+        for index in range(4):
             AgentRun.objects.create(
                 user=self.user,
                 query=f"Earlier query {index}",
@@ -134,8 +139,117 @@ class AgentApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
         self.assertEqual(response.data["error"], "daily_limit_reached")
         self.assertEqual(response.data["plan"], "free")
-        self.assertEqual(response.data["limit"], 10)
+        self.assertEqual(response.data["limit"], 4)
+        self.assertEqual(response.data["limit_scope"], "daily")
         self.assertFalse(response.data["trial_expired"])
+        mock_delay.assert_not_called()
+
+    @patch("api.tasks.run_agent_run.delay")
+    def test_free_user_must_verify_their_email_before_using_the_agent(
+        self,
+        mock_delay: MagicMock,
+    ) -> None:
+        unverified_user = get_user_model().objects.create_user(
+            username="unverified-agent-user",
+            password="test-pass-789",
+            is_active=False,
+        )
+        self.client.force_authenticate(user=unverified_user)
+
+        response = self.client.post(
+            reverse("agent"),
+            {"query": "Can I use the agent?", "history": []},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.data["error"], "email_verification_required")
+        mock_delay.assert_not_called()
+
+    def test_anonymous_user_must_supply_a_device_fingerprint(self) -> None:
+        self.client.force_authenticate(user=None)
+
+        response = self.client.post(
+            reverse("agent"),
+            {"query": "Can I use the agent?", "history": []},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["error"], "device_fingerprint_required")
+
+    @patch("api.tasks.run_agent_run.delay")
+    def test_pro_user_is_not_limited_by_the_free_daily_allowance(
+        self,
+        mock_delay: MagicMock,
+    ) -> None:
+        self.other_user.is_staff = True
+        self.other_user.save(update_fields=["is_staff"])
+        self.client.force_authenticate(user=self.other_user)
+
+        for index in range(5):
+            response = self.client.post(
+                reverse("agent"),
+                {"query": f"Pro question {index}", "history": []},
+                format="json",
+            )
+            self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+
+        self.assertEqual(mock_delay.call_count, 5)
+
+    @patch("api.tasks.run_agent_run.delay")
+    def test_pro_user_is_limited_to_sixty_runs_per_rolling_hour(
+        self,
+        mock_delay: MagicMock,
+    ) -> None:
+        self.other_user.is_staff = True
+        self.other_user.save(update_fields=["is_staff"])
+        self.client.force_authenticate(user=self.other_user)
+        AgentRun.objects.bulk_create(
+            [
+                AgentRun(user=self.other_user, query=f"Earlier pro query {index}")
+                for index in range(60)
+            ]
+        )
+
+        response = self.client.post(
+            reverse("agent"),
+            {"query": "One too many this hour", "history": []},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+        self.assertEqual(response.data["error"], "hourly_limit_reached")
+        self.assertEqual(response.data["limit"], 60)
+        self.assertEqual(response.data["used_in_window"], 60)
+        self.assertEqual(response.data["limit_scope"], "hourly")
+        mock_delay.assert_not_called()
+
+    @patch("api.tasks.run_agent_run.delay")
+    def test_pro_user_is_limited_to_two_hundred_runs_per_day(
+        self,
+        mock_delay: MagicMock,
+    ) -> None:
+        self.other_user.is_staff = True
+        self.other_user.save(update_fields=["is_staff"])
+        self.client.force_authenticate(user=self.other_user)
+        AgentRun.objects.bulk_create(
+            [
+                AgentRun(user=self.other_user, query=f"Earlier pro query {index}")
+                for index in range(200)
+            ]
+        )
+
+        response = self.client.post(
+            reverse("agent"),
+            {"query": "Daily circuit breaker", "history": []},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+        self.assertEqual(response.data["error"], "daily_limit_reached")
+        self.assertEqual(response.data["limit"], 200)
+        self.assertEqual(response.data["limit_scope"], "daily")
         mock_delay.assert_not_called()
 
     def test_get_agent_detail_returns_own_run(self) -> None:

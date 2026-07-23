@@ -8,14 +8,16 @@ from .models import PremiumSubscription
 
 DEFAULT_PLAN_ENTITLEMENTS = {
     "free": {
-        "daily_queries": 10,
+        "daily_queries": 4,
+        "hourly_queries": None,
         "max_scan_limit": 5,
         "max_extra_pages": 0,
         "daily_analyze_stock": 1,
         "max_history_items": 8,
     },
     "pro": {
-        "daily_queries": None,
+        "daily_queries": 200,
+        "hourly_queries": 60,
         "max_scan_limit": None,
         "max_extra_pages": None,
         "daily_analyze_stock": None,
@@ -38,6 +40,10 @@ def get_plan_entitlements() -> dict[str, dict[str, Any]]:
                 "PLAN_FREE_DAILY_QUERIES",
                 DEFAULT_PLAN_ENTITLEMENTS["free"]["daily_queries"],
             ),
+            "hourly_queries": _env_int(
+                "PLAN_FREE_HOURLY_QUERIES",
+                DEFAULT_PLAN_ENTITLEMENTS["free"]["hourly_queries"],
+            ),
             "max_scan_limit": _env_int(
                 "PLAN_FREE_MAX_SCAN_LIMIT",
                 DEFAULT_PLAN_ENTITLEMENTS["free"]["max_scan_limit"],
@@ -59,6 +65,10 @@ def get_plan_entitlements() -> dict[str, dict[str, Any]]:
             "daily_queries": _env_int(
                 "PLAN_PRO_DAILY_QUERIES",
                 DEFAULT_PLAN_ENTITLEMENTS["pro"]["daily_queries"],
+            ),
+            "hourly_queries": _env_int(
+                "PLAN_PRO_HOURLY_QUERIES",
+                DEFAULT_PLAN_ENTITLEMENTS["pro"]["hourly_queries"],
             ),
             "max_scan_limit": _env_int(
                 "PLAN_PRO_MAX_SCAN_LIMIT",
