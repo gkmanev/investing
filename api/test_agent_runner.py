@@ -950,6 +950,20 @@ class AgentRunTaskTests(TestCase):
             agent_run.history_json,
             agent_run_id=agent_run.id,
             user=agent_run.user,
+            plan_context={
+                "plan": "free",
+                "trial_days_left": None,
+                "entitlements": {
+                    "daily_queries": 10,
+                    "max_scan_limit": 5,
+                    "max_extra_pages": 0,
+                    "daily_analyze_stock": 1,
+                    "max_history_items": 8,
+                },
+                "has_full_access": False,
+                "trial_expired": False,
+                "subscription_active": False,
+            },
         )
 
     @patch("api.agent_views.run_agent", side_effect=RuntimeError("boom"))

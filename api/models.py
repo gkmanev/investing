@@ -292,7 +292,10 @@ class AgentRun(models.Model):
         settings.AUTH_USER_MODEL,
         related_name="agent_runs",
         on_delete=models.CASCADE,
+        null=True,
+        blank=True,
     )
+    anonymous_session_key = models.CharField(max_length=40, blank=True, default="", db_index=True)
     query = models.TextField()
     history_json = models.JSONField(default=list, blank=True)
     status = models.CharField(

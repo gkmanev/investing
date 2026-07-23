@@ -80,6 +80,7 @@ def run_agent_run(agent_run_id: int) -> None:
     )
 
     from .agent_views import run_agent
+    from .entitlements import get_plan_context
 
     try:
         result = run_agent(
@@ -87,6 +88,7 @@ def run_agent_run(agent_run_id: int) -> None:
             agent_run.history_json,
             agent_run_id=agent_run_id,
             user=agent_run.user,
+            plan_context=get_plan_context(agent_run.user),
         )
     except Exception as exc:
         agent_run.status = AgentRun.Status.FAILED

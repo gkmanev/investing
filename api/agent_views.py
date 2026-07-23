@@ -16,7 +16,7 @@ from django.db.models import Q
 from django.utils import timezone
 from openai import OpenAI
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from api.entitlements import get_plan_context, get_plan_entitlements, serialize_plan_context
@@ -84,6 +84,23 @@ def _count_daily_agent_queries(user) -> int:
     start, end = _local_day_bounds()
     return AgentRun.objects.filter(
         user=user,
+        created_at__gte=start,
+        created_at__lt=end,
+    ).count()
+
+
+def _anonymous_session_key(request) -> str:
+    """Return a stable server-side session identifier for an anonymous visitor."""
+    if not request.session.session_key:
+        request.session.create()
+    return request.session.session_key
+
+
+def _count_daily_anonymous_agent_queries(session_key: str) -> int:
+    start, end = _local_day_bounds()
+    return AgentRun.objects.filter(
+        user__isnull=True,
+        anonymous_session_key=session_key,
         created_at__gte=start,
         created_at__lt=end,
     ).count()
@@ -8017,7 +8034,8 @@ def serialize_agent_run(agent_run: AgentRun) -> dict[str, Any]:
 
 
 class AgentView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
+    anonymous_daily_query_limit = 3
 
     def post(self, request):
         query = request.data.get("query", "").strip()
@@ -8029,10 +8047,18 @@ class AgentView(APIView):
         if history is not None and not isinstance(history, list):
             return Response({"error": "history must be a list"}, status=400)
 
-        plan_context = get_plan_context(request.user)
-        daily_query_limit = (plan_context.get("entitlements") or {}).get("daily_queries")
-        if daily_query_limit is not None:
+        is_authenticated = bool(getattr(request.user, "is_authenticated", False))
+        plan_context = get_plan_context(request.user if is_authenticated else None)
+        if is_authenticated:
+            daily_query_limit = (plan_context.get("entitlements") or {}).get("daily_queries")
             used_today = _count_daily_agent_queries(request.user)
+            anonymous_session_key = ""
+        else:
+            daily_query_limit = self.anonymous_daily_query_limit
+            anonymous_session_key = _anonymous_session_key(request)
+            used_today = _count_daily_anonymous_agent_queries(anonymous_session_key)
+
+        if daily_query_limit is not None:
             if used_today >= daily_query_limit:
                 return Response(
                     {
@@ -8048,7 +8074,8 @@ class AgentView(APIView):
                 )
 
         agent_run = AgentRun.objects.create(
-            user=request.user,
+            user=request.user if is_authenticated else None,
+            anonymous_session_key=anonymous_session_key,
             query=query,
             history_json=history or [],
         )
@@ -8061,17 +8088,27 @@ class AgentView(APIView):
         )
 
     def get(self, request, job_id: int | None = None):
+        is_authenticated = bool(getattr(request.user, "is_authenticated", False))
+        if is_authenticated:
+            runs = AgentRun.objects.filter(user=request.user)
+        else:
+            session_key = _anonymous_session_key(request)
+            runs = AgentRun.objects.filter(
+                user__isnull=True,
+                anonymous_session_key=session_key,
+            )
+
         if job_id is None:
             requested_limit = _to_int(request.query_params.get("limit")) or 20
             limit = max(1, min(requested_limit, 100))
-            runs = AgentRun.objects.filter(user=request.user).order_by("-created_at", "-id")[:limit]
+            runs = runs.order_by("-created_at", "-id")[:limit]
             return Response(
                 {
                     "results": [serialize_agent_run(agent_run) for agent_run in runs],
                     "count": len(runs),
                 }
             )
-        agent_run = AgentRun.objects.filter(pk=job_id, user=request.user).first()
+        agent_run = runs.filter(pk=job_id).first()
         if agent_run is None:
             return Response({"error": "Agent run not found"}, status=404)
         return Response(serialize_agent_run(agent_run))

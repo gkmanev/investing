@@ -64,6 +64,56 @@ class AgentApiTests(APITestCase):
         self.assertEqual(response.data["error"], "history must be a list")
 
     @patch("api.tasks.run_agent_run.delay")
+    def test_anonymous_user_can_submit_three_daily_queries(
+        self,
+        mock_delay: MagicMock,
+    ) -> None:
+        self.client.force_authenticate(user=None)
+
+        for index in range(3):
+            response = self.client.post(
+                reverse("agent"),
+                {"query": f"Question {index}", "history": []},
+                format="json",
+            )
+            self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+
+        response = self.client.post(
+            reverse("agent"),
+            {"query": "One too many", "history": []},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+        self.assertEqual(response.data["error"], "daily_limit_reached")
+        self.assertEqual(response.data["limit"], 3)
+        self.assertEqual(
+            AgentRun.objects.filter(user__isnull=True).count(),
+            3,
+        )
+        self.assertEqual(mock_delay.call_count, 3)
+
+    @patch("api.tasks.run_agent_run.delay")
+    def test_anonymous_user_can_only_retrieve_own_runs(
+        self,
+        mock_delay: MagicMock,
+    ) -> None:
+        self.client.force_authenticate(user=None)
+        response = self.client.post(
+            reverse("agent"),
+            {"query": "Anonymous question", "history": []},
+            format="json",
+        )
+
+        detail_response = self.client.get(
+            reverse("agent-detail", args=[response.data["job_id"]])
+        )
+
+        self.assertEqual(detail_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(detail_response.data["query"], "Anonymous question")
+        mock_delay.assert_called_once()
+
+    @patch("api.tasks.run_agent_run.delay")
     def test_post_agent_enforces_free_daily_query_limit(
         self,
         mock_delay: MagicMock,
