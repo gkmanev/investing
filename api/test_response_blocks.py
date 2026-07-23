@@ -12,6 +12,7 @@ class ResponseBlockTests(SimpleTestCase):
                 {
                     "ticker": "AAPL",
                     "underlying_price": 210.5,
+                    "rsi": 47.3,
                     "strike": 205.0,
                     "expiration": "2026-08-21",
                     "dte": 30,
@@ -28,12 +29,13 @@ class ResponseBlockTests(SimpleTestCase):
         self.assertEqual(block["title"], "Ranked opportunities")
         self.assertEqual(block["columns"][2]["label"], "Price")
         self.assertEqual([column["key"] for column in block["columns"]], [
-            "rank", "ticker", "current_price", "strike", "expiration_dte", "roi", "stock_quality_score",
+            "rank", "ticker", "current_price", "rsi", "strike", "expiration_dte", "roi", "stock_quality_score",
         ])
         self.assertEqual(block["rows"], [{
             "rank": 1,
             "ticker": "AAPL",
             "current_price": 210.5,
+            "rsi": 47.3,
             "strike": 205.0,
             "expiration_dte": "2026-08-21 (30 DTE)",
             "roi": 2.3,

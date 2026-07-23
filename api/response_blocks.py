@@ -117,6 +117,7 @@ _FIELD_SPECS = (
     ("rank", "Rank", "number", ("rank",)),
     ("ticker", "Ticker", "ticker", ("ticker", "symbol")),
     ("current_price", "Price", "currency", ("underlying_price", "current_price", "price")),
+    ("rsi", "RSI", "number", ("rsi",)),
     ("strike", "Strike", "currency", ("strike",)),
     ("expiration", "Expiration", "date", ("expiration", "expiration_date")),
     ("dte", "DTE", "number", ("dte", "days_to_expiration")),
