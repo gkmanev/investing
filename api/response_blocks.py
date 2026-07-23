@@ -117,7 +117,6 @@ _FIELD_SPECS = (
     ("rank", "Rank", "number", ("rank",)),
     ("ticker", "Ticker", "ticker", ("ticker", "symbol")),
     ("current_price", "Price", "currency", ("underlying_price", "current_price", "price")),
-    ("rsi", "RSI", "number", ("rsi",)),
     ("strike", "Strike", "currency", ("strike",)),
     ("expiration", "Expiration", "date", ("expiration", "expiration_date")),
     ("dte", "DTE", "number", ("dte", "days_to_expiration")),
@@ -129,6 +128,7 @@ _FIELD_SPECS = (
     ("downside_buffer_pct", "Downside buffer %", "percent", ("downside_buffer_pct",)),
     ("contracts_affordable", "Contracts affordable", "number", ("contracts_affordable",)),
     ("estimated_monthly_income", "Estimated monthly income", "currency", ("estimated_monthly_income",)),
+    ("rsi", "RSI", "number", ("rsi",)),
     ("stock_quality_score", "Stock quality score", "number", ("stock_quality_score", "quality_score")),
 )
 

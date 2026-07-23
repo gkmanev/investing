@@ -29,7 +29,7 @@ class ResponseBlockTests(SimpleTestCase):
         self.assertEqual(block["title"], "Ranked opportunities")
         self.assertEqual(block["columns"][2]["label"], "Price")
         self.assertEqual([column["key"] for column in block["columns"]], [
-            "rank", "ticker", "current_price", "rsi", "strike", "expiration_dte", "roi", "stock_quality_score",
+            "rank", "ticker", "current_price", "strike", "expiration_dte", "roi", "rsi", "stock_quality_score",
         ])
         self.assertEqual(block["rows"], [{
             "rank": 1,
