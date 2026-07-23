@@ -145,6 +145,17 @@ def _value_for_field(row: dict[str, Any], aliases: tuple[str, ...]) -> Any:
     return None
 
 
+def _format_expiration_dte(expiration: Any, dte: Any) -> str | None:
+    """Render the option term compactly when expiration and DTE are both known."""
+    if expiration is not None and dte is not None:
+        return f"{expiration} ({dte} DTE)"
+    if expiration is not None:
+        return str(expiration)
+    if dte is not None:
+        return f"{dte} DTE"
+    return None
+
+
 def table_block_from_tool_result(tool_name: str, tool_result: str) -> dict[str, Any] | None:
     """Build a safe table only from known structured tool-result collections."""
     try:
@@ -172,11 +183,25 @@ def table_block_from_tool_result(tool_name: str, tool_result: str) -> dict[str, 
     if not selected:
         return None
 
+    selected_keys = {key for key, _label, _type, _aliases in selected}
+    if {"expiration", "dte"}.issubset(selected_keys):
+        expiration_index = next(index for index, field in enumerate(selected) if field[0] == "expiration")
+        selected = [field for field in selected if field[0] not in {"expiration", "dte"}]
+        selected.insert(expiration_index, ("expiration_dte", "Expiration / DTE", "text", ()))
+
     rows = []
     for index, source_row in enumerate(source_rows, start=1):
         row = {}
         for key, _label, _type, aliases in selected:
-            value = index if key == "rank" else _value_for_field(source_row, aliases)
+            if key == "rank":
+                value = index
+            elif key == "expiration_dte":
+                value = _format_expiration_dte(
+                    _value_for_field(source_row, ("expiration", "expiration_date")),
+                    _value_for_field(source_row, ("dte", "days_to_expiration")),
+                )
+            else:
+                value = _value_for_field(source_row, aliases)
             if value is not None:
                 row[key] = value
         rows.append(row)

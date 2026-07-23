@@ -27,15 +27,14 @@ class ResponseBlockTests(SimpleTestCase):
         self.assertEqual(block["version"], 1)
         self.assertEqual(block["title"], "Ranked opportunities")
         self.assertEqual([column["key"] for column in block["columns"]], [
-            "rank", "ticker", "current_price", "strike", "expiration", "dte", "roi", "stock_quality_score",
+            "rank", "ticker", "current_price", "strike", "expiration_dte", "roi", "stock_quality_score",
         ])
         self.assertEqual(block["rows"], [{
             "rank": 1,
             "ticker": "AAPL",
             "current_price": 210.5,
             "strike": 205.0,
-            "expiration": "2026-08-21",
-            "dte": 30,
+            "expiration_dte": "2026-08-21 (30 DTE)",
             "roi": 2.3,
             "stock_quality_score": 87,
         }])
@@ -72,7 +71,7 @@ class ResponseBlockTests(SimpleTestCase):
 
         self.assertEqual(block["title"], "Monthly income plan")
         self.assertEqual([column["key"] for column in block["columns"]], [
-            "rank", "ticker", "current_price", "strike", "expiration", "dte", "delta",
+            "rank", "ticker", "current_price", "strike", "expiration_dte", "delta",
             "premium_received", "cash_required", "contracts_affordable",
             "estimated_monthly_income", "stock_quality_score",
         ])
@@ -81,8 +80,7 @@ class ResponseBlockTests(SimpleTestCase):
             "ticker": "OKTA",
             "current_price": 141.71,
             "strike": 130.0,
-            "expiration": "2026-08-21",
-            "dte": 30,
+            "expiration_dte": "2026-08-21 (30 DTE)",
             "delta": -0.2865,
             "premium_received": 545.0,
             "cash_required": 13000.0,
@@ -90,6 +88,21 @@ class ResponseBlockTests(SimpleTestCase):
             "estimated_monthly_income": 545.0,
             "stock_quality_score": 84.0,
         }])
+
+    def test_keeps_expiration_column_when_dte_is_not_provided(self) -> None:
+        tool_result = json.dumps({
+            "opportunities": [{
+                "ticker": "AAPL",
+                "expiration": "2026-08-21",
+            }],
+        })
+
+        block = table_block_from_tool_result("scan_put_opportunities", tool_result)
+
+        self.assertEqual([column["key"] for column in block["columns"]], [
+            "rank", "ticker", "expiration",
+        ])
+        self.assertEqual(block["rows"][0]["expiration"], "2026-08-21")
 
     def test_ignores_unstructured_or_empty_tool_results(self) -> None:
         self.assertIsNone(table_block_from_tool_result("scan_put_opportunities", "not json"))
