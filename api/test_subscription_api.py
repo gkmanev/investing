@@ -131,3 +131,47 @@ class SubscriptionApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         subscription = PremiumSubscription.objects.get(user=self.user)
         self.assertEqual(subscription.status, PremiumSubscription.Status.CANCELLED)
+
+    @patch("api.subscription_views.stripe.Subscription.retrieve")
+    @patch("api.subscription_views.stripe.Webhook.construct_event")
+    def test_subscription_update_fetches_missing_period_end_from_stripe(
+        self,
+        mock_construct_event,
+        mock_retrieve_subscription,
+    ) -> None:
+        PremiumSubscription.objects.create(
+            user=self.user,
+            stripe_subscription_id="sub_existing",
+            stripe_customer_id="cus_existing",
+            status=PremiumSubscription.Status.ACTIVE,
+        )
+        mock_construct_event.return_value = {
+            "type": "customer.subscription.updated",
+            "data": {
+                "object": {
+                    "id": "sub_existing",
+                    "customer": "cus_existing",
+                    "status": "active",
+                    "metadata": {},
+                }
+            },
+        }
+        mock_retrieve_subscription.return_value = {
+            "id": "sub_existing",
+            "customer": "cus_existing",
+            "status": "active",
+            "metadata": {},
+            "current_period_end": 1794067200,
+        }
+
+        response = self.client.post(
+            reverse("webhooks-stripe"),
+            data=b"{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig_test",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        subscription = PremiumSubscription.objects.get(user=self.user)
+        self.assertIsNotNone(subscription.current_period_end)
+        mock_retrieve_subscription.assert_called_once_with("sub_existing")

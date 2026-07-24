@@ -221,6 +221,17 @@ class StripeWebhookView(APIView):
         )
 
     def _handle_subscription_event(self, subscription: dict) -> None:
+        # Recent Stripe API versions omit current_period_end from subscription
+        # event payloads. Fetch the canonical subscription so the local billing
+        # record retains the renewal/end date used by the profile UI.
+        if not subscription.get("current_period_end") and subscription.get("id"):
+            try:
+                subscription = stripe.Subscription.retrieve(subscription["id"])
+            except stripe.StripeError:
+                logger.exception(
+                    "Failed to retrieve Stripe subscription %s during webhook sync",
+                    subscription.get("id"),
+                )
         self._sync_subscription_object(subscription)
 
     def _sync_subscription_object(
