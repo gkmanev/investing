@@ -108,22 +108,22 @@ def _count_hourly_agent_queries(user) -> int:
 
 
 def _anonymous_identity_key(request) -> str | None:
-    """Return a privacy-preserving, weekly-trial key from IP and device fingerprint."""
+    """Return a stable, privacy-preserving key for an anonymous device."""
     fingerprint = str(request.headers.get("X-Device-Fingerprint", "")).strip()
     if not fingerprint:
         return None
 
-    client_ip = request.META.get("REMOTE_ADDR", "")
-    if getattr(settings, "AGENT_TRUST_X_FORWARDED_FOR", False):
-        forwarded_for = str(request.META.get("HTTP_X_FORWARDED_FOR", "")).strip()
-        if forwarded_for:
-            client_ip = forwarded_for.split(",", 1)[0].strip()
+    # Do not include REMOTE_ADDR: reverse-proxy source addresses can vary between
+    # the POST that creates a run and the GET requests that poll it.
+    return hashlib.sha256(fingerprint[:512].encode("utf-8")).hexdigest()
 
-    if not client_ip:
-        return None
 
-    identity_source = f"{client_ip}\x00{fingerprint[:512]}"
-    return hashlib.sha256(identity_source.encode("utf-8")).hexdigest()
+def _anonymous_fingerprint_log_key(request) -> str:
+    """Return a non-reversible short identifier suitable for diagnostic logs."""
+    fingerprint = str(request.headers.get("X-Device-Fingerprint", "")).strip()
+    if not fingerprint:
+        return "missing"
+    return hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()[:12]
 
 
 def _count_weekly_anonymous_agent_queries(identity_key: str) -> int:
@@ -8140,6 +8140,13 @@ class AgentView(APIView):
             query=query,
             history_json=history or [],
         )
+        if not is_authenticated:
+            logger.info(
+                "Anonymous agent run created job_id=%s fingerprint_key=%s identity_key=%s",
+                agent_run.id,
+                _anonymous_fingerprint_log_key(request),
+                anonymous_session_key[:12],
+            )
         from api.tasks import run_agent_run
 
         run_agent_run.delay(agent_run.id)
@@ -8176,5 +8183,19 @@ class AgentView(APIView):
             )
         agent_run = runs.filter(pk=job_id).first()
         if agent_run is None:
+            if not is_authenticated:
+                logger.warning(
+                    "Anonymous agent run lookup failed job_id=%s fingerprint_key=%s identity_key=%s",
+                    job_id,
+                    _anonymous_fingerprint_log_key(request),
+                    session_key[:12],
+                )
             return Response({"error": "Agent run not found"}, status=404)
+        if not is_authenticated:
+            logger.info(
+                "Anonymous agent run retrieved job_id=%s fingerprint_key=%s identity_key=%s",
+                agent_run.id,
+                _anonymous_fingerprint_log_key(request),
+                session_key[:12],
+            )
         return Response(serialize_agent_run(agent_run))

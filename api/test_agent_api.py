@@ -119,6 +119,29 @@ class AgentApiTests(APITestCase):
         mock_delay.assert_called_once()
 
     @patch("api.tasks.run_agent_run.delay")
+    def test_anonymous_run_lookup_is_stable_when_proxy_ip_changes(
+        self,
+        mock_delay: MagicMock,
+    ) -> None:
+        self.client.force_authenticate(user=None)
+        response = self.client.post(
+            reverse("agent"),
+            {"query": "Anonymous question", "history": []},
+            format="json",
+            HTTP_X_DEVICE_FINGERPRINT="anonymous-test-device",
+            REMOTE_ADDR="10.0.0.10",
+        )
+
+        detail_response = self.client.get(
+            reverse("agent-detail", args=[response.data["job_id"]]),
+            HTTP_X_DEVICE_FINGERPRINT="anonymous-test-device",
+            REMOTE_ADDR="10.0.0.11",
+        )
+
+        self.assertEqual(detail_response.status_code, status.HTTP_200_OK)
+        mock_delay.assert_called_once()
+
+    @patch("api.tasks.run_agent_run.delay")
     def test_post_agent_enforces_free_daily_query_limit(
         self,
         mock_delay: MagicMock,
