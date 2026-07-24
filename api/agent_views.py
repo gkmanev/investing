@@ -20,6 +20,7 @@ from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework_simplejwt.authentication import JWTAuthentication
 from api.entitlements import get_plan_context, get_plan_entitlements, serialize_plan_context
 from api.helper import FinancialMetricsCalculator
 from api.llm_usage import (
@@ -8065,6 +8066,10 @@ def serialize_agent_run(agent_run: AgentRun) -> dict[str, Any]:
 
 
 class AgentView(APIView):
+    # The chat supports anonymous trials and token-authenticated users.  Do not
+    # inherit SessionAuthentication here: a stale browser session would make an
+    # otherwise anonymous POST require a CSRF token.
+    authentication_classes = [JWTAuthentication]
     permission_classes = [AllowAny]
     anonymous_weekly_query_limit = 3
 

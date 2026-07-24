@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 from django.contrib.auth import get_user_model
 from django.urls import reverse
 from rest_framework import status
-from rest_framework.test import APITestCase
+from rest_framework.test import APIClient, APITestCase
 
 from api.models import AgentRun
 
@@ -200,6 +200,26 @@ class AgentApiTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(response.data["error"], "device_fingerprint_required")
+
+    @patch("api.tasks.run_agent_run.delay")
+    def test_anonymous_user_with_a_session_cookie_does_not_require_csrf(
+        self,
+        mock_delay: MagicMock,
+    ) -> None:
+        client = APIClient(enforce_csrf_checks=True)
+        client.login(username="agent-user", password="test-pass-123")
+
+        response = client.post(
+            reverse("agent"),
+            {"query": "Anonymous question", "history": []},
+            format="json",
+            HTTP_X_DEVICE_FINGERPRINT="anonymous-session-cookie-device",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+        agent_run = AgentRun.objects.get(pk=response.data["job_id"])
+        self.assertIsNone(agent_run.user)
+        mock_delay.assert_called_once_with(agent_run.id)
 
     @patch("api.tasks.run_agent_run.delay")
     def test_pro_user_is_not_limited_by_the_free_daily_allowance(
