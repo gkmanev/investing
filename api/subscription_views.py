@@ -91,6 +91,47 @@ class CreateStripeCheckoutSessionView(APIView):
         return Response({"checkout_url": session.url})
 
 
+class CreateStripeCustomerPortalSessionView(APIView):
+    """Create a short-lived Stripe-hosted subscription-management URL."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        try:
+            subscription = request.user.premium_subscription
+        except PremiumSubscription.DoesNotExist:
+            return Response(
+                {"detail": "No subscription is available to manage."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if not subscription.stripe_customer_id:
+            logger.warning(
+                "Cannot create Stripe portal session for user_id=%s: missing customer ID",
+                request.user.id,
+            )
+            return Response(
+                {"detail": "Subscription billing details are not available."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        stripe.api_key = settings.STRIPE_SECRET_KEY
+        return_url = f"{settings.FRONTEND_BASE_URL.rstrip('/')}/profile"
+        try:
+            session = stripe.billing_portal.Session.create(
+                customer=subscription.stripe_customer_id,
+                return_url=return_url,
+            )
+        except stripe.StripeError as exc:
+            logger.error("Stripe error creating customer portal session: %s", exc)
+            return Response(
+                {"detail": "Unable to open subscription management."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        return Response({"portal_url": session.url})
+
+
 class StripeWebhookView(APIView):
     permission_classes = [AllowAny]
 

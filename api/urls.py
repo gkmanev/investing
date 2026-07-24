@@ -17,6 +17,7 @@ from .daily_brief_views import (
     DailyBriefUnsubscribeView,
 )
 from .subscription_views import (
+    CreateStripeCustomerPortalSessionView,
     CreateStripeCheckoutSessionView,
     PremiumSubscriptionView,
     StripeWebhookView,
@@ -72,6 +73,11 @@ urlpatterns = [
         "create-stripe-checkout-session/",
         CreateStripeCheckoutSessionView.as_view(),
         name="create-stripe-checkout-session",
+    ),
+    path(
+        "create-stripe-customer-portal-session/",
+        CreateStripeCustomerPortalSessionView.as_view(),
+        name="create-stripe-customer-portal-session",
     ),
     path("webhooks/stripe/", StripeWebhookView.as_view(), name="webhooks-stripe"),
     path("agent/", AgentView.as_view(), name="agent"),

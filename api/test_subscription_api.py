@@ -30,6 +30,33 @@ class SubscriptionApiTests(APITestCase):
         self.assertIsNone(response.data["trial_days_left"])
         self.assertFalse(response.data["subscription"]["is_active"])
 
+    @patch("api.subscription_views.stripe.billing_portal.Session.create")
+    @override_settings(FRONTEND_BASE_URL="https://frontend.example")
+    def test_customer_portal_session_returns_stripe_url(self, mock_create) -> None:
+        PremiumSubscription.objects.create(
+            user=self.user,
+            stripe_subscription_id="sub_portal",
+            stripe_customer_id="cus_portal",
+            status=PremiumSubscription.Status.ACTIVE,
+        )
+        mock_create.return_value = type(
+            "PortalSession", (), {"url": "https://billing.stripe.com/session/test"}
+        )()
+
+        response = self.client.post(reverse("create-stripe-customer-portal-session"))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["portal_url"], "https://billing.stripe.com/session/test")
+        mock_create.assert_called_once_with(
+            customer="cus_portal",
+            return_url="https://frontend.example/profile",
+        )
+
+    def test_customer_portal_session_requires_a_subscription(self) -> None:
+        response = self.client.post(reverse("create-stripe-customer-portal-session"))
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
     @patch("api.subscription_views.stripe.Subscription.retrieve")
     @patch("api.subscription_views.stripe.Webhook.construct_event")
     def test_checkout_completed_webhook_creates_active_subscription(
