@@ -409,7 +409,13 @@ class PremiumSubscription(models.Model):
         default=Status.ACTIVE,
         db_index=True,
     )
+    start_date = models.DateTimeField(null=True, blank=True)
+    current_period_start = models.DateTimeField(null=True, blank=True)
     current_period_end = models.DateTimeField(null=True, blank=True)
+    cancel_at_period_end = models.BooleanField(default=False)
+    cancel_at = models.DateTimeField(null=True, blank=True)
+    canceled_at = models.DateTimeField(null=True, blank=True)
+    ended_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

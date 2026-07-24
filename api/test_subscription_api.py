@@ -161,7 +161,13 @@ class SubscriptionApiTests(APITestCase):
             "customer": "cus_existing",
             "status": "active",
             "metadata": {},
+            "start_date": 1791475200,
+            "current_period_start": 1791475200,
             "current_period_end": 1794067200,
+            "cancel_at_period_end": True,
+            "cancel_at": 1794067200,
+            "canceled_at": None,
+            "ended_at": None,
         }
 
         response = self.client.post(
@@ -174,4 +180,8 @@ class SubscriptionApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         subscription = PremiumSubscription.objects.get(user=self.user)
         self.assertIsNotNone(subscription.current_period_end)
+        self.assertIsNotNone(subscription.start_date)
+        self.assertIsNotNone(subscription.current_period_start)
+        self.assertTrue(subscription.cancel_at_period_end)
+        self.assertIsNotNone(subscription.cancel_at)
         mock_retrieve_subscription.assert_called_once_with("sub_existing")

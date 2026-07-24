@@ -21,7 +21,18 @@ class PremiumSubscriptionSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = PremiumSubscription
-        fields = ["status", "is_active", "current_period_end", "created_at"]
+        fields = [
+            "status",
+            "is_active",
+            "start_date",
+            "current_period_start",
+            "current_period_end",
+            "cancel_at_period_end",
+            "cancel_at",
+            "canceled_at",
+            "ended_at",
+            "created_at",
+        ]
         read_only_fields = fields
 
 
@@ -40,7 +51,13 @@ class PremiumSubscriptionView(APIView):
             subscription_payload = {
                 "status": None,
                 "is_active": False,
+                "start_date": None,
+                "current_period_start": None,
                 "current_period_end": None,
+                "cancel_at_period_end": False,
+                "cancel_at": None,
+                "canceled_at": None,
+                "ended_at": None,
                 "created_at": None,
             }
         return Response(
@@ -261,9 +278,19 @@ class StripeWebhookView(APIView):
                 or fallback_customer_id
                 or "",
                 "status": self._map_subscription_status(subscription.get("status")),
+                "start_date": self._stripe_timestamp_to_datetime(subscription.get("start_date")),
+                "current_period_start": self._stripe_timestamp_to_datetime(
+                    subscription.get("current_period_start")
+                ),
                 "current_period_end": self._stripe_timestamp_to_datetime(
                     subscription.get("current_period_end")
                 ),
+                "cancel_at_period_end": bool(subscription.get("cancel_at_period_end")),
+                "cancel_at": self._stripe_timestamp_to_datetime(subscription.get("cancel_at")),
+                "canceled_at": self._stripe_timestamp_to_datetime(
+                    subscription.get("canceled_at")
+                ),
+                "ended_at": self._stripe_timestamp_to_datetime(subscription.get("ended_at")),
             },
         )
 
