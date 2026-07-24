@@ -14,6 +14,7 @@ import os
 from datetime import timedelta
 
 import dj_database_url
+from corsheaders.defaults import default_headers
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -122,6 +123,10 @@ CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:4173",
 ]
 CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_HEADERS = [
+    *default_headers,
+    "x-device-fingerprint",
+]
 
 CSRF_TRUSTED_ORIGINS = [
     "https://putpulse.com",
