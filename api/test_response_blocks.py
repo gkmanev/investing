@@ -13,6 +13,7 @@ class ResponseBlockTests(SimpleTestCase):
                     "ticker": "AAPL",
                     "underlying_price": 210.5,
                     "rsi": 47.3,
+                    "technical_score": "Buy",
                     "strike": 205.0,
                     "expiration": "2026-08-21",
                     "dte": 30,
@@ -29,7 +30,7 @@ class ResponseBlockTests(SimpleTestCase):
         self.assertEqual(block["title"], "Ranked opportunities")
         self.assertEqual(block["columns"][2]["label"], "Price")
         self.assertEqual([column["key"] for column in block["columns"]], [
-            "rank", "ticker", "current_price", "strike", "expiration_dte", "roi", "rsi", "stock_quality_score",
+            "rank", "ticker", "current_price", "strike", "expiration_dte", "roi", "rsi", "technical_score", "stock_quality_score",
         ])
         self.assertEqual(block["rows"], [{
             "rank": 1,
@@ -40,6 +41,7 @@ class ResponseBlockTests(SimpleTestCase):
             "expiration_dte": "2026-08-21 (30 DTE)",
             "roi": 2.3,
             "stock_quality_score": 87,
+            "technical_score": "Buy",
         }])
 
     def test_rejects_unknown_row_fields_and_wrong_cell_types(self) -> None:
@@ -66,6 +68,7 @@ class ResponseBlockTests(SimpleTestCase):
                 "cash_required": 13000.0,
                 "contracts_affordable": 1,
                 "estimated_monthly_income": 545.0,
+                "technical_score": "Neutral",
                 "stock_quality_score": 84.0,
             }],
         })
@@ -76,7 +79,7 @@ class ResponseBlockTests(SimpleTestCase):
         self.assertEqual([column["key"] for column in block["columns"]], [
             "rank", "ticker", "current_price", "strike", "expiration_dte", "delta",
             "premium_received", "cash_required", "contracts_affordable",
-            "estimated_monthly_income", "stock_quality_score",
+            "estimated_monthly_income", "technical_score", "stock_quality_score",
         ])
         self.assertEqual(block["rows"], [{
             "rank": 1,
@@ -89,6 +92,7 @@ class ResponseBlockTests(SimpleTestCase):
             "cash_required": 13000.0,
             "contracts_affordable": 1,
             "estimated_monthly_income": 545.0,
+            "technical_score": "Neutral",
             "stock_quality_score": 84.0,
         }])
 
@@ -103,9 +107,10 @@ class ResponseBlockTests(SimpleTestCase):
         block = table_block_from_tool_result("scan_put_opportunities", tool_result)
 
         self.assertEqual([column["key"] for column in block["columns"]], [
-            "rank", "ticker", "expiration",
+            "rank", "ticker", "expiration", "technical_score",
         ])
         self.assertEqual(block["rows"][0]["expiration"], "2026-08-21")
+        self.assertEqual(block["rows"][0]["technical_score"], "N/A")
 
     def test_ignores_unstructured_or_empty_tool_results(self) -> None:
         self.assertIsNone(table_block_from_tool_result("scan_put_opportunities", "not json"))

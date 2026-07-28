@@ -129,6 +129,7 @@ _FIELD_SPECS = (
     ("contracts_affordable", "Contracts affordable", "number", ("contracts_affordable",)),
     ("estimated_monthly_income", "Estimated monthly income", "currency", ("estimated_monthly_income",)),
     ("rsi", "RSI", "number", ("rsi",)),
+    ("technical_score", "Technicals", "text", ("technical_score", "technicals", "tv_technicals", "tvTechnicals")),
     ("stock_quality_score", "Stock quality score", "number", ("stock_quality_score", "quality_score")),
 )
 
@@ -177,8 +178,16 @@ def table_block_from_tool_result(tool_name: str, tool_result: str) -> dict[str, 
         return None
 
     selected = []
+    has_ticker = any(
+        _value_for_field(row, ("ticker", "symbol")) is not None
+        for row in source_rows
+    )
     for key, label, column_type, aliases in _FIELD_SPECS:
-        if key == "rank" or any(_value_for_field(row, aliases) is not None for row in source_rows):
+        if (
+            key == "rank"
+            or (key == "technical_score" and has_ticker)
+            or any(_value_for_field(row, aliases) is not None for row in source_rows)
+        ):
             selected.append((key, label, column_type, aliases))
     if not selected:
         return None
@@ -202,6 +211,8 @@ def table_block_from_tool_result(tool_name: str, tool_result: str) -> dict[str, 
                 )
             else:
                 value = _value_for_field(source_row, aliases)
+            if key == "technical_score" and value is None:
+                value = "N/A"
             if value is not None:
                 row[key] = value
         rows.append(row)
