@@ -279,6 +279,34 @@ class EmailVerificationToken(models.Model):
         return f"{self.user} email verification token"
 
 
+class WatchlistItem(models.Model):
+    """A ticker saved to an individual user's watchlist."""
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="watchlist_items",
+    )
+    ticker = models.CharField(max_length=16)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "ticker"],
+                name="unique_watchlist_ticker_per_user",
+            ),
+        ]
+        ordering = ["-created_at"]
+
+    def save(self, *args, **kwargs):
+        self.ticker = self.ticker.strip().upper()
+        super().save(*args, **kwargs)
+
+    def __str__(self) -> str:  # pragma: no cover - simple data representation
+        return f"{self.user} watchlist: {self.ticker}"
+
+
 class AgentRun(models.Model):
     """Tracks a persisted agent execution request and outcome."""
 

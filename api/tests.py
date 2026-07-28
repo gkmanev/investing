@@ -6,6 +6,7 @@ import urllib.error
 from typing import Any
 
 import requests
+from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import override_settings
@@ -38,8 +39,63 @@ from .models import (
     ScreenerType,
     Symbol,
     SymbolExpirationSnapshot,
+    WatchlistItem,
 )
 from .serializers import SymbolSerializer
+
+
+class WatchlistApiTests(APITestCase):
+    def setUp(self) -> None:
+        user_model = get_user_model()
+        self.user = user_model.objects.create_user(
+            username="watchlist-user",
+            email="watchlist@example.com",
+            password="test-password",
+        )
+        self.other_user = user_model.objects.create_user(
+            username="other-watchlist-user",
+            email="other-watchlist@example.com",
+            password="test-password",
+        )
+
+    def test_watchlist_requires_authentication(self) -> None:
+        response = self.client.get("/api/watchlist/")
+
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_user_can_create_list_and_delete_own_normalized_ticker(self) -> None:
+        self.client.force_authenticate(self.user)
+
+        create_response = self.client.post(
+            "/api/watchlist/", {"ticker": " aapl "}, format="json"
+        )
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(create_response.data["ticker"], "AAPL")
+
+        list_response = self.client.get("/api/watchlist/")
+        self.assertEqual(list_response.status_code, status.HTTP_200_OK)
+        self.assertEqual([item["ticker"] for item in list_response.data], ["AAPL"])
+
+        delete_response = self.client.delete("/api/watchlist/aapl/")
+        self.assertEqual(delete_response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(WatchlistItem.objects.filter(user=self.user).exists())
+
+    def test_duplicate_and_other_users_item_cannot_be_removed(self) -> None:
+        WatchlistItem.objects.create(user=self.user, ticker="MSFT")
+        WatchlistItem.objects.create(user=self.other_user, ticker="AAPL")
+        self.client.force_authenticate(self.user)
+
+        duplicate_response = self.client.post(
+            "/api/watchlist/", {"ticker": " msft "}, format="json"
+        )
+        self.assertEqual(duplicate_response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("ticker", duplicate_response.data)
+
+        delete_response = self.client.delete("/api/watchlist/AAPL/")
+        self.assertEqual(delete_response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertTrue(
+            WatchlistItem.objects.filter(user=self.other_user, ticker="AAPL").exists()
+        )
 
 
 class InitialScreenerHelpersTestCase(APITestCase):

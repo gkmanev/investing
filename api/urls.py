@@ -30,6 +30,8 @@ from .views import (
     ScreenerFilterViewSet,
     ScreenerTypeViewSet,
     SymbolViewSet,
+    WatchlistItemView,
+    WatchlistView,
 )
 
 router = DefaultRouter()
@@ -82,5 +84,7 @@ urlpatterns = [
     path("webhooks/stripe/", StripeWebhookView.as_view(), name="webhooks-stripe"),
     path("agent/", AgentView.as_view(), name="agent"),
     path("agent/<int:job_id>/", AgentView.as_view(), name="agent-detail"),
+    path("watchlist/", WatchlistView.as_view(), name="watchlist"),
+    path("watchlist/<str:ticker>/", WatchlistItemView.as_view(), name="watchlist-item"),
     path("", include(router.urls)),
 ]

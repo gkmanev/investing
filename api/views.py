@@ -5,7 +5,7 @@ from typing import Mapping
 
 from django.db.models import Q, Value
 from django.db.models.functions import Replace
-from rest_framework import viewsets
+from rest_framework import generics, permissions, viewsets
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
@@ -19,6 +19,7 @@ from .models import (
     ScreenerFilter,
     ScreenerType,
     Symbol,
+    WatchlistItem,
 )
 from .permissions import IsStaffOrReadOnly
 
@@ -44,7 +45,35 @@ from .serializers import (
     ScreenerFilterSerializer,
     ScreenerTypeSerializer,
     SymbolSerializer,
+    WatchlistItemSerializer,
 )
+
+
+class WatchlistView(generics.ListCreateAPIView):
+    """List and add watchlist tickers for the authenticated user."""
+
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = WatchlistItemSerializer
+
+    def get_queryset(self):
+        return WatchlistItem.objects.filter(user=self.request.user)
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+
+
+class WatchlistItemView(generics.DestroyAPIView):
+    """Remove one of the authenticated user's saved tickers."""
+
+    permission_classes = [permissions.IsAuthenticated]
+    lookup_field = "ticker"
+
+    def get_queryset(self):
+        return WatchlistItem.objects.filter(user=self.request.user)
+
+    def delete(self, request, *args, **kwargs):
+        kwargs["ticker"] = kwargs["ticker"].strip().upper()
+        return super().delete(request, *args, **kwargs)
 
 
 class FilterMixin:

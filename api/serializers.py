@@ -8,6 +8,7 @@ from .models import (
     ScreenerType,
     Symbol,
     SymbolExpirationSnapshot,
+    WatchlistItem,
 )
 
 
@@ -36,6 +37,25 @@ class InvestmentSerializer(serializers.ModelSerializer):
         if not value.strip():
             raise serializers.ValidationError("Ticker cannot be empty.")
         return value.upper()
+
+
+class WatchlistItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = WatchlistItem
+        fields = ["id", "ticker", "created_at"]
+        read_only_fields = ["id", "created_at"]
+
+    def validate_ticker(self, value: str) -> str:
+        ticker = value.strip().upper()
+        if not ticker:
+            raise serializers.ValidationError("Ticker is required.")
+
+        request = self.context.get("request")
+        if request and WatchlistItem.objects.filter(
+            user=request.user, ticker=ticker
+        ).exists():
+            raise serializers.ValidationError("Ticker is already in your watchlist.")
+        return ticker
 
 
 class ScreenerFilterSerializer(serializers.ModelSerializer):
