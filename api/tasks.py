@@ -113,6 +113,7 @@ def run_agent_run(agent_run_id: int) -> None:
 
     agent_run.status = AgentRun.Status.COMPLETED
     agent_run.result_text = result.get("answer") or ""
+    agent_run.history_json = result.get("history") or []
     agent_run.result_blocks_json = result.get("blocks") or []
     agent_run.used_tools_json = result.get("used_tools") or []
     agent_run.llm_usage_json = result.get("llm_usage") or []
@@ -122,6 +123,7 @@ def run_agent_run(agent_run_id: int) -> None:
         update_fields=[
             "status",
             "result_text",
+            "history_json",
             "result_blocks_json",
             "used_tools_json",
             "llm_usage_json",
@@ -130,4 +132,8 @@ def run_agent_run(agent_run_id: int) -> None:
             "updated_at",
         ]
     )
+    if agent_run.conversation_id:
+        conversation = agent_run.conversation
+        conversation.preview = agent_run.result_text[:500]
+        conversation.save(update_fields=["preview", "updated_at"])
     logger.info("AgentRun %s completed.", agent_run_id)

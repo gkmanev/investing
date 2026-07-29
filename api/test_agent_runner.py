@@ -917,6 +917,10 @@ class AgentRunTaskTests(TestCase):
         self.assertEqual(agent_run.status, AgentRun.Status.COMPLETED)
         self.assertEqual(agent_run.result_text, "Stored answer")
         self.assertEqual(
+            agent_run.history_json,
+            [{"role": "assistant", "content": "Stored answer"}],
+        )
+        self.assertEqual(
             agent_run.result_blocks_json,
             [{"type": "table", "version": 1, "columns": [], "rows": []}],
         )
@@ -947,14 +951,15 @@ class AgentRunTaskTests(TestCase):
         self.assertIsNotNone(agent_run.finished_at)
         mock_run_agent.assert_called_once_with(
             agent_run.query,
-            agent_run.history_json,
+            [],
             agent_run_id=agent_run.id,
             user=agent_run.user,
             plan_context={
                 "plan": "free",
                 "trial_days_left": None,
                 "entitlements": {
-                    "daily_queries": 10,
+                    "daily_queries": 4,
+                    "hourly_queries": None,
                     "max_scan_limit": 5,
                     "max_extra_pages": 0,
                     "daily_analyze_stock": 1,

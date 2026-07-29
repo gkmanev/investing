@@ -307,6 +307,30 @@ class WatchlistItem(models.Model):
         return f"{self.user} watchlist: {self.ticker}"
 
 
+class AgentConversation(models.Model):
+    """A user-scoped AI chat conversation containing one or more agent runs."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="agent_conversations",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+    )
+    anonymous_session_key = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    title = models.CharField(max_length=160, blank=True, default="")
+    preview = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at", "-created_at"]
+
+    def __str__(self) -> str:  # pragma: no cover - simple data representation
+        return f"Agent conversation {self.pk} for user {self.user_id}"
+
+
 class AgentRun(models.Model):
     """Tracks a persisted agent execution request and outcome."""
 
@@ -324,6 +348,14 @@ class AgentRun(models.Model):
         blank=True,
     )
     anonymous_session_key = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    conversation = models.ForeignKey(
+        AgentConversation,
+        related_name="runs",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        db_index=True,
+    )
     query = models.TextField()
     history_json = models.JSONField(default=list, blank=True)
     status = models.CharField(

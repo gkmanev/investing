@@ -5,7 +5,7 @@ from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
 
-from api.models import AgentRun
+from api.models import AgentConversation, AgentRun
 
 
 class AgentApiTests(APITestCase):
@@ -34,6 +34,8 @@ class AgentApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
         agent_run = AgentRun.objects.get(pk=response.data["job_id"])
         self.assertEqual(agent_run.user, self.user)
+        self.assertIsNotNone(agent_run.conversation_id)
+        self.assertEqual(response.data["conversation_id"], str(agent_run.conversation_id))
         self.assertEqual(agent_run.query, "Hello")
         self.assertEqual(
             agent_run.history_json,
@@ -62,6 +64,44 @@ class AgentApiTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(response.data["error"], "history must be a list")
+
+    @patch("api.tasks.run_agent_run.delay")
+    def test_post_agent_restores_the_last_five_completed_turns(
+        self,
+        mock_delay: MagicMock,
+    ) -> None:
+        self.user.is_staff = True
+        self.user.save(update_fields=["is_staff"])
+        conversation = AgentConversation.objects.create(user=self.user, title="Existing chat")
+        for index in range(6):
+            AgentRun.objects.create(
+                user=self.user,
+                conversation=conversation,
+                query=f"Earlier prompt {index}",
+                result_text=f"Earlier answer {index}",
+                status=AgentRun.Status.COMPLETED,
+            )
+
+        response = self.client.post(
+            reverse("agent"),
+            {"query": "Follow-up", "conversation_id": str(conversation.id), "history": []},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+        agent_run = AgentRun.objects.get(pk=response.data["job_id"])
+        self.assertEqual(
+            agent_run.history_json,
+            [
+                item
+                for index in range(1, 6)
+                for item in (
+                    {"role": "user", "content": f"Earlier prompt {index}"},
+                    {"role": "assistant", "content": f"Earlier answer {index}"},
+                )
+            ],
+        )
+        mock_delay.assert_called_once_with(agent_run.id)
 
     @patch("api.tasks.run_agent_run.delay")
     def test_anonymous_user_can_submit_three_weekly_queries(
@@ -362,23 +402,20 @@ class AgentApiTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
-    def test_get_agent_list_returns_own_prompt_history(self) -> None:
-        older = AgentRun.objects.create(
+    def test_get_agent_list_returns_own_conversation_summaries(self) -> None:
+        older_conversation = AgentConversation.objects.create(
             user=self.user,
-            query="Older prompt",
-            history_json=[],
-            status=AgentRun.Status.PENDING,
+            title="Older prompt",
+            preview="Older answer",
         )
-        newest = AgentRun.objects.create(
+        newer_conversation = AgentConversation.objects.create(
             user=self.user,
-            query="Newest prompt",
-            history_json=[{"role": "assistant", "content": "Prior"}],
-            status=AgentRun.Status.COMPLETED,
+            title="Newest prompt",
+            preview="Newest answer",
         )
-        AgentRun.objects.create(
+        AgentConversation.objects.create(
             user=self.other_user,
-            query="Other user prompt",
-            history_json=[],
+            title="Other user prompt",
         )
 
         response = self.client.get(reverse("agent"), {"limit": 10})
@@ -386,14 +423,61 @@ class AgentApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["count"], 2)
         self.assertEqual(
-            [item["job_id"] for item in response.data["results"]],
-            [newest.id, older.id],
+            {item["conversation_id"] for item in response.data["results"]},
+            {str(older_conversation.id), str(newer_conversation.id)},
         )
         self.assertEqual(
-            [item["query"] for item in response.data["results"]],
-            ["Newest prompt", "Older prompt"],
+            {item["preview"] for item in response.data["results"]},
+            {"Older answer", "Newest answer"},
         )
+
+    def test_get_conversation_returns_messages_in_chronological_order(self) -> None:
+        conversation = AgentConversation.objects.create(user=self.user, title="Income plan")
+        AgentRun.objects.create(
+            user=self.user,
+            conversation=conversation,
+            query="Build an income plan",
+            result_text="Start with diversified CSPs.",
+            status=AgentRun.Status.COMPLETED,
+        )
+        AgentRun.objects.create(
+            user=self.user,
+            conversation=conversation,
+            query="Make it more conservative",
+            result_text="Lower the allocation per position.",
+            status=AgentRun.Status.COMPLETED,
+        )
+
+        response = self.client.get(reverse("agent"), {"conversation_id": str(conversation.id)})
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(
-            response.data["results"][0]["history"],
-            [{"role": "assistant", "content": "Prior"}],
+            response.data["results"],
+            [
+                {"role": "user", "content": "Build an income plan"},
+                {"role": "assistant", "content": "Start with diversified CSPs."},
+                {"role": "user", "content": "Make it more conservative"},
+                {"role": "assistant", "content": "Lower the allocation per position."},
+            ],
         )
+
+    def test_get_conversation_hides_other_users_messages(self) -> None:
+        conversation = AgentConversation.objects.create(user=self.other_user, title="Private")
+
+        response = self.client.get(reverse("agent"), {"conversation_id": str(conversation.id)})
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    @patch("api.tasks.run_agent_run.delay")
+    def test_post_cannot_add_to_another_users_conversation(self, mock_delay: MagicMock) -> None:
+        conversation = AgentConversation.objects.create(user=self.other_user, title="Private")
+
+        response = self.client.post(
+            reverse("agent"),
+            {"query": "Attempted follow-up", "conversation_id": str(conversation.id)},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(response.data["error"], "conversation_not_found")
+        mock_delay.assert_not_called()

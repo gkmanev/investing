@@ -28,7 +28,7 @@ from api.llm_usage import (
     extract_anthropic_usage_metrics,
     extract_openai_usage_metrics,
 )
-from api.models import AgentRun, Symbol, SymbolExpirationSnapshot
+from api.models import AgentConversation, AgentRun, Symbol, SymbolExpirationSnapshot
 from api.response_blocks import BlockValidationError, table_block_from_tool_result
 
 
@@ -186,6 +186,41 @@ def _trim_history_for_plan(
     if max_history_items is None:
         return conversation_history
     return conversation_history[-max(0, int(max_history_items)) :]
+
+
+AGENT_CHAT_HISTORY_TURN_LIMIT = 5
+
+
+def _conversation_history(conversation: AgentConversation) -> list[dict[str, Any]]:
+    """Build the model context from the latest completed turns in one chat."""
+    recent_runs = list(
+        conversation.runs.filter(status=AgentRun.Status.COMPLETED)
+        .exclude(result_text="")
+        .order_by("-created_at", "-id")[:AGENT_CHAT_HISTORY_TURN_LIMIT]
+    )
+    history: list[dict[str, Any]] = []
+    for run in reversed(recent_runs):
+        history.extend(
+            [
+                {"role": "user", "content": run.query},
+                {"role": "assistant", "content": run.result_text},
+            ]
+        )
+    return history
+
+
+def _conversation_title(query: str) -> str:
+    normalized = " ".join((query or "").split())
+    return normalized[:160]
+
+
+def serialize_agent_conversation(conversation: AgentConversation) -> dict[str, Any]:
+    return {
+        "conversation_id": str(conversation.id),
+        "title": conversation.title,
+        "preview": conversation.preview,
+        "updated_at": conversation.updated_at.isoformat() if conversation.updated_at else None,
+    }
 
 
 def _clamp_scan_limit(requested_limit: int, plan_context: dict[str, Any]) -> int:
@@ -7660,7 +7695,11 @@ def _build_agent_history(
     history_items = []
     if meta_entry is not None:
         history_items.append(meta_entry)
-    history_items.extend(conversation_history)
+    # Reserve one turn for this response, so the stored history contains no
+    # more than five prompt/answer pairs.  A plan may still send a smaller
+    # subset to the model through _trim_history_for_plan().
+    previous_history_items = (AGENT_CHAT_HISTORY_TURN_LIMIT - 1) * 2
+    history_items.extend(conversation_history[-previous_history_items:])
     history_items.extend([
         {"role": "user", "content": user_query},
         {"role": "assistant", "content": answer},
@@ -8049,6 +8088,7 @@ def serialize_agent_run(agent_run: AgentRun) -> dict[str, Any]:
     plan_data = serialize_plan_context(agent_run.user)
     return {
         "job_id": agent_run.id,
+        "conversation_id": str(agent_run.conversation_id) if agent_run.conversation_id else None,
         "query": agent_run.query,
         "history": agent_run.history_json or [],
         "status": agent_run.status,
@@ -8080,7 +8120,8 @@ class AgentView(APIView):
         if not query:
             return Response({"error": "query is required"}, status=400)
 
-        # Restore conversation history from the request (client sends it back)
+        # Prefer client state during an active session, but restore persisted
+        # history after a reload or when the client submits an empty list.
         history = request.data.get("history", [])
         if history is not None and not isinstance(history, list):
             return Response({"error": "history must be a list"}, status=400)
@@ -8109,6 +8150,25 @@ class AgentView(APIView):
             used_today = _count_weekly_anonymous_agent_queries(anonymous_session_key)
             hourly_query_limit = None
             used_this_hour = 0
+
+        if is_authenticated:
+            conversations = AgentConversation.objects.filter(user=request.user)
+        else:
+            conversations = AgentConversation.objects.filter(
+                user__isnull=True,
+                anonymous_session_key=anonymous_session_key,
+            )
+
+        conversation_id = str(request.data.get("conversation_id") or "").strip()
+        if conversation_id:
+            try:
+                conversation = conversations.filter(pk=conversation_id).first()
+            except (TypeError, ValueError):
+                conversation = None
+            if conversation is None:
+                return Response({"error": "conversation_not_found"}, status=status.HTTP_404_NOT_FOUND)
+        else:
+            conversation = None
 
         if daily_query_limit is not None:
             if used_today >= daily_query_limit:
@@ -8141,9 +8201,20 @@ class AgentView(APIView):
                 status=429,
             )
 
+        if conversation is None:
+            conversation = AgentConversation.objects.create(
+                user=request.user if is_authenticated else None,
+                anonymous_session_key=anonymous_session_key,
+                title=_conversation_title(query),
+            )
+
+        if not history:
+            history = _conversation_history(conversation)
+
         agent_run = AgentRun.objects.create(
             user=request.user if is_authenticated else None,
             anonymous_session_key=anonymous_session_key,
+            conversation=conversation,
             query=query,
             history_json=history or [],
         )
@@ -8166,6 +8237,7 @@ class AgentView(APIView):
         is_authenticated = bool(getattr(request.user, "is_authenticated", False))
         if is_authenticated:
             runs = AgentRun.objects.filter(user=request.user)
+            conversations = AgentConversation.objects.filter(user=request.user)
         else:
             session_key = _anonymous_identity_key(request)
             if session_key is None:
@@ -8177,15 +8249,34 @@ class AgentView(APIView):
                 user__isnull=True,
                 anonymous_session_key=session_key,
             )
+            conversations = AgentConversation.objects.filter(
+                user__isnull=True,
+                anonymous_session_key=session_key,
+            )
+
+        conversation_id = str(request.query_params.get("conversation_id") or "").strip()
+        if conversation_id:
+            try:
+                conversation = conversations.filter(pk=conversation_id).first()
+            except (TypeError, ValueError):
+                conversation = None
+            if conversation is None:
+                return Response({"error": "conversation_not_found"}, status=status.HTTP_404_NOT_FOUND)
+            messages: list[dict[str, Any]] = []
+            for agent_run in conversation.runs.order_by("created_at", "id"):
+                messages.append({"role": "user", "content": agent_run.query})
+                if agent_run.status == AgentRun.Status.COMPLETED and agent_run.result_text:
+                    messages.append({"role": "assistant", "content": agent_run.result_text})
+            return Response({"results": messages})
 
         if job_id is None:
-            requested_limit = _to_int(request.query_params.get("limit")) or 20
+            requested_limit = _to_int(request.query_params.get("limit")) or 5
             limit = max(1, min(requested_limit, 100))
-            runs = runs.order_by("-created_at", "-id")[:limit]
+            conversation_list = conversations.order_by("-updated_at", "-created_at")[:limit]
             return Response(
                 {
-                    "results": [serialize_agent_run(agent_run) for agent_run in runs],
-                    "count": len(runs),
+                    "results": [serialize_agent_conversation(conversation) for conversation in conversation_list],
+                    "count": len(conversation_list),
                 }
             )
         agent_run = runs.filter(pk=job_id).first()
