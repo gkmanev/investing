@@ -915,6 +915,14 @@ TOOLS = [
                         "type": "number",
                         "description": "Maximum absolute delta to include (for example 0.30). Optional.",
                     },
+                    "exclude_earnings": {
+                        "type": "boolean",
+                        "description": (
+                            "When true, include only contracts whose underlying has a known "
+                            "next earnings date after option expiration; records with an "
+                            "earnings event before expiration or no earnings date are excluded."
+                        ),
+                    },
                     "account_size": {
                         "type": "number",
                         "description": "Optional total cash available for cash-secured puts, e.g. 10000.",
@@ -6191,6 +6199,10 @@ def _handle_scan_put_opportunities(
     min_rsi = _to_float(args.get("min_rsi"))
     max_rsi = _to_float(args.get("max_rsi"))
     max_delta = _to_float(args.get("max_delta"))
+    # A missing date cannot substantiate the claim that there is no earnings event
+    # before expiration.  When a caller explicitly requests this risk filter, use
+    # the conservative (fail-closed) behavior instead of labelling it safe.
+    exclude_earnings = bool(args.get("exclude_earnings"))
     account_size = _to_float(args.get("account_size"))
     max_cash_required = _to_float(args.get("max_cash_required"))
     effective_cash_budget = _resolve_cash_secured_budget(
@@ -6221,6 +6233,9 @@ def _handle_scan_put_opportunities(
         quality_score = _to_float(sym.score)
         technical_score = sym.technical_score
         next_earnings_date = _parse_date(sym.next_earnings_date)
+        earnings_date_known = bool(
+            next_earnings_date and next_earnings_date >= today
+        )
 
         if min_rsi is not None:
             if rsi is None or rsi < min_rsi:
@@ -6246,6 +6261,10 @@ def _handle_scan_put_opportunities(
                 budget=effective_cash_budget,
             )
             if scored is None:
+                continue
+            if exclude_earnings and (
+                not earnings_date_known or scored["earnings_before_expiration"]
+            ):
                 continue
             if (
                 best_scored is None
@@ -6295,6 +6314,10 @@ def _handle_scan_put_opportunities(
             "breakeven": c.get("breakeven"),
             "contracts_affordable": c.get("contracts_affordable"),
             "earnings_risk": best_scored["earnings_before_expiration"],
+            "next_earnings_date": (
+                next_earnings_date.isoformat() if next_earnings_date else None
+            ),
+            "earnings_date_known": earnings_date_known,
             
             "stock_quality_score": quality_score,
             "technical_score": technical_score,
@@ -6323,6 +6346,7 @@ def _handle_scan_put_opportunities(
             "min_rsi": min_rsi,
             "max_rsi": max_rsi,
             "max_delta": max_delta,
+            "exclude_earnings": exclude_earnings,
             "account_size": account_size,
             "max_cash_required": max_cash_required,
             "effective_max_cash_required": effective_cash_budget,

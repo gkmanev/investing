@@ -3224,6 +3224,73 @@ class TradingViewScrapeCommandTests(APITestCase):
 
 
 class ExpirationSnapshotScreeningTests(APITestCase):
+    def test_scan_put_opportunities_excludes_earnings_before_expiration(self) -> None:
+        expiration = date.today() + timedelta(days=7)
+        Symbol.objects.create(
+            ticker="EARN",
+            exchange="NASDAQ",
+            score=85,
+            price=Decimal("100.00"),
+            rsi=Decimal("50.00"),
+            technical_score=Symbol.TechnicalScore.BUY,
+            next_earnings_date=date.today() + timedelta(days=3),
+            option_data={
+                "puts": [
+                    {
+                        "strike": 95.0,
+                        "expiration": expiration.isoformat(),
+                        "bid": 1.0,
+                        "ask": 1.2,
+                        "delta": -0.25,
+                        "iv": 22.5,
+                        "volume": 120,
+                        "open_interest": 200,
+                    }
+                ]
+            },
+        )
+
+        payload = json.loads(
+            agent_views._handle_scan_put_opportunities(
+                {"limit": 5, "exclude_earnings": True}
+            )
+        )
+
+        self.assertEqual(payload["results_returned"], 0)
+        self.assertTrue(payload["filters_applied"]["exclude_earnings"])
+
+    def test_scan_put_opportunities_excludes_unknown_earnings_dates_when_requested(self) -> None:
+        expiration = date.today() + timedelta(days=7)
+        Symbol.objects.create(
+            ticker="UNKNOWN",
+            score=85,
+            price=Decimal("100.00"),
+            rsi=Decimal("50.00"),
+            technical_score=Symbol.TechnicalScore.BUY,
+            option_data={
+                "puts": [
+                    {
+                        "strike": 95.0,
+                        "expiration": expiration.isoformat(),
+                        "bid": 1.0,
+                        "ask": 1.2,
+                        "delta": -0.25,
+                        "iv": 22.5,
+                        "volume": 120,
+                        "open_interest": 200,
+                    }
+                ]
+            },
+        )
+
+        payload = json.loads(
+            agent_views._handle_scan_put_opportunities(
+                {"limit": 5, "exclude_earnings": True}
+            )
+        )
+
+        self.assertEqual(payload["results_returned"], 0)
+
     def test_scan_put_opportunities_reads_expiration_snapshots(self) -> None:
         symbol = Symbol.objects.create(
             ticker="AAPL",
