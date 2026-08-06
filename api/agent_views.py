@@ -211,15 +211,41 @@ def _conversation_history(conversation: AgentConversation) -> list[dict[str, Any
 
 def _conversation_title(query: str) -> str:
     normalized = " ".join((query or "").split())
+    lower = normalized.lower()
+    labels: list[str] = []
+    if "cash secured put" in lower or "cash-secured put" in lower or "csp" in lower:
+        labels.append("CSP")
+    elif "wheel" in lower:
+        labels.append("Wheel")
+    elif "put" in lower and ("screen" in lower or "candidate" in lower):
+        labels.append("Put screen")
+
+    import re
+    for pattern, label in (
+        (r"(?:dte|days? to expiration)\\s*(?:under|below|less than|<|≤)?\\s*(\\d+)", "DTE <{0}"),
+        (r"delta\\s*(?:under|below|less than|<|≤)?\\s*(0?\\.\\d+)", "Δ <{0}"),
+        (r"roi\\s*(?:over|above|greater than|>|≥)?\\s*(\\d+(?:\\.\\d+)?%?)", "ROI >{0}"),
+    ):
+        match = re.search(pattern, lower)
+        if match:
+            labels.append(label.format(match.group(1)))
+    if "no earnings" in lower or "without earnings" in lower:
+        labels.append("No earnings")
+    if labels:
+        return " · ".join(labels)[:160]
     return normalized[:160]
 
 
 def serialize_agent_conversation(conversation: AgentConversation) -> dict[str, Any]:
+    latest_run = conversation.runs.order_by("-created_at", "-id").first()
+    latest_snapshot_at = latest_run.data_as_of if latest_run else None
     return {
         "conversation_id": str(conversation.id),
         "title": conversation.title,
         "preview": conversation.preview,
         "updated_at": conversation.updated_at.isoformat() if conversation.updated_at else None,
+        "latest_snapshot_at": latest_snapshot_at.isoformat() if latest_snapshot_at else None,
+        "freshness": "historical" if latest_snapshot_at else "not_screened",
     }
 
 
@@ -8113,6 +8139,7 @@ def serialize_agent_run(agent_run: AgentRun) -> dict[str, Any]:
     return {
         "job_id": agent_run.id,
         "conversation_id": str(agent_run.conversation_id) if agent_run.conversation_id else None,
+        "refresh_of_run_id": agent_run.refresh_of_id,
         "query": agent_run.query,
         "history": agent_run.history_json or [],
         "status": agent_run.status,
@@ -8126,6 +8153,18 @@ def serialize_agent_run(agent_run: AgentRun) -> dict[str, Any]:
         "created_at": agent_run.created_at.isoformat() if agent_run.created_at else None,
         "started_at": agent_run.started_at.isoformat() if agent_run.started_at else None,
         "finished_at": agent_run.finished_at.isoformat() if agent_run.finished_at else None,
+        "data_as_of": agent_run.data_as_of.isoformat() if agent_run.data_as_of else None,
+        "data_status": agent_run.data_source_status or "pending",
+        "snapshot_notice": (
+            "Market prices, option premiums, Greeks, technical indicators and earnings dates "
+            "may have changed. Refresh this screening before making a trade decision."
+            if agent_run.status == AgentRun.Status.COMPLETED
+            else ""
+        ),
+        "refresh_action": {
+            "refresh_run_id": agent_run.id,
+            "label": "Refresh this screen with current market data",
+        },
         "plan": plan_data["plan"],
         "trial_days_left": plan_data["trial_days_left"],
     }
@@ -8141,8 +8180,6 @@ class AgentView(APIView):
 
     def post(self, request):
         query = request.data.get("query", "").strip()
-        if not query:
-            return Response({"error": "query is required"}, status=400)
 
         # Prefer client state during an active session, but restore persisted
         # history after a reload or when the client submits an empty list.
@@ -8183,7 +8220,26 @@ class AgentView(APIView):
                 anonymous_session_key=anonymous_session_key,
             )
 
+        refresh_run_id = _to_int(request.data.get("refresh_run_id"))
+        refresh_of = None
+        if refresh_run_id is not None:
+            refresh_of = (AgentRun.objects.filter(user=request.user, pk=refresh_run_id).first()
+                          if is_authenticated else AgentRun.objects.filter(
+                              user__isnull=True, anonymous_session_key=anonymous_session_key, pk=refresh_run_id
+                          ).first())
+            if refresh_of is None:
+                return Response({"error": "screening_run_not_found"}, status=status.HTTP_404_NOT_FOUND)
+            query = refresh_of.query
+            # A rerun uses the original screen only; old answers are not sent as
+            # context and cannot cause stale candidates to be repeated.
+            history = []
+
+        if not query:
+            return Response({"error": "query is required"}, status=400)
+
         conversation_id = str(request.data.get("conversation_id") or "").strip()
+        if refresh_of is not None:
+            conversation_id = str(refresh_of.conversation_id or "")
         if conversation_id:
             try:
                 conversation = conversations.filter(pk=conversation_id).first()
@@ -8232,7 +8288,7 @@ class AgentView(APIView):
                 title=_conversation_title(query),
             )
 
-        if not history:
+        if not history and refresh_of is None:
             history = _conversation_history(conversation)
 
         agent_run = AgentRun.objects.create(
@@ -8241,6 +8297,7 @@ class AgentView(APIView):
             conversation=conversation,
             query=query,
             history_json=history or [],
+            refresh_of=refresh_of,
         )
         if not is_authenticated:
             logger.info(
@@ -8287,11 +8344,15 @@ class AgentView(APIView):
             if conversation is None:
                 return Response({"error": "conversation_not_found"}, status=status.HTTP_404_NOT_FOUND)
             messages: list[dict[str, Any]] = []
+            screening_runs: list[dict[str, Any]] = []
             for agent_run in conversation.runs.order_by("created_at", "id"):
                 messages.append({"role": "user", "content": agent_run.query})
                 if agent_run.status == AgentRun.Status.COMPLETED and agent_run.result_text:
                     messages.append({"role": "assistant", "content": agent_run.result_text})
-            return Response({"results": messages})
+                screening_runs.append(serialize_agent_run(agent_run))
+            # `results` is retained for existing chat clients.  New clients use
+            # `screening_runs` for timestamped, immutable market snapshots.
+            return Response({"results": messages, "screening_runs": screening_runs})
 
         if job_id is None:
             requested_limit = _to_int(request.query_params.get("limit")) or 5

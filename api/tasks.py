@@ -119,6 +119,11 @@ def run_agent_run(agent_run_id: int) -> None:
     agent_run.llm_usage_json = result.get("llm_usage") or []
     agent_run.llm_usage_summary_json = result.get("llm_usage_summary") or {}
     agent_run.finished_at = timezone.now()
+    agent_run.data_as_of = agent_run.finished_at
+    # The market-data tools may combine live, delayed, cached, or EOD sources.
+    # Until individual source provenance is available, be conservative rather
+    # than implying that a historical answer is still tradeable.
+    agent_run.data_source_status = "historical_snapshot"
     agent_run.save(
         update_fields=[
             "status",
@@ -129,6 +134,8 @@ def run_agent_run(agent_run_id: int) -> None:
             "llm_usage_json",
             "llm_usage_summary_json",
             "finished_at",
+            "data_as_of",
+            "data_source_status",
             "updated_at",
         ]
     )

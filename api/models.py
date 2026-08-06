@@ -356,6 +356,15 @@ class AgentRun(models.Model):
         blank=True,
         db_index=True,
     )
+    # A refresh is a new run, never a mutation of the prior market snapshot.
+    refresh_of = models.ForeignKey(
+        "self",
+        related_name="refreshes",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        db_index=True,
+    )
     query = models.TextField()
     history_json = models.JSONField(default=list, blank=True)
     status = models.CharField(
@@ -372,6 +381,11 @@ class AgentRun(models.Model):
     llm_usage_summary_json = models.JSONField(default=dict, blank=True)
     started_at = models.DateTimeField(null=True, blank=True, db_index=True)
     finished_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    # This marks when the values presented in a completed answer were captured.
+    # It deliberately stays attached to the run so historical answers retain
+    # their original meaning even after a subsequent refresh.
+    data_as_of = models.DateTimeField(null=True, blank=True, db_index=True)
+    data_source_status = models.CharField(max_length=24, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

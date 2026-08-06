@@ -460,6 +460,46 @@ class AgentApiTests(APITestCase):
                 {"role": "assistant", "content": "Lower the allocation per position."},
             ],
         )
+        self.assertEqual(len(response.data["screening_runs"]), 2)
+
+    @patch("api.tasks.run_agent_run.delay")
+    def test_refresh_creates_a_new_linked_run_without_history(self, mock_delay: MagicMock) -> None:
+        conversation = AgentConversation.objects.create(user=self.user, title="CSP · DTE <25")
+        original = AgentRun.objects.create(
+            user=self.user,
+            conversation=conversation,
+            query="Find cash secured put candidates with DTE below 25",
+            result_text="Historical candidates",
+            status=AgentRun.Status.COMPLETED,
+        )
+
+        response = self.client.post(
+            reverse("agent"), {"refresh_run_id": original.id}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+        refreshed = AgentRun.objects.get(pk=response.data["job_id"])
+        self.assertEqual(refreshed.refresh_of, original)
+        self.assertEqual(refreshed.conversation, conversation)
+        self.assertEqual(refreshed.query, original.query)
+        self.assertEqual(refreshed.history_json, [])
+        mock_delay.assert_called_once_with(refreshed.id)
+
+    def test_completed_run_serializes_snapshot_metadata(self) -> None:
+        agent_run = AgentRun.objects.create(
+            user=self.user,
+            query="Screen puts",
+            result_text="Result",
+            status=AgentRun.Status.COMPLETED,
+            data_source_status="historical_snapshot",
+        )
+
+        response = self.client.get(reverse("agent-detail", args=[agent_run.id]))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["data_status"], "historical_snapshot")
+        self.assertEqual(response.data["refresh_action"]["refresh_run_id"], agent_run.id)
+        self.assertIn("may have changed", response.data["snapshot_notice"])
 
     def test_get_conversation_hides_other_users_messages(self) -> None:
         conversation = AgentConversation.objects.create(user=self.other_user, title="Private")
