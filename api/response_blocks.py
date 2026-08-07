@@ -123,6 +123,7 @@ _FIELD_SPECS = (
     ("delta", "Delta", "number", ("delta", "short_delta")),
     ("iv", "IV %", "percent", ("iv", "implied_volatility", "iv_pct")),
     ("contract_volume", "Option volume", "number", ("contract_volume", "option_volume")),
+    ("bid_ask_spread", "Bid-ask spread", "currency", ("bid_ask_spread",)),
     ("premium_received", "Premium received", "currency", ("premium_received", "premium", "credit")),
     ("roi", "ROI %", "percent", ("roi", "roi_pct", "return_on_risk_pct", "premium_yield_pct")),
     ("cash_required", "Cash required", "currency", ("cash_required", "max_risk", "collateral")),
