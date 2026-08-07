@@ -3561,6 +3561,7 @@ class PutWheelAgentViewTests(APITestCase):
                         "delta": -0.30,
                         "iv": 40.45,
                         "volume": 150,
+                        "contract_volume": 321,
                         "open_interest": 800,
                     },
                 ]
@@ -3579,6 +3580,12 @@ class PutWheelAgentViewTests(APITestCase):
         self.assertEqual(payload["summary"]["opportunity_score"], payload["summary"]["score"])
         self.assertEqual(payload["summary"]["best_roi"], 2.93)
         self.assertEqual(payload["best_put_opportunity"]["contract"]["roi"], 2.93)
+        self.assertEqual(
+            payload["best_put_opportunity"]["contract"]["bid_ask_spread"], 0.2
+        )
+        self.assertEqual(
+            payload["best_put_opportunity"]["contract"]["contract_volume"], 321
+        )
 
     def test_handle_put_wheel_opportunity_ignores_zero_bid_zero_ask_and_low_volume(
         self,
@@ -5051,6 +5058,8 @@ class PutWheelAgentViewTests(APITestCase):
         self.assertEqual(payload["best_spread"]["max_profit"], 98.0)
         self.assertEqual(payload["best_spread"]["max_loss"], 402.0)
         self.assertEqual(payload["best_spread"]["breakeven"], 184.02)
+        self.assertEqual(payload["best_spread"]["legs"][0]["bid_ask_spread"], 0.15)
+        self.assertEqual(payload["best_spread"]["legs"][0]["contract_volume"], 850)
         self.assertEqual(payload["best_spread"]["return_on_risk_pct"], 24.38)
         self.assertEqual(payload["best_spread"]["dte"], 39)
         self.assertEqual(len(payload["best_spread"]["legs"]), 2)

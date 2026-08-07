@@ -2104,7 +2104,11 @@ def _extract_put_contracts(option_data):
 
         delta = _to_float(c.get("delta"))
         iv = _normalize_iv_percent(c.get("iv") or c.get("implied_volatility"))
-        volume = _to_int(c.get("volume"))
+        volume = _to_int(
+            c.get("contract_volume")
+            if c.get("contract_volume") is not None
+            else c.get("volume")
+        )
         open_interest = _to_int(c.get("open_interest") or c.get("oi"))
 
         if not _is_tradeable_option_contract(bid=bid, ask=ask, volume=volume):
@@ -2226,7 +2230,11 @@ def _extract_call_contracts(option_data):
 
         delta = _to_float(c.get("delta"))
         iv = _normalize_iv_percent(c.get("iv") or c.get("implied_volatility"))
-        volume = _to_int(c.get("volume"))
+        volume = _to_int(
+            c.get("contract_volume")
+            if c.get("contract_volume") is not None
+            else c.get("volume")
+        )
         open_interest = _to_int(c.get("open_interest") or c.get("oi"))
 
         if not _is_tradeable_option_contract(bid=bid, ask=ask, volume=volume):
@@ -2479,6 +2487,15 @@ def _contract_spread_pct(contract):
     return ((ask - bid) / ask) * 100
 
 
+def _contract_bid_ask_spread(contract):
+    """Return the dollar bid-ask spread (ask minus bid), when quoted."""
+    bid = _to_float(contract.get("bid"))
+    ask = _to_float(contract.get("ask"))
+    if bid is None or ask is None:
+        return None
+    return round(ask - bid, 4)
+
+
 def _spread_leg_payload(contract, *, action, option_type):
     return {
         "action": action,
@@ -2486,10 +2503,12 @@ def _spread_leg_payload(contract, *, action, option_type):
         "strike": _to_float(contract.get("strike")),
         "bid": _to_float(contract.get("bid")),
         "ask": _to_float(contract.get("ask")),
+        "bid_ask_spread": _contract_bid_ask_spread(contract),
         "mid": _contract_mid(contract),
         "delta": _to_float(contract.get("delta")),
         "iv": _normalize_iv_percent(contract.get("iv")),
         "volume": _to_int(contract.get("volume")),
+        "contract_volume": _to_int(contract.get("volume")),
         "open_interest": _to_int(contract.get("open_interest")),
     }
 
@@ -5242,8 +5261,10 @@ def _score_covered_call_contract(
             "iv": iv,
             "bid": bid,
             "ask": ask,
+            "bid_ask_spread": _contract_bid_ask_spread(contract),
             "mid": mid,
             "volume": volume,
+            "contract_volume": volume,
             "open_interest": open_interest,
             "premium_income": premium_income,
             "premium_yield_pct": round(premium_yield_pct, 2),
@@ -5751,11 +5772,13 @@ def _score_put_contract(
             "dte": dte,
             "bid": bid,
             "ask": ask,
+            "bid_ask_spread": _contract_bid_ask_spread(contract),
             "mid": mid,
             "last": contract["last"],
             "delta": delta,
             "iv": iv,
             "volume": volume,
+            "contract_volume": volume,
             "open_interest": open_interest,
             "roi": round(roi, 2),
             "downside_buffer": round(downside_buffer, 2),
@@ -5932,10 +5955,12 @@ def _handle_put_wheel_opportunity(
             "dte": dte,
             "bid": c["bid"],
             "ask": c["ask"],
+            "bid_ask_spread": _contract_bid_ask_spread(c),
             "mid": c["mid"],
             "delta": c["delta"],
             "iv": c["iv"],
             "volume": c["volume"],
+            "contract_volume": c["volume"],
             "open_interest": c["open_interest"],
             "roi": roi,
         })
@@ -6334,6 +6359,11 @@ def _handle_scan_put_opportunities(
             "roi": c["roi"],
             "delta": c["delta"],
             "iv": c["iv"],
+            "bid": c["bid"],
+            "ask": c["ask"],
+            "bid_ask_spread": _contract_bid_ask_spread(c),
+            "contract_volume": c["volume"],
+            "open_interest": c["open_interest"],
             "downside_buffer": c["downside_buffer"],
             "cash_required": c.get("cash_required"),
             "premium_received": c.get("premium_received"),
@@ -6614,6 +6644,9 @@ def _handle_scan_covered_call_opportunities(
             "mid": best_contract.get("mid"),
             "bid": best_contract.get("bid"),
             "ask": best_contract.get("ask"),
+            "bid_ask_spread": best_contract.get("bid_ask_spread"),
+            "contract_volume": best_contract.get("contract_volume"),
+            "open_interest": best_contract.get("open_interest"),
             "upside_to_strike_pct": best_contract.get("upside_to_strike_pct"),
             "call_away_risk": best_contract.get("call_away_risk"),
             "stock_quality_score": payload.get("stock_quality_score"),
