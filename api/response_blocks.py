@@ -122,6 +122,7 @@ _FIELD_SPECS = (
     ("dte", "DTE", "number", ("dte", "days_to_expiration")),
     ("delta", "Delta", "number", ("delta", "short_delta")),
     ("iv", "IV %", "percent", ("iv", "implied_volatility", "iv_pct")),
+    ("contract_volume", "Option volume", "number", ("contract_volume", "option_volume")),
     ("premium_received", "Premium received", "currency", ("premium_received", "premium", "credit")),
     ("roi", "ROI %", "percent", ("roi", "roi_pct", "return_on_risk_pct", "premium_yield_pct")),
     ("cash_required", "Cash required", "currency", ("cash_required", "max_risk", "collateral")),
