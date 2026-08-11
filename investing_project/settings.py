@@ -236,6 +236,10 @@ EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "True").lower() in {"1", "true", "yes
 EMAIL_USE_SSL = os.getenv("EMAIL_USE_SSL", "False").lower() in {"1", "true", "yes"}
 EMAIL_TIMEOUT = int(os.getenv("EMAIL_TIMEOUT", "20"))
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "admin@putpulse.com")
+CONTACT_EMAIL = os.getenv("CONTACT_EMAIL", "support@putpulse.com")
+# Comma-separated recipient list for paid Pro invoice notifications.
+# Defaults to the support address so existing deployments keep a sensible target.
+BILLING_NOTIFICATION_EMAIL = os.getenv("BILLING_NOTIFICATION_EMAIL", CONTACT_EMAIL)
 RESEND_API_KEY = os.getenv("RESEND_API_KEY")
 RESEND_API_URL = os.getenv("RESEND_API_URL", "https://api.resend.com/emails")
 RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", DEFAULT_FROM_EMAIL)

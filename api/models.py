@@ -502,3 +502,14 @@ class PremiumSubscription(models.Model):
 
     def __str__(self) -> str:  # pragma: no cover - simple data representation
         return f"{self.user} premium ({self.status})"
+
+
+class BillingNotification(models.Model):
+    """Records owner notifications sent for Stripe invoices."""
+
+    stripe_invoice_id = models.CharField(max_length=255, unique=True)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    sent_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-sent_at"]

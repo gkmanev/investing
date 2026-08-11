@@ -4,13 +4,15 @@ import logging
 import stripe
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.db import IntegrityError, transaction
 from rest_framework import serializers, status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .entitlements import serialize_plan_context
-from .models import PremiumSubscription
+from .billing_email import send_paid_invoice_notification
+from .models import BillingNotification, PremiumSubscription
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
@@ -194,6 +196,14 @@ class StripeWebhookView(APIView):
                 return Response(
                     {"detail": "Internal error."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
+        elif event["type"] == "invoice.paid":
+            try:
+                self._handle_paid_invoice(event["data"]["object"])
+            except Exception:
+                logger.exception("Error processing invoice.paid")
+                return Response(
+                    {"detail": "Internal error."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
 
         return Response({"detail": "OK."}, status=status.HTTP_200_OK)
 
@@ -250,6 +260,66 @@ class StripeWebhookView(APIView):
                     subscription.get("id"),
                 )
         self._sync_subscription_object(subscription)
+
+    def _handle_paid_invoice(self, invoice: dict) -> None:
+        invoice_id = invoice.get("id")
+        if not invoice_id:
+            logger.warning("Stripe invoice.paid event missing invoice ID")
+            return
+
+        user = self._resolve_user_for_invoice(invoice)
+        if user is None:
+            logger.warning("Paid Stripe invoice notification skipped; could not resolve user for invoice=%s", invoice_id)
+            return
+
+        # Reserve the invoice before sending. The unique constraint makes webhook
+        # redelivery harmless, including concurrent deliveries.
+        try:
+            with transaction.atomic():
+                BillingNotification.objects.create(stripe_invoice_id=invoice_id, user=user)
+        except IntegrityError:
+            return
+
+        try:
+            send_paid_invoice_notification(user=user, invoice=invoice)
+        except Exception:
+            BillingNotification.objects.filter(stripe_invoice_id=invoice_id).delete()
+            raise
+
+    def _resolve_user_for_invoice(self, invoice: dict):
+        parent_subscription = (
+            (invoice.get("parent") or {}).get("subscription_details") or {}
+        )
+        subscription_id = (
+            invoice.get("subscription")
+            or parent_subscription.get("subscription")
+            or ""
+        )
+        customer_id = invoice.get("customer") or ""
+        subscription_details = invoice.get("subscription_details") or {}
+        metadata = (
+            subscription_details.get("metadata")
+            or parent_subscription.get("metadata")
+            or invoice.get("metadata")
+            or {}
+        )
+        user_id = metadata.get("user_id")
+        if user_id:
+            try:
+                return User.objects.get(pk=user_id)
+            except User.DoesNotExist:
+                logger.warning("Stripe invoice metadata user_id=%s not found", user_id)
+
+        filters = {}
+        if subscription_id:
+            filters["stripe_subscription_id"] = subscription_id
+        elif customer_id:
+            filters["stripe_customer_id"] = customer_id
+        if filters:
+            existing = PremiumSubscription.objects.filter(**filters).select_related("user").first()
+            if existing is not None:
+                return existing.user
+        return None
 
     def _sync_subscription_object(
         self,
