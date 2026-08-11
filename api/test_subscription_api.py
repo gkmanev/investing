@@ -98,6 +98,56 @@ class SubscriptionApiTests(APITestCase):
         self.assertEqual(subscription.status, PremiumSubscription.Status.ACTIVE)
         self.assertIsNotNone(subscription.current_period_end)
 
+    @override_settings(BILLING_NOTIFICATION_EMAIL="", RESEND_API_KEY=None)
+    @patch("api.subscription_views.stripe.Invoice.retrieve")
+    @patch("api.subscription_views.stripe.Subscription.retrieve")
+    @patch("api.subscription_views.stripe.Webhook.construct_event")
+    def test_paid_checkout_sends_customer_invoice_receipt(
+        self,
+        mock_construct_event,
+        mock_retrieve_subscription,
+        mock_retrieve_invoice,
+    ) -> None:
+        mock_construct_event.return_value = {
+            "type": "checkout.session.completed",
+            "data": {"object": {
+                "id": "cs_paid_123",
+                "subscription": "sub_paid_123",
+                "customer": "cus_paid_123",
+                "invoice": "in_checkout_123",
+                "payment_status": "paid",
+                "metadata": {"user_id": str(self.user.id)},
+            }},
+        }
+        mock_retrieve_subscription.return_value = {
+            "id": "sub_paid_123",
+            "customer": "cus_paid_123",
+            "status": "active",
+            "metadata": {"user_id": str(self.user.id)},
+        }
+        mock_retrieve_invoice.return_value = {
+            "id": "in_checkout_123",
+            "number": "ABC-0003",
+            "paid": True,
+            "amount_paid": 2900,
+            "currency": "usd",
+            "invoice_pdf": "https://invoice.example/pdf",
+            "lines": {"data": [{"description": "PutPulse Pro monthly"}]},
+        }
+
+        response = self.client.post(
+            reverse("webhooks-stripe"),
+            data=b"{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig_test",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mock_retrieve_invoice.assert_called_once_with("in_checkout_123")
+        self.assertEqual(BillingNotification.objects.filter(stripe_invoice_id="in_checkout_123").count(), 1)
+        self.assertEqual(mail.outbox[0].to, ["sub@example.com"])
+        self.assertIn("Your PutPulse Pro invoice", mail.outbox[0].subject)
+
     @patch("api.subscription_views.stripe.Webhook.construct_event")
     def test_subscription_deleted_webhook_marks_existing_subscription_cancelled(
         self,

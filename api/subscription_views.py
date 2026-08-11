@@ -222,6 +222,7 @@ class StripeWebhookView(APIView):
 
         stripe_subscription_id = session.get("subscription") or ""
         stripe_customer_id = session.get("customer") or ""
+        subscription_synced = False
 
         if stripe_subscription_id:
             try:
@@ -231,21 +232,32 @@ class StripeWebhookView(APIView):
                     fallback_user=user,
                     fallback_customer_id=stripe_customer_id,
                 )
-                return
+                subscription_synced = True
             except Exception:
                 logger.exception(
                     "Failed to retrieve Stripe subscription %s", stripe_subscription_id
                 )
 
-        PremiumSubscription.objects.update_or_create(
-            user=user,
-            defaults={
-                "stripe_subscription_id": stripe_subscription_id or f"checkout-{session.get('id')}",
-                "stripe_customer_id": stripe_customer_id,
-                "status": PremiumSubscription.Status.ACTIVE,
-                "current_period_end": None,
-            },
-        )
+        if not subscription_synced:
+            PremiumSubscription.objects.update_or_create(
+                user=user,
+                defaults={
+                    "stripe_subscription_id": stripe_subscription_id or f"checkout-{session.get('id')}",
+                    "stripe_customer_id": stripe_customer_id,
+                    "status": PremiumSubscription.Status.ACTIVE,
+                    "current_period_end": None,
+                },
+            )
+
+        # Stripe includes the first subscription invoice on a completed Checkout
+        # Session. Sending from here means the customer gets their receipt even
+        # if the invoice.paid webhook was not selected in the Stripe dashboard.
+        # The invoice record below makes this safe when that webhook arrives too.
+        invoice_id = session.get("invoice") or ""
+        if invoice_id and session.get("payment_status") == "paid":
+            invoice = stripe.Invoice.retrieve(invoice_id)
+            if invoice.get("paid") or invoice.get("status") == "paid":
+                self._handle_paid_invoice(invoice, fallback_user=user)
 
     def _handle_subscription_event(self, subscription: dict) -> None:
         # Recent Stripe API versions omit current_period_end from subscription
@@ -261,13 +273,13 @@ class StripeWebhookView(APIView):
                 )
         self._sync_subscription_object(subscription)
 
-    def _handle_paid_invoice(self, invoice: dict) -> None:
+    def _handle_paid_invoice(self, invoice: dict, *, fallback_user=None) -> None:
         invoice_id = invoice.get("id")
         if not invoice_id:
             logger.warning("Stripe invoice.paid event missing invoice ID")
             return
 
-        user = self._resolve_user_for_invoice(invoice)
+        user = self._resolve_user_for_invoice(invoice) or fallback_user
         if user is None:
             logger.warning("Paid Stripe invoice notification skipped; could not resolve user for invoice=%s", invoice_id)
             return
